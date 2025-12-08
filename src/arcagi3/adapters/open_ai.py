@@ -222,14 +222,6 @@ IMPORTANT: Return ONLY the array, with no additional text, quotes, or formatting
             
             return None
         
-    def _filter_api_kwargs(self, kwargs):
-        """
-        Filter out internal configuration parameters that should not be passed to the API.
-        These are application-level settings, not API parameters.
-        """
-        internal_params = {'memory_word_limit'}
-        return {k: v for k, v in kwargs.items() if k not in internal_params}
-
     @retry_with_exponential_backoff(max_retries=3)
     def call_provider(self, messages):
         api_kwargs = self._filter_api_kwargs(self.model_config.kwargs)

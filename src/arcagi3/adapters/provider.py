@@ -1,11 +1,17 @@
 import abc
-from typing import List, Dict, Tuple, Any, Optional
-import json
-from datetime import datetime
+from typing import List, Dict, Any, Optional, Set
 from arcagi3.schemas import Attempt, ModelConfig
 from arcagi3.utils.task_utils import read_models_config
 
 class ProviderAdapter(abc.ABC):
+    """
+    Base class for all provider adapters.
+    
+    INTERNAL_API_PARAMS: Set of parameter names that are application-level configuration
+    and should NOT be passed to provider APIs. These are filtered out before API calls.
+    """
+    INTERNAL_API_PARAMS: Set[str] = {'memory_word_limit'}
+    
     def __init__(self, config: str):
         """
         Initialize the provider adapter with model configuration.

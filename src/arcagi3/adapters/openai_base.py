@@ -50,9 +50,9 @@ class OpenAIBaseAdapter(ProviderAdapter, abc.ABC):
         """
         Filter out internal configuration parameters that should not be passed to the API.
         These are application-level settings, not API parameters.
+        Uses INTERNAL_API_PARAMS from ProviderAdapter base class.
         """
-        internal_params = {'memory_word_limit'}
-        return {k: v for k, v in kwargs.items() if k not in internal_params}
+        return {k: v for k, v in kwargs.items() if k not in ProviderAdapter.INTERNAL_API_PARAMS}
 
     @abc.abstractmethod
     def make_prediction(self, prompt: str, task_id: Optional[str] = None, test_id: Optional[str] = None, pair_index: int = None) -> Attempt:
