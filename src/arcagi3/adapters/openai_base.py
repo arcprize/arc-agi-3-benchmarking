@@ -46,6 +46,14 @@ class OpenAIBaseAdapter(ProviderAdapter, abc.ABC):
         super().__init__(config)
         self._last_consumed_stream = None  # Cache for stream consumption
 
+    def _filter_api_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Filter out internal configuration parameters that should not be passed to the API.
+        These are application-level settings, not API parameters.
+        """
+        internal_params = {'memory_word_limit'}
+        return {k: v for k, v in kwargs.items() if k not in internal_params}
+
     @abc.abstractmethod
     def make_prediction(self, prompt: str, task_id: Optional[str] = None, test_id: Optional[str] = None, pair_index: int = None) -> Attempt:
         """
@@ -81,13 +89,14 @@ class OpenAIBaseAdapter(ProviderAdapter, abc.ABC):
         """
         Make a call to the OpenAI Chat Completions API
         """
-        logger.debug(f"Calling OpenAI API with model: {self.model_config.model_name} and kwargs: {self.model_config.kwargs}")
+        api_kwargs = self._filter_api_kwargs(self.model_config.kwargs)
+        logger.debug(f"Calling OpenAI API with model: {self.model_config.model_name} and kwargs: {api_kwargs}")
     
         
         return self.client.chat.completions.create(
             model=self.model_config.model_name,
             messages=messages,
-            **self.model_config.kwargs
+            **api_kwargs
         )
     
     def _chat_completion_stream(self, messages: List[Dict[str, str]]) -> ChatCompletion:
@@ -96,8 +105,8 @@ class OpenAIBaseAdapter(ProviderAdapter, abc.ABC):
         """
         logger.debug(f"Starting streaming chat completion for model: {self.model_config.model_name}")
         
-        # Prepare kwargs for streaming, removing 'stream' to avoid duplication
-        stream_kwargs = {k: v for k, v in self.model_config.kwargs.items() if k != 'stream'}
+        # Prepare kwargs for streaming, removing 'stream' to avoid duplication and filtering internal params
+        stream_kwargs = self._filter_api_kwargs({k: v for k, v in self.model_config.kwargs.items() if k != 'stream'})
         
         try:
             # Create the stream with usage tracking
@@ -188,11 +197,11 @@ class OpenAIBaseAdapter(ProviderAdapter, abc.ABC):
         """
         Make a call to the OpenAI Responses API
         """
-
+        api_kwargs = self._filter_api_kwargs(self.model_config.kwargs)
         resp = self.client.responses.create(
             model=self.model_config.model_name,
             input=messages,
-            **self.model_config.kwargs
+            **api_kwargs
         )
 
         # For background mode
@@ -217,8 +226,8 @@ class OpenAIBaseAdapter(ProviderAdapter, abc.ABC):
         """
         logger.debug(f"Starting streaming responses for model: {self.model_config.model_name}")
         
-        # Prepare kwargs for streaming, removing 'stream' to avoid duplication
-        stream_kwargs = {k: v for k, v in self.model_config.kwargs.items() if k != 'stream'}
+        # Prepare kwargs for streaming, removing 'stream' to avoid duplication and filtering internal params
+        stream_kwargs = self._filter_api_kwargs({k: v for k, v in self.model_config.kwargs.items() if k != 'stream'})
         
         try:
             # Create the stream
@@ -558,16 +567,17 @@ class OpenAIBaseAdapter(ProviderAdapter, abc.ABC):
     @retry_with_exponential_backoff(max_retries=3)
     def call_provider(self, messages):
         # For other providers, try OpenAI-compatible format
+        api_kwargs = self._filter_api_kwargs(self.model_config.kwargs)
         try:
             return self.client.chat.completions.create(
                 model=self.model_config.model_name,
                 messages=messages,
-                **self.model_config.kwargs
+                **api_kwargs
             )
         except AttributeError:
             # Fallback to direct client call
             return self.client.create(
                 model=self.model_config.model_name,
                 messages=messages,
-                **self.model_config.kwargs
+                **api_kwargs
             )

@@ -222,19 +222,28 @@ IMPORTANT: Return ONLY the array, with no additional text, quotes, or formatting
             
             return None
         
+    def _filter_api_kwargs(self, kwargs):
+        """
+        Filter out internal configuration parameters that should not be passed to the API.
+        These are application-level settings, not API parameters.
+        """
+        internal_params = {'memory_word_limit'}
+        return {k: v for k, v in kwargs.items() if k not in internal_params}
+
     @retry_with_exponential_backoff(max_retries=3)
     def call_provider(self, messages):
+        api_kwargs = self._filter_api_kwargs(self.model_config.kwargs)
         if self.model_config.api_type == "responses":
             messages = _convert_messages_to_responses_format(messages)
             return self.client.responses.create(
                 model=self.model_config.model_name,
                 input=messages,
-                **self.model_config.kwargs
+                **api_kwargs
             )
         else:
             return self.client.chat.completions.create(
                 model=self.model_config.model_name,
                 messages=messages,
-                **self.model_config.kwargs
+                **api_kwargs
             )
         
