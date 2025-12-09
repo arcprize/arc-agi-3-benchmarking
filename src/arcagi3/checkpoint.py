@@ -68,7 +68,6 @@ class CheckpointManager:
         previous_grids = memory_dict.get("previous_grids")
         current_grids = memory_dict.get("current_grids")
         available_actions = memory_dict.get("available_actions", [])
-        available_actions_prompt = memory_dict.get("available_actions_prompt", "")
         
         # Extract metrics fields
         total_cost = metrics_dict.get("total_cost")
@@ -147,11 +146,6 @@ class CheckpointManager:
         if available_actions:
             with open(self.checkpoint_path / "available_actions.json", "w") as f:
                 json.dump(available_actions, f)
-
-        # Save available actions prompt
-        if available_actions_prompt:
-            with open(self.checkpoint_path / "available_actions_prompt.txt", "w") as f:
-                f.write(available_actions_prompt)
 
         logger.info(f"Checkpoint saved successfully")
     
@@ -249,13 +243,6 @@ class CheckpointManager:
             with open(available_actions_path) as f:
                 available_actions = json.load(f)
 
-        # Load available actions prompt
-        available_actions_prompt = ""
-        available_actions_prompt_path = self.checkpoint_path / "available_actions_prompt.txt"
-        if available_actions_prompt_path.exists():
-            with open(available_actions_prompt_path) as f:
-                available_actions_prompt = f.read()
-
         logger.info(f"Checkpoint loaded successfully")
 
         return {
@@ -269,7 +256,6 @@ class CheckpointManager:
             "previous_grids": previous_grids,
             "current_grids": current_grids,
             "available_actions": available_actions,
-            "available_actions_prompt": available_actions_prompt,
         }
     
     def checkpoint_exists(self) -> bool:
