@@ -65,23 +65,32 @@ class MultimodalAgent:
     """).strip()
     
     ACTION_INSTRUCT = dedent("""\
-        Given the frames and the provided game information above, provide
-        your desired action as if you were a human playing the game describing
-        your next action to an LLM which will figure out how to perform it.
-                             
+        AVAILABLE ACTIONS - You MUST choose from ONLY these actions:
+        {{available_actions_list}}
+        
+        Given the frames and the provided game information above, describe
+        your desired action using ONLY the actions listed above.
+        
+        CRITICAL RULES:
+        - You MUST use one of the actions from the list above
+        - Do NOT invent actions like "swipe", "drag", "tap", or any others
+        - If you're unsure, choose the closest matching action from the list
+        
+        Provide your response in this exact format. The "human_action" field must describe
+        using one of the available actions from the list above (e.g., {{example_actions}}):
+        
         ```json
         {
-            "human_action": "Click on the red square near the bottom left corner",
+            "human_action": "{{json_example_action}} to reach the target",
             "reasoning": "...",
             "expected_result": "..."                             
         }
-                             
-        These are going to be multistep games, but only concern yourself with
-        the next action.  You should favor moves/actions before trying to click
-        on objects, only start clicking once you're sure movement/actions do nothing.
-
-                             
-        Only response with the JSON, nothing else.
+        ```
+        
+        These are multistep games, but only concern yourself with the next action.
+        You should favor moves/actions before trying to click on objects.
+        
+        Only respond with the JSON, nothing else.
     """).strip()
     
     ANALYZE_INSTRUCT = dedent("""\
@@ -114,10 +123,19 @@ class MultimodalAgent:
     """).strip()
     
     FIND_ACTION_INSTRUCT = dedent("""\
-        Instruct: Given the provided image and the desired action above decide what to do
-        base on the following information:                      
+        Instruct: Given the provided image and the desired action above, you MUST
+        select from ONLY these available actions:
         {{action_list}}
         
+        CRITICAL RULES:
+        1. You MUST choose one action from the list above
+        2. Do NOT invent or use any other actions
+        3. If the desired action doesn't map perfectly, choose the closest match
+        4. For ACTION6 (click), provide x and y coordinates (0-127 range, will be divided by 2)
+        
+        The "action" field MUST be one of: {{valid_actions}}
+        
+        Respond with this exact JSON format:
         ```json
         {
             "action": "ACTION1",
@@ -125,6 +143,7 @@ class MultimodalAgent:
             "y": 0
         }
         ```
+        
         Respond with the JSON, nothing else.
     """).strip()
     
@@ -338,6 +357,36 @@ class MultimodalAgent:
         # If compression didn't work or still exceeds limit, truncate
         if self._get_memory_word_count() > self.memory_word_limit:
             self._memory_prompt = self._truncate_memory()
+    
+    def _validate_action(self, action_name: str) -> bool:
+        """
+        Validate that action is in available actions set.
+        
+        Args:
+            action_name: Action name like "ACTION1", "ACTION2", etc.
+            
+        Returns:
+            True if action is valid, False otherwise
+        """
+        if not action_name or not action_name.startswith("ACTION"):
+            logger.warning(f"Invalid action format: {action_name}")
+            return False
+        
+        try:
+            # Extract action number from ACTION1, ACTION2, etc.
+            action_num = action_name.replace("ACTION", "")
+            is_valid = action_num in self._available_actions
+            
+            if not is_valid:
+                logger.warning(
+                    f"Action {action_name} (number {action_num}) not in available actions: "
+                    f"{self._available_actions}"
+                )
+            
+            return is_valid
+        except Exception as e:
+            logger.error(f"Error validating action {action_name}: {e}")
+            return False
 
     def save_checkpoint(self):
         """Save current state to checkpoint"""
@@ -522,10 +571,38 @@ class MultimodalAgent:
         analysis: str
     ) -> Dict[str, Any]:
         """Choose the next human-level action"""
-        if len(analysis) > 20:
-            self._previous_prompt = f"{analysis}\n\n{self._get_memory_with_actions()}\n\n{self.ACTION_INSTRUCT}"
+        # Format available actions for the prompt (with fallback)
+        if self._available_actions:
+            available_actions_list = "\n".join([
+                f"  • {HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[int(a) - 1]]}" 
+                for a in self._available_actions
+            ])
+            # Get action descriptions for examples
+            action_descriptions = [
+                HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[int(a) - 1]] 
+                for a in self._available_actions
+            ]
         else:
-            self._previous_prompt = f"{self._get_memory_with_actions()}\n\n{self.ACTION_INSTRUCT}"
+            # Fallback to all actions (shouldn't happen)
+            available_actions_list = "\n".join([
+                f"  • {desc}" for desc in HUMAN_ACTIONS.values()
+            ])
+            action_descriptions = list(HUMAN_ACTIONS.values())
+        
+        # Prepare example actions for the prompt
+        # Use (up to) the first 3 actions for examples, or fewer if less available
+        example_actions = ", ".join([f'"{desc}"' for desc in action_descriptions[:3]])
+        json_example_action = f'"{action_descriptions[0]}"' if action_descriptions else "Move Up"
+        
+        # Inject available actions and examples into the instruction
+        action_instruct = self.ACTION_INSTRUCT.replace("{{available_actions_list}}", available_actions_list)
+        action_instruct = action_instruct.replace("{{example_actions}}", example_actions)
+        action_instruct = action_instruct.replace("{{json_example_action}}", json_example_action)
+        
+        if len(analysis) > 20:
+            self._previous_prompt = f"{analysis}\n\n{self._get_memory_with_actions()}\n\n{action_instruct}"
+        else:
+            self._previous_prompt = f"{self._get_memory_with_actions()}\n\n{action_instruct}"
         
         if self._model_supports_vision and self._use_vision:
             # For multimodal providers, use images
@@ -617,6 +694,13 @@ class MultimodalAgent:
             for a in self._available_actions
         ])
         
+        # Format valid action names for the prompt
+        valid_actions = ", ".join([HUMAN_ACTIONS_LIST[int(a) - 1] for a in self._available_actions])
+        
+        # Inject both action_list and valid_actions into the prompt
+        prompt_text = self.FIND_ACTION_INSTRUCT.replace("{{action_list}}", available_actions_text)
+        prompt_text = prompt_text.replace("{{valid_actions}}", valid_actions)
+        
         content = []
         if self._model_supports_vision and self._use_vision:
             # For multimodal providers, use image
@@ -633,7 +717,7 @@ class MultimodalAgent:
             )
         content.append({
             "type": "text",
-            "text": human_action + "\n\n" + self.FIND_ACTION_INSTRUCT.replace("{{action_list}}", available_actions_text),
+            "text": human_action + "\n\n" + prompt_text,
         })
         
         messages = [
@@ -654,9 +738,20 @@ class MultimodalAgent:
         logger.info(f"Game action: {action_message[:200]}...")
         
         try:
-            return extract_json_from_response(action_message)
+            result = extract_json_from_response(action_message)
+            action_name = result.get("action")
+            
+            # Validate action
+            if not self._validate_action(action_name):
+                logger.error(
+                    f"Invalid action generated: {action_name}. "
+                    f"Available actions: {[HUMAN_ACTIONS_LIST[int(a) - 1] for a in self._available_actions]}"
+                )
+                raise ValueError(f"Invalid action: {action_name} not in available actions")
+            
+            return result
         except ValueError as e:
-            logger.error(f"Failed to extract JSON from game action response: {e}")
+            logger.error(f"Failed to extract or validate game action: {e}")
             logger.debug(f"Full response: {action_message}")
             raise
     
