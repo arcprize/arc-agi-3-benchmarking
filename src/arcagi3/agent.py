@@ -234,7 +234,6 @@ class MultimodalAgent:
         # Memory for the agent
         self._available_actions: List[str] = []
         self._memory_prompt = ""
-        self._available_actions_prompt = ""  # Store available actions separately
         self._previous_action: Optional[Dict[str, Any]] = None
         self._previous_images: List[Image.Image] = []
         self._previous_grids: List[List[List[int]]] = []  # Store raw grids for text-based providers
@@ -271,23 +270,6 @@ class MultimodalAgent:
         
         return system_prompt
         
-    def _initialize_memory(self, available_actions: List[str]):
-        """Initialize the agent's memory as empty, storing available actions separately"""
-        # Memory starts empty - LLM can structure it however it wants
-        human_actions = "\n".join(available_actions)
-        self._available_actions_prompt = dedent(f"""\
-            ## Known Human Game Inputs
-{human_actions}
-        """).strip()
-        self._memory_prompt = ""  # Initialize memory as empty
-        logger.info(f"Memory initialized empty, available actions stored separately")
-    
-    def _get_memory_with_actions(self) -> str:
-        """Get memory merged with available actions text"""
-        if self._memory_prompt:
-            return f"{self._available_actions_prompt}\n\n{self._memory_prompt}"
-        return self._available_actions_prompt
-    
     def _get_memory_word_count(self) -> int:
         """Get the word count of the current memory"""
         return len(self._memory_prompt.split(" ")) if self._memory_prompt else 0
@@ -432,7 +414,6 @@ class MultimodalAgent:
             self._previous_grids = state.get("previous_grids", [])
             self._current_grids = state.get("current_grids", [])
             self._available_actions = state.get("available_actions", [])
-            self._available_actions_prompt = state.get("available_actions_prompt", "")
 
             logger.info(
                 f"Restored checkpoint: game_id={self.current_game_id}, "
@@ -490,7 +471,7 @@ class MultimodalAgent:
         if current_score > self._previous_score:
             level_complete = "NEW LEVEL!!!! - Whatever you did must have been good!"
         
-        analyze_prompt = f"{level_complete}\n\n{self.ANALYZE_INSTRUCT.format(memory_limit=self.memory_word_limit)}\n\n{self._get_memory_with_actions()}"
+        analyze_prompt = f"{level_complete}\n\n{self.ANALYZE_INSTRUCT.format(memory_limit=self.memory_word_limit)}\n\n{self._memory_prompt}"
         
         if self._model_supports_vision and self._use_vision:
             # For multimodal providers, use images
@@ -555,13 +536,13 @@ class MultimodalAgent:
         if after.strip():
             self._memory_prompt = after.strip()
             word_count = self._get_memory_word_count()
-            logger.info(f"Memory updated ({word_count} words):\n{self._get_memory_with_actions()}")
+            logger.info(f"Memory updated ({word_count} words):\n{self._memory_prompt}")
             # Enforce memory word limit
             self._enforce_memory_limit()
             # Log memory again after enforcement (in case it was compressed/truncated)
             final_word_count = self._get_memory_word_count()
             if final_word_count != word_count:
-                logger.info(f"Memory after enforcement ({final_word_count} words):\n{self._get_memory_with_actions()}")
+                logger.info(f"Memory after enforcement ({final_word_count} words):\n{self._memory_prompt}")
         return analysis
     
     def _choose_human_action(
@@ -600,9 +581,9 @@ class MultimodalAgent:
         action_instruct = action_instruct.replace("{{json_example_action}}", json_example_action)
         
         if len(analysis) > 20:
-            self._previous_prompt = f"{analysis}\n\n{self._get_memory_with_actions()}\n\n{action_instruct}"
+            self._previous_prompt = f"{analysis}\n\n{self._memory_prompt}\n\n{action_instruct}"
         else:
-            self._previous_prompt = f"{self._get_memory_with_actions()}\n\n{action_instruct}"
+            self._previous_prompt = f"{self._memory_prompt}\n\n{action_instruct}"
         
         if self._model_supports_vision and self._use_vision:
             # For multimodal providers, use images
@@ -796,7 +777,6 @@ class MultimodalAgent:
                 "previous_grids": self._previous_grids,
                 "current_grids": self._current_grids,
                 "available_actions": self._available_actions,
-                "available_actions_prompt": self._available_actions_prompt,
             },
             "metrics": {
                 "total_cost": self.total_cost,
@@ -903,8 +883,7 @@ class MultimodalAgent:
                 # Initialize memory on first play
                 if play_num == 1 and not self._memory_prompt:
                     self._available_actions = state.get("available_actions", list(HUMAN_ACTIONS.keys()))
-                    available_codes = [f"{HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[int(a) - 1]]}" for a in self._available_actions]
-                    self._initialize_memory(available_codes)
+                    self._memory_prompt = ""  # Initialize memory as empty
                 
                 play_action_counter = 0
 
@@ -939,7 +918,7 @@ class MultimodalAgent:
                 total_cost=self.total_cost,
                 usage=self.total_usage,
                 actions=play_action_history,
-                final_memory=self._get_memory_with_actions(),
+                final_memory=self._memory_prompt,
                 timestamp=datetime.now(timezone.utc),
                 scorecard_url=scorecard_url,
                 card_id=self.card_id
