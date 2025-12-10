@@ -88,7 +88,8 @@ class MultimodalAgent:
         ```
         
         These are multistep games, but only concern yourself with the next action.
-        You should favor moves/actions before trying to click on objects.
+        You should favor moves/actions before trying to click on objects. Only start
+        clicking once you're sure movement/actions do nothing.
         
         Only respond with the JSON, nothing else.
     """).strip()
