@@ -66,7 +66,6 @@ HUMAN_ACTIONS_LIST = list(HUMAN_ACTIONS.keys())
 
 class MultimodalAgent:
     """Agent that plays ARC-AGI-3 games using multimodal LLMs"""
-    
     def __init__(
         self,
         config: str,
@@ -158,7 +157,6 @@ class MultimodalAgent:
         # Memory for the agent
         self._available_actions: List[str] = []
         self._memory_prompt = ""
-        self._available_actions_prompt = ""  # Store available actions separately
         self._previous_action: Optional[Dict[str, Any]] = None
         self._previous_images: FrameImageSequence = []
         self._previous_grids: FrameGridSequence = []  # Store raw grids for text-based providers
@@ -196,23 +194,6 @@ class MultimodalAgent:
         
         return system_prompt
         
-    def _initialize_memory(self, available_actions: List[str]):
-        """Initialize the agent's memory as empty, storing available actions separately"""
-        # Memory starts empty - LLM can structure it however it wants
-        human_actions = "\n".join(available_actions)
-        self._available_actions_prompt = dedent(f"""\
-            ## Known Human Game Inputs
-{human_actions}
-        """).strip()
-        self._memory_prompt = ""  # Initialize memory as empty
-        logger.info(f"Memory initialized empty, available actions stored separately")
-    
-    def _get_memory_with_actions(self) -> str:
-        """Get memory merged with available actions text"""
-        if self._memory_prompt:
-            return f"{self._available_actions_prompt}\n\n{self._memory_prompt}"
-        return self._available_actions_prompt
-    
     def _get_memory_word_count(self) -> int:
         """Get the word count of the current memory"""
         return len(self._memory_prompt.split(" ")) if self._memory_prompt else 0
@@ -280,6 +261,38 @@ class MultimodalAgent:
         # If compression didn't work or still exceeds limit, truncate
         if self._get_memory_word_count() > self.memory_word_limit:
             self._memory_prompt = self._truncate_memory()
+    
+    def _validate_action(self, action_name: str) -> bool:
+        """
+        Validate that action is in available actions set.
+        
+        Args:
+            action_name: Action name like "ACTION1", "ACTION2", etc.
+            
+        Returns:
+            True if action is valid, False otherwise
+        """
+        if not action_name or not action_name.startswith("ACTION"):
+            logger.warning(f"Invalid action format: {action_name}")
+            return False
+        
+        try:
+            # Extract action number from ACTION1, ACTION2, etc.
+            action_num = action_name.replace("ACTION", "")
+            # Normalize available actions to string numbers for comparison
+            normalized_available = {str(a) for a in self._available_actions}
+            is_valid = action_num in normalized_available
+            
+            if not is_valid:
+                logger.warning(
+                    f"Action {action_name} (number {action_num}) not in available actions: "
+                    f"{sorted(normalized_available)}"
+                )
+            
+            return is_valid
+        except Exception as e:
+            logger.error(f"Error validating action {action_name}: {e}")
+            return False
 
     def save_checkpoint(self):
         """Save current state to checkpoint"""
@@ -325,7 +338,6 @@ class MultimodalAgent:
             self._previous_grids = state.get("previous_grids", [])
             self._current_grids = state.get("current_grids", [])
             self._available_actions = state.get("available_actions", [])
-            self._available_actions_prompt = state.get("available_actions_prompt", "")
 
             logger.info(
                 f"Restored checkpoint: game_id={self.current_game_id}, "
@@ -404,7 +416,6 @@ class MultimodalAgent:
             {"memory_limit": self.memory_word_limit},
         )
         analyze_prompt = f"{level_complete}\n\n{analyze_instruct}\n\n{self._get_memory_with_actions()}"
-
         if self._model_supports_vision and self._use_vision:
             # For multimodal providers, use images
             all_imgs = [
@@ -468,13 +479,13 @@ class MultimodalAgent:
         if after.strip():
             self._memory_prompt = after.strip()
             word_count = self._get_memory_word_count()
-            logger.info(f"Memory updated ({word_count} words):\n{self._get_memory_with_actions()}")
+            logger.info(f"Memory updated ({word_count} words):\n{self._memory_prompt}")
             # Enforce memory word limit
             self._enforce_memory_limit()
             # Log memory again after enforcement (in case it was compressed/truncated)
             final_word_count = self._get_memory_word_count()
             if final_word_count != word_count:
-                logger.info(f"Memory after enforcement ({final_word_count} words):\n{self._get_memory_with_actions()}")
+                logger.info(f"Memory after enforcement ({final_word_count} words):\n{self._memory_prompt}")
         return analysis
 
     def decide_human_action_step(
@@ -484,20 +495,49 @@ class MultimodalAgent:
         analysis: str,
     ) -> Dict[str, Any]:
         """
-        Substep: Decide the next human-level action given frames and analysis.
+        Substep: Decide the next human-level action given the current frames
+        and the analysis of the previous step.
 
         Default implementation:
-          - Builds a prompt using the current analysis and memory.
+          - Builds a human-readable list of available actions and example actions.
+          - Injects those into the ACTION_INSTRUCT prompt via placeholders.
+          - Builds a prompt that includes the current analysis and memory.
           - Calls the provider to get a JSON `human_action` description.
 
         Override this to change how the agent chooses high-level actions.
         """
-        action_instruct = self.prompt_manager.render(PromptName.ACTION_INSTRUCT)
+        # Format available actions for the prompt (with fallback)
+        if self._available_actions:
+            # Normalize action indices to integers (handles "6" and 6)
+            indices = [int(str(a)) for a in self._available_actions]
+            action_descriptions = [
+                HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[i - 1]]
+                for i in indices
+            ]
+        else:
+            # Fallback to all actions (shouldn't happen)
+            action_descriptions = list(HUMAN_ACTIONS.values())
+
+        # Build the bullet list shown to the model
+        available_actions_list = "\n".join(f"  • {desc}" for desc in action_descriptions)
+
+        # Prepare example actions for the prompt (up to three examples)
+        example_actions = ", ".join(f'"{desc}"' for desc in action_descriptions[:3])
+        json_example_action = f'"{action_descriptions[0]}"' if action_descriptions else "Move Up"
+
+        action_instruct = self.prompt_manager.render(
+            PromptName.ACTION_INSTRUCT,
+            {
+                "available_actions_list": available_actions_list,
+                "example_actions": example_actions,
+                "json_example_action": json_example_action,
+            },
+        )
+
         if len(analysis) > 20:
             self._previous_prompt = f"{analysis}\n\n{self._get_memory_with_actions()}\n\n{action_instruct}"
         else:
             self._previous_prompt = f"{self._get_memory_with_actions()}\n\n{action_instruct}"
-
         if self._model_supports_vision and self._use_vision:
             # For multimodal providers, use images
             content = [
@@ -551,21 +591,30 @@ class MultimodalAgent:
 
         Default implementation:
           - Builds a prompt that lists available actions and the desired action.
+          - Includes the set of valid action codes allowed.
           - Calls the provider to obtain a concrete game action JSON.
 
         This is the most common substep to override when mapping decisions into
         different action spaces.
         """
-        # Format available actions for the prompt
-        available_actions_text = "\n".join(
-            [
-                f"{HUMAN_ACTIONS_LIST[int(a) - 1]} = {HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[int(a) - 1]]}"
-                for a in self._available_actions
-            ]
-        )
+        # Format available actions and valid codes for the prompt
+        if self._available_actions:
+            indices = [int(str(a)) for a in self._available_actions]
+            available_actions_text = "\n".join(
+                f"{HUMAN_ACTIONS_LIST[i - 1]} = {HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[i - 1]]}"
+                for i in indices
+            )
+            valid_actions = ", ".join(HUMAN_ACTIONS_LIST[i - 1] for i in indices)
+        else:
+            # Fallback to all actions
+            available_actions_text = "\n".join(
+                f"{name} = {desc}" for name, desc in HUMAN_ACTIONS.items()
+            )
+            valid_actions = ", ".join(HUMAN_ACTIONS_LIST)
+
         find_action_instruct = self.prompt_manager.render(
             PromptName.FIND_ACTION_INSTRUCT,
-            {"action_list": available_actions_text},
+            {"action_list": available_actions_text, "valid_actions": valid_actions},
         )
 
         content = []
@@ -653,67 +702,6 @@ class MultimodalAgent:
         
         return game_action_dict
 
-    def _convert_to_game_action(
-        self,
-        human_action: str,
-        last_frame_image: Image.Image,
-        last_frame_grid: FrameGrid,
-    ) -> Dict[str, Any]:
-        """Convert human action description to game action"""
-        # Format available actions for the prompt
-        available_actions_text = "\n".join(
-            [
-                f"{HUMAN_ACTIONS_LIST[int(a) - 1]} = {HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[int(a) - 1]]}"
-                for a in self._available_actions
-            ]
-        )
-        find_action_instruct = self.prompt_manager.render(
-            PromptName.FIND_ACTION_INSTRUCT,
-            {"action_list": available_actions_text},
-        )
-        
-        content = []
-        if self._model_supports_vision and self._use_vision:
-            # For multimodal providers, use image
-            content.append(
-                make_image_block(image_to_base64(last_frame_image)),
-            )
-        else:
-            # For text-only providers, use text matrix
-            content.append(
-                {
-                    "type": "text",
-                    "text": f"Current frame:\n{grid_to_text_matrix(last_frame_grid)}"
-                },
-            )
-        content.append({
-            "type": "text",
-            "text": human_action + "\n\n" + find_action_instruct,
-        })
-        
-        messages = [
-            {"role": "system", "content": self._get_system_prompt()},
-            {
-                "role": "user",
-                "content": content,
-            },
-        ]
-        
-        response = self.provider.call_provider(messages)
-        
-        # Track costs
-        prompt_tokens, completion_tokens, reasoning_tokens = self.provider.extract_usage(response)
-        self._update_costs(prompt_tokens, completion_tokens, reasoning_tokens)
-        
-        action_message = self.provider.extract_content(response)
-        logger.info(f"Game action: {action_message[:200]}...")
-        
-        try:
-            return extract_json_from_response(action_message)
-        except ValueError as e:
-            logger.error(f"Failed to extract JSON from game action response: {e}")
-            logger.debug(f"Full response: {action_message}")
-            raise
     
     def _execute_game_action(
         self,
@@ -756,7 +744,6 @@ class MultimodalAgent:
                 "previous_grids": self._previous_grids,
                 "current_grids": self._current_grids,
                 "available_actions": self._available_actions,
-                "available_actions_prompt": self._available_actions_prompt,
             },
             "metrics": {
                 "total_cost": self.total_cost,
@@ -863,8 +850,7 @@ class MultimodalAgent:
                 # Initialize memory on first play
                 if play_num == 1 and not self._memory_prompt:
                     self._available_actions = state.get("available_actions", list(HUMAN_ACTIONS.keys()))
-                    available_codes = [f"{HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[int(a) - 1]]}" for a in self._available_actions]
-                    self._initialize_memory(available_codes)
+                    self._memory_prompt = ""  # Initialize memory as empty
                 
                 play_action_counter = 0
 
@@ -899,7 +885,7 @@ class MultimodalAgent:
                 total_cost=self.total_cost,
                 usage=self.total_usage,
                 actions=play_action_history,
-                final_memory=self._get_memory_with_actions(),
+                final_memory=self._memory_prompt,
                 timestamp=datetime.now(timezone.utc),
                 scorecard_url=scorecard_url,
                 card_id=self.card_id

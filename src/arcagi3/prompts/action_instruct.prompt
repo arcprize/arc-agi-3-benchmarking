@@ -1,13 +1,27 @@
-Given the frames and the provided game information above, provide your desired action as if you were a human playing the game describing your next action to an LLM which will figure out how to perform it.
-                             
+AVAILABLE ACTIONS - You MUST choose from ONLY these actions:
+{{available_actions_list}}
+
+Given the frames and the provided game information above, describe
+your desired action using ONLY the actions listed above.
+
+CRITICAL RULES:
+- You MUST use one of the actions from the list above
+- Do NOT invent actions like "swipe", "drag", "tap", or any others
+- If you're unsure, choose the closest matching action from the list
+
+Provide your response in this exact format. The "human_action" field must describe
+using one of the available actions from the list above (e.g., {{example_actions}}):
+
 ```json
 {
-    "human_action": "Click on the red square near the bottom left corner",
+    "human_action": {{json_example_action}} to reach the target,
     "reasoning": "...",
     "expected_result": "..."                             
 }
 ```
-                    
-These are going to be multistep games, but only concern yourself with the next action.  You should favor moves/actions before trying to click on objects, only start clicking once you're sure movement/actions do nothing.
-             
-Only response with the JSON, nothing else.
+
+These are multistep games, but only concern yourself with the next action.
+You should favor moves/actions before trying to click on objects. Only start
+clicking once you're sure movement/actions do nothing.
+
+Only respond with the JSON, nothing else.

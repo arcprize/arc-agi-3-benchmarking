@@ -23,9 +23,13 @@ _FILENAME_BY_PROMPT: Dict[PromptName, str] = {
 
 _ALLOWED_PLACEHOLDERS: Dict[PromptName, Set[str]] = {
     PromptName.SYSTEM: set(),
-    PromptName.ACTION_INSTRUCT: set(),
+    PromptName.ACTION_INSTRUCT: {
+        "available_actions_list",
+        "example_actions",
+        "json_example_action",
+    },
     PromptName.ANALYZE_INSTRUCT: {"memory_limit"},
-    PromptName.FIND_ACTION_INSTRUCT: {"action_list"},
+    PromptName.FIND_ACTION_INSTRUCT: {"action_list", "valid_actions"},
     PromptName.COMPRESS_MEMORY: {"current_word_count", "memory_limit", "memory_text"},
 }
 
