@@ -415,7 +415,7 @@ class MultimodalAgent:
             PromptName.ANALYZE_INSTRUCT,
             {"memory_limit": self.memory_word_limit},
         )
-        analyze_prompt = f"{level_complete}\n\n{analyze_instruct}\n\n{self._get_memory_with_actions()}"
+        analyze_prompt = f"{level_complete}\n\n{analyze_instruct}\n\n{self._memory_prompt}"
         if self._model_supports_vision and self._use_vision:
             # For multimodal providers, use images
             all_imgs = [
@@ -535,9 +535,9 @@ class MultimodalAgent:
         )
 
         if len(analysis) > 20:
-            self._previous_prompt = f"{analysis}\n\n{self._get_memory_with_actions()}\n\n{action_instruct}"
+            self._previous_prompt = f"{analysis}\n\n{self._memory_prompt}\n\n{action_instruct}"
         else:
-            self._previous_prompt = f"{self._get_memory_with_actions()}\n\n{action_instruct}"
+            self._previous_prompt = f"{self._memory_prompt}\n\n{action_instruct}"
         if self._model_supports_vision and self._use_vision:
             # For multimodal providers, use images
             content = [
