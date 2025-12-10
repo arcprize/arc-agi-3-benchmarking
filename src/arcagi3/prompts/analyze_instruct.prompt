@@ -1,0 +1,14 @@
+## Instruct
+
+Given your action, including your expected outcome, and the provided resultsvia the associated images provide a complet analysis of the outcome, thinking though what happened.  When analizing the images think about the x,y location of objects, their colors, and how they relate to the game state.
+                              
+The images attached here are as follows (Zero Indexed):
+- 0: Final Frame before your Action
+- 1-N: Frames as a result of your action.
+- A Helper image showing pixels in red that changed between the Final Frame before your action and the last frame after your action.  Any changes larger than a few pixels should be considered significant.
+                              
+When examining the images try to identify objects or environmental patterns and their locations.
+                              
+Provide your analysis and then after providing `---` update your memory scratchpad. The memory scratchpad is a place for you to remember anything that will help you play the game better. You can structure it however you want - it's your scratchpad to use as you see fit. IMPORTANT: The memory scratchpad should be plain text. Use natural language, bullet points, or any text format you prefer. Keep the memory  scratchpad concise and within approximately {{memory_limit}} words to help manage context window size. Focus on what's most important for understanding the game environment and rules to beat the game in as few moves as possible.
+
+---

@@ -12,10 +12,10 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 
 from PIL import Image
-
 from .adapters import create_provider
 from .game_client import GameClient
 from .utils.image import grid_to_image, image_to_base64, make_image_block, image_diff, display_image_in_terminal
+from .prompts import PromptManager, PromptName, PromptSource
 from .schemas import (
     GameAction,
     GameState,
@@ -37,6 +37,18 @@ from .checkpoint import CheckpointManager
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Type aliases for clarity
+# ---------------------------------------------------------------------------
+
+# Single frame grid (rows x cols of ints) and sequences of frames.
+FrameGrid = List[List[int]]
+FrameGridSequence = List[FrameGrid]
+
+# Image sequences for a step.
+FrameImageSequence = List[Image.Image]
+
+
 # Map game actions to human-readable descriptions
 HUMAN_ACTIONS = {
     "ACTION1": "Move Up",
@@ -55,79 +67,6 @@ HUMAN_ACTIONS_LIST = list(HUMAN_ACTIONS.keys())
 class MultimodalAgent:
     """Agent that plays ARC-AGI-3 games using multimodal LLMs"""
     
-    SYSTEM_PROMPT = dedent("""\
-        You are an abstract reasoning agent that is attempting to solve
-        turn-based interactive environments displayed to you as PNGs along
-        text for goals, analysis, and planning.
-    
-        All games have simple abtract graphics and problems that can be 
-        solved using nothing but core knowledge.
-    """).strip()
-    
-    ACTION_INSTRUCT = dedent("""\
-        Given the frames and the provided game information above, provide
-        your desired action as if you were a human playing the game describing
-        your next action to an LLM which will figure out how to perform it.
-                             
-        ```json
-        {
-            "human_action": "Click on the red square near the bottom left corner",
-            "reasoning": "...",
-            "expected_result": "..."                             
-        }
-                             
-        These are going to be multistep games, but only concern yourself with
-        the next action.  You should favor moves/actions before trying to click
-        on objects, only start clicking once you're sure movement/actions do nothing.
-
-                             
-        Only response with the JSON, nothing else.
-    """).strip()
-    
-    ANALYZE_INSTRUCT = dedent("""\
-        ## Instruct
-
-        Given your action, including your expected outcome, and the provided results
-        via the associated images provide a complet analysis of the outcome, thinking
-        though what happened.  When analizing the images think about the x,y location
-        of objects, their colors, and how they relate to the game state.
-                              
-        The images attached here are as follows (Zero Indexed):
-        - 0: Final Frame before your Action
-        - 1-N: Frames as a result of your action.
-        - A Helper image showing pixels in red that changed between the Final Frame 
-          before your action and the last frame after your action.  Any changes 
-          larger than a few pixels should be considered significant.
-                              
-        When examining the images try to identify objects or environmental patterns
-        and their locations.
-                              
-        Provide your analysis and then after providing `---` update your memory scratchpad.
-        The memory scratchpad is a place for you to remember anything that will help you
-        play the game better. You can structure it however you want - it's your scratchpad
-        to use as you see fit. IMPORTANT: The memory scratchpad should be plain text.
-        Use natural language, bullet points, or any text format you prefer. Keep the memory 
-        scratchpad concise and within approximately {memory_limit} words to help manage context window size. 
-        Focus on what's most important for understanding the game environment and rules to beat 
-        the game in as few moves as possible.
-        ---
-    """).strip()
-    
-    FIND_ACTION_INSTRUCT = dedent("""\
-        Instruct: Given the provided image and the desired action above decide what to do
-        base on the following information:                      
-        {{action_list}}
-        
-        ```json
-        {
-            "action": "ACTION1",
-            "x": 0,
-            "y": 0
-        }
-        ```
-        Respond with the JSON, nothing else.
-    """).strip()
-    
     def __init__(
         self,
         config: str,
@@ -141,6 +80,7 @@ class MultimodalAgent:
         memory_word_limit: Optional[int] = None,
         checkpoint_frequency: int = 1,
         checkpoint_card_id: Optional[str] = None,
+        prompt_overrides: Optional[Dict[str, PromptSource]] = None,
     ):
         """
         Initialize the multimodal agent.
@@ -176,6 +116,9 @@ class MultimodalAgent:
             self.memory_word_limit = self.provider.model_config.kwargs.get("memory_word_limit", 500)
         
         self.checkpoint_frequency = checkpoint_frequency
+
+        # Prompt manager (handles default templates + optional overrides)
+        self.prompt_manager = PromptManager(prompt_overrides)
 
         self.hints_file = find_hints_file()
         self.current_game_id: Optional[str] = None
@@ -217,9 +160,9 @@ class MultimodalAgent:
         self._memory_prompt = ""
         self._available_actions_prompt = ""  # Store available actions separately
         self._previous_action: Optional[Dict[str, Any]] = None
-        self._previous_images: List[Image.Image] = []
-        self._previous_grids: List[List[List[int]]] = []  # Store raw grids for text-based providers
-        self._current_grids: List[List[List[int]]] = []  # Current game state after last action; used for checkpoint restoration
+        self._previous_images: FrameImageSequence = []
+        self._previous_grids: FrameGridSequence = []  # Store raw grids for text-based providers
+        self._current_grids: FrameGridSequence = []  # Current game state after last action; used for checkpoint restoration
         self._previous_score = 0
 
         self._previous_prompt = ""
@@ -241,7 +184,8 @@ class MultimodalAgent:
         Returns:
             System prompt with hint prepended if available
         """
-        system_prompt = self.SYSTEM_PROMPT
+        # Base system prompt from templates
+        system_prompt = self.prompt_manager.render(PromptName.SYSTEM)
         
         # Prepend hint if available for current game
         if self.current_hint:
@@ -279,19 +223,17 @@ class MultimodalAgent:
             return ""
         
         current_word_count = self._get_memory_word_count()
-        compress_prompt = dedent(f"""\
-            Your memory scratchpad has grown too large ({current_word_count} words).
-            Please compress it to approximately {self.memory_word_limit} words while keeping
-            the most important information for playing the game.
-            
-            Current memory:
-            {self._memory_prompt}
-            
-            Provide only the compressed memory scratchpad, nothing else.
-        """).strip()
+        compress_prompt = self.prompt_manager.render(
+            PromptName.COMPRESS_MEMORY,
+            {
+                "current_word_count": current_word_count,
+                "memory_limit": self.memory_word_limit,
+                "memory_text": self._memory_prompt,
+            },
+        )
         
         messages = [
-            {"role": "system", "content": self.SYSTEM_PROMPT},
+            {"role": "system", "content": self._get_system_prompt()},
             {
                 "role": "user",
                 "content": compress_prompt,
@@ -427,22 +369,42 @@ class MultimodalAgent:
                 self.total_usage.completion_tokens_details = CompletionTokensDetails()
             self.total_usage.completion_tokens_details.reasoning_tokens += reasoning_tokens
 
-    def _analyze_previous_action(
+    # ------------------------------------------------------------------
+    # Substep methods – primary extension points for subclasses
+    # ------------------------------------------------------------------
+
+    def analyze_outcome_step(
         self,
-        current_frame_images: List[Image.Image],
-        current_frame_grids: List[List[List[int]]],
-        current_score: int
+        current_frame_images: FrameImageSequence,
+        current_frame_grids: FrameGridSequence,
+        current_score: int,
     ) -> str:
-        """Analyze the results of the previous action"""
+        """
+        Substep: Analyze the outcome of the previous action and update memory.
+
+        Default implementation:
+          - Compares the new score to the previous score.
+          - Builds the analysis prompt (including memory and hints).
+          - Calls the provider to get analysis and updated memory.
+          - Enforces the memory size limit.
+
+        Subclasses can override this method to change analysis behavior
+        (e.g. different prompts, memory strategies) while keeping the
+        surrounding workflow intact.
+        """
         if not self._previous_action:
             return "no previous action"
-        
+
         level_complete = ""
         if current_score > self._previous_score:
             level_complete = "NEW LEVEL!!!! - Whatever you did must have been good!"
-        
-        analyze_prompt = f"{level_complete}\n\n{self.ANALYZE_INSTRUCT.format(memory_limit=self.memory_word_limit)}\n\n{self._get_memory_with_actions()}"
-        
+
+        analyze_instruct = self.prompt_manager.render(
+            PromptName.ANALYZE_INSTRUCT,
+            {"memory_limit": self.memory_word_limit},
+        )
+        analyze_prompt = f"{level_complete}\n\n{analyze_instruct}\n\n{self._get_memory_with_actions()}"
+
         if self._model_supports_vision and self._use_vision:
             # For multimodal providers, use images
             all_imgs = [
@@ -450,7 +412,7 @@ class MultimodalAgent:
                 *current_frame_images,
                 image_diff(self._previous_images[-1], current_frame_images[-1]),
             ]
-            
+
             # Build message with images
             msg_parts = [
                 make_image_block(image_to_base64(img))
@@ -459,23 +421,23 @@ class MultimodalAgent:
         else:
             # For text-only providers, use text matrices
             msg_parts = []
-            
+
             # Previous frame
             msg_parts.append({
                 "type": "text",
                 "text": f"Frame 0 (before action):\n{grid_to_text_matrix(self._previous_grids[-1])}"
             })
-            
+
             # Current frames
             for i, grid in enumerate(current_frame_grids):
                 msg_parts.append({
                     "type": "text",
                     "text": f"Frame {i+1} (after action):\n{grid_to_text_matrix(grid)}"
                 })
-            
+
             # Add the prompt
             msg_parts.append({"type": "text", "text": analyze_prompt})
-        
+
         messages = [
             {"role": "system", "content": self._get_system_prompt()},
             {
@@ -491,13 +453,13 @@ class MultimodalAgent:
                 "content": msg_parts,
             },
         ]
-        
+
         response = self.provider.call_provider(messages)
-        
+
         # Track costs - handle different response formats
         prompt_tokens, completion_tokens, reasoning_tokens = self.provider.extract_usage(response)
         self._update_costs(prompt_tokens, completion_tokens, reasoning_tokens)
-        
+
         # Extract analysis and update memory
         analysis_message = self.provider.extract_content(response)
         logger.info(f"Analysis: {analysis_message[:200]}...")
@@ -514,19 +476,28 @@ class MultimodalAgent:
             if final_word_count != word_count:
                 logger.info(f"Memory after enforcement ({final_word_count} words):\n{self._get_memory_with_actions()}")
         return analysis
-    
-    def _choose_human_action(
+
+    def decide_human_action_step(
         self,
-        frame_images: List[Image.Image],
-        frame_grids: List[List[List[int]]],
-        analysis: str
+        frame_images: FrameImageSequence,
+        frame_grids: FrameGridSequence,
+        analysis: str,
     ) -> Dict[str, Any]:
-        """Choose the next human-level action"""
+        """
+        Substep: Decide the next human-level action given frames and analysis.
+
+        Default implementation:
+          - Builds a prompt using the current analysis and memory.
+          - Calls the provider to get a JSON `human_action` description.
+
+        Override this to change how the agent chooses high-level actions.
+        """
+        action_instruct = self.prompt_manager.render(PromptName.ACTION_INSTRUCT)
         if len(analysis) > 20:
-            self._previous_prompt = f"{analysis}\n\n{self._get_memory_with_actions()}\n\n{self.ACTION_INSTRUCT}"
+            self._previous_prompt = f"{analysis}\n\n{self._get_memory_with_actions()}\n\n{action_instruct}"
         else:
-            self._previous_prompt = f"{self._get_memory_with_actions()}\n\n{self.ACTION_INSTRUCT}"
-        
+            self._previous_prompt = f"{self._get_memory_with_actions()}\n\n{action_instruct}"
+
         if self._model_supports_vision and self._use_vision:
             # For multimodal providers, use images
             content = [
@@ -541,7 +512,7 @@ class MultimodalAgent:
                     "text": f"Frame {i}:\n{grid_to_text_matrix(grid)}"
                 })
         content.append({"type": "text", "text": self._previous_prompt})
-        
+
         messages = [
             {"role": "system", "content": self._get_system_prompt()},
             {
@@ -549,17 +520,17 @@ class MultimodalAgent:
                 "content": content,
             },
         ]
-        
+
         response = self.provider.call_provider(messages)
-        
+
         # Track costs
         prompt_tokens, completion_tokens, reasoning_tokens = self.provider.extract_usage(response)
         self._update_costs(prompt_tokens, completion_tokens, reasoning_tokens)
-        
+
         action_message = self.provider.extract_content(response)
 
         logger.info(f"Human action: {action_message[:200]}...")
-        
+
         try:
             return extract_json_from_response(action_message)
         except ValueError as e:
@@ -567,11 +538,83 @@ class MultimodalAgent:
             logger.debug(f"Full response: {action_message}")
             # Re-raise to be caught by game loop
             raise
+
+    def convert_human_to_game_action_step(
+        self,
+        human_action: str,
+        last_frame_image: Image.Image,
+        last_frame_grid: FrameGrid,
+    ) -> Dict[str, Any]:
+        """
+        Substep: Convert a natural-language human action into a concrete
+        game action dictionary suitable for execution.
+
+        Default implementation:
+          - Builds a prompt that lists available actions and the desired action.
+          - Calls the provider to obtain a concrete game action JSON.
+
+        This is the most common substep to override when mapping decisions into
+        different action spaces.
+        """
+        # Format available actions for the prompt
+        available_actions_text = "\n".join(
+            [
+                f"{HUMAN_ACTIONS_LIST[int(a) - 1]} = {HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[int(a) - 1]]}"
+                for a in self._available_actions
+            ]
+        )
+        find_action_instruct = self.prompt_manager.render(
+            PromptName.FIND_ACTION_INSTRUCT,
+            {"action_list": available_actions_text},
+        )
+
+        content = []
+        if self._model_supports_vision and self._use_vision:
+            # For multimodal providers, use image
+            content.append(
+                make_image_block(image_to_base64(last_frame_image)),
+            )
+        else:
+            # For text-only providers, use text matrix
+            content.append(
+                {
+                    "type": "text",
+                    "text": f"Current frame:\n{grid_to_text_matrix(last_frame_grid)}"
+                },
+            )
+        content.append({
+            "type": "text",
+            "text": human_action + "\n\n" + find_action_instruct,
+        })
+
+        messages = [
+            {"role": "system", "content": self._get_system_prompt()},
+            {
+                "role": "user",
+                "content": content,
+            },
+        ]
+
+        response = self.provider.call_provider(messages)
+
+        # Track costs
+        prompt_tokens, completion_tokens, reasoning_tokens = self.provider.extract_usage(response)
+        self._update_costs(prompt_tokens, completion_tokens, reasoning_tokens)
+
+        action_message = self.provider.extract_content(response)
+        logger.info(f"Game action: {action_message[:200]}...")
+
+        try:
+            return extract_json_from_response(action_message)
+        except ValueError as e:
+            logger.error(f"Failed to extract JSON from game action response: {e}")
+            logger.debug(f"Full response: {action_message}")
+            raise
     
     def step(
         self,
-        frame_images: List[Image.Image],
-        frame_grids: List[List[List[int]]],
+        frame_images: FrameImageSequence,
+        frame_grids: FrameGridSequence,
         current_score: int
     ) -> Dict[str, Any]:
         """
@@ -586,17 +629,23 @@ class MultimodalAgent:
             Game action dictionary ready for execution
         """
         # 1. Analyze previous action results
-        analysis = self._analyze_previous_action(frame_images, frame_grids, current_score)
+        analysis = self.analyze_outcome_step(
+            frame_images, frame_grids, current_score
+        )
         
         # 2. Decide on next human action
-        human_action_dict = self._choose_human_action(frame_images, frame_grids, analysis)
+        human_action_dict = self.decide_human_action_step(
+            frame_images, frame_grids, analysis
+        )
         human_action = human_action_dict.get("human_action")
         
         if not human_action:
             raise ValueError("No human_action in response")
             
         # 3. Convert to game action
-        game_action_dict = self._convert_to_game_action(human_action, frame_images[-1], frame_grids[-1])
+        game_action_dict = self.convert_human_to_game_action_step(
+            human_action, frame_images[-1], frame_grids[-1]
+        )
         
         # Merge reasoning from human action into game action for tracking
         game_action_dict["human_action_dict"] = human_action_dict
@@ -608,14 +657,20 @@ class MultimodalAgent:
         self,
         human_action: str,
         last_frame_image: Image.Image,
-        last_frame_grid: List[List[int]]
+        last_frame_grid: FrameGrid,
     ) -> Dict[str, Any]:
         """Convert human action description to game action"""
         # Format available actions for the prompt
-        available_actions_text = "\n".join([
-            f"{HUMAN_ACTIONS_LIST[int(a) - 1]} = {HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[int(a) - 1]]}" 
-            for a in self._available_actions
-        ])
+        available_actions_text = "\n".join(
+            [
+                f"{HUMAN_ACTIONS_LIST[int(a) - 1]} = {HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[int(a) - 1]]}"
+                for a in self._available_actions
+            ]
+        )
+        find_action_instruct = self.prompt_manager.render(
+            PromptName.FIND_ACTION_INSTRUCT,
+            {"action_list": available_actions_text},
+        )
         
         content = []
         if self._model_supports_vision and self._use_vision:
@@ -633,7 +688,7 @@ class MultimodalAgent:
             )
         content.append({
             "type": "text",
-            "text": human_action + "\n\n" + self.FIND_ACTION_INSTRUCT.replace("{{action_list}}", available_actions_text),
+            "text": human_action + "\n\n" + find_action_instruct,
         })
         
         messages = [

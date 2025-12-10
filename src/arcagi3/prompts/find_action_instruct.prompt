@@ -1,0 +1,11 @@
+Instruct: Given the provided image and the desired action above decide what to do base on the following information:                      
+{{action_list}}
+
+```json
+{
+    "action": "ACTION1",
+    "x": 0,
+    "y": 0
+}
+```
+Respond with the JSON, nothing else.

@@ -100,6 +100,7 @@ def main_cli(cli_args: Optional[list] = None):
         checkpoint_frequency=args.checkpoint_frequency,
         close_on_exit=args.close_on_exit,
         use_vision=args.use_vision,
+        submit_scorecard=not getattr(args, "no_scorecard_submission", False),
     )
 
 

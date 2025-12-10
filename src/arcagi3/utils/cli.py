@@ -102,6 +102,11 @@ def configure_args(parser):
         action="store_true",
         help="Close scorecard on exit even if game not won (prevents checkpoint resume)"
     )
+    parser.add_argument(
+        "--no-scorecard-submission",
+        action="store_true",
+        help="Do not open or close scorecards on the ARC server; run in local-only mode when no existing card_id is provided."
+    )
 
 def configure_cli_args(parser):
     # Game selection (mutually exclusive)
@@ -360,6 +365,7 @@ def _run_single_game(
     game_index: int,
     total_games: int,
     log_dir: Optional[Path] = None,
+    submit_scorecard: bool = True,
 ) -> Tuple[str, Optional[GameResult], Optional[Exception]]:
     """
     Run a single game and return the result.
@@ -407,6 +413,7 @@ def _run_single_game(
             checkpoint_frequency=checkpoint_frequency,
             close_on_exit=close_on_exit,
             use_vision=use_vision,
+            submit_scorecard=submit_scorecard,
         )
         
         try:
@@ -449,6 +456,7 @@ def run_batch_games(
     checkpoint_frequency: int = 1,
     close_on_exit: bool = False,
     use_vision: bool = True,
+    submit_scorecard: bool = True,
 ):
     """
     Run multiple games concurrently in parallel.
@@ -503,6 +511,7 @@ def run_batch_games(
                 i + 1,
                 len(game_ids),
                 log_dir,
+                submit_scorecard,
             ): game_id
             for i, game_id in enumerate(game_ids)
         }

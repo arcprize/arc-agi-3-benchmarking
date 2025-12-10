@@ -1,0 +1,13 @@
+Given the frames and the provided game information above, provide your desired action as if you were a human playing the game describing your next action to an LLM which will figure out how to perform it.
+                             
+```json
+{
+    "human_action": "Click on the red square near the bottom left corner",
+    "reasoning": "...",
+    "expected_result": "..."                             
+}
+```
+                    
+These are going to be multistep games, but only concern yourself with the next action.  You should favor moves/actions before trying to click on objects, only start clicking once you're sure movement/actions do nothing.
+             
+Only response with the JSON, nothing else.

@@ -7,7 +7,7 @@ from arcagi3.agent import MultimodalAgent
 from arcagi3.checkpoint import CheckpointManager
 from arcagi3.schemas import GameResult
 from arcagi3.utils import save_result
-from arcagi3.utils import load_hints, find_hints_file
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ class ARC3Tester:
         checkpoint_frequency: int = 1,
         close_on_exit: bool = False,
         memory_word_limit: Optional[int] = None,
+        submit_scorecard: bool = True,
     ):
         """
         Initialize the tester.
@@ -57,6 +58,7 @@ class ARC3Tester:
         self.use_vision = use_vision
         self.checkpoint_frequency = checkpoint_frequency
         self.close_on_exit = close_on_exit
+        self.submit_scorecard = submit_scorecard
         
         # Determine memory limit: CLI > Config > Default (500)
         if memory_word_limit is not None:
@@ -108,21 +110,45 @@ class ARC3Tester:
                 logger.info(f"Verified existing scorecard: {card_id}")
             except Exception as e:
                 logger.warning(f"Scorecard {card_id} no longer exists on server: {e}")
-                logger.info("Opening new scorecard for checkpoint recovery...")
-                # Open a new scorecard with the same card_id (API will reject, so we get a new one)
-                tags = generate_scorecard_tags(self.model_config)
-                scorecard_response = self.game_client.open_scorecard([game_id], card_id=None, tags=tags)
-                old_card_id = card_id
-                card_id = scorecard_response.get("card_id", card_id)
-                logger.info(f"Created new scorecard: {card_id} (old: {old_card_id})")
-                logger.info(f"Checkpoint will continue using original card_id: {checkpoint_card_id}")
-                # Note: We keep resume_from_checkpoint=True to restore agent state,
-                # but the game will need to reset since the old session is gone
+                if self.submit_scorecard:
+                    logger.info("Opening new scorecard for checkpoint recovery...")
+                    # Open a new scorecard with the same card_id (API will reject, so we get a new one)
+                    tags = generate_scorecard_tags(self.model_config)
+                    scorecard_response = self.game_client.open_scorecard(
+                        [game_id], card_id=None, tags=tags
+                    )
+                    old_card_id = card_id
+                    card_id = scorecard_response.get("card_id", card_id)
+                    logger.info(f"Created new scorecard: {card_id} (old: {old_card_id})")
+                    logger.info(
+                        f"Checkpoint will continue using original card_id: {checkpoint_card_id}"
+                    )
+                    # Note: We keep resume_from_checkpoint=True to restore agent state,
+                    # but the game will need to reset since the old session is gone
+                else:
+                    logger.info(
+                        "submit_scorecard is disabled; continuing without creating a new "
+                        "scorecard on the server."
+                    )
         else:
-            # Generate tags from model config for scorecard tracking
-            tags = generate_scorecard_tags(self.model_config)
-            scorecard_response = self.game_client.open_scorecard([game_id], card_id=card_id, tags=tags)
-            card_id = scorecard_response.get("card_id", card_id)
+            # Decide whether to open a real scorecard or run in local-only mode.
+            local_only = not self.submit_scorecard and not card_id
+
+            if local_only:
+                # Generate a local-only card_id used purely for checkpointing and
+                # game commands. No scorecard is explicitly opened or closed.
+                if not card_id:
+                    card_id = f"local-{uuid.uuid4()}"
+                logger.info(
+                    f"Running in local-only mode without opening a scorecard (card_id={card_id})"
+                )
+            else:
+                # Generate tags from model config for scorecard tracking
+                tags = generate_scorecard_tags(self.model_config)
+                scorecard_response = self.game_client.open_scorecard(
+                    [game_id], card_id=card_id, tags=tags
+                )
+                card_id = scorecard_response.get("card_id", card_id)
         
         
         try:
@@ -166,18 +192,26 @@ class ARC3Tester:
             # Determine the actual checkpoint card_id for logging
             actual_checkpoint_id = checkpoint_card_id if checkpoint_card_id else card_id
 
-            # Only close scorecard on WIN (checkpoint is deleted anyway)
-            # or if user explicitly requested close_on_exit
-            # Otherwise, keep scorecard open for checkpoint resume
-            if result.final_state == "WIN" or self.close_on_exit:
-                try:
-                    self.game_client.close_scorecard(card_id)
-                    logger.info(f"Closed scorecard {card_id}")
-                except Exception as e:
-                    logger.debug(f"Could not close scorecard: {e}")
+            # Determine whether we should close the scorecard. When no card_id
+            # existed initially and submit_scorecard is False, we never opened a
+            # scorecard, so there is nothing to close.
+            if self.submit_scorecard or checkpoint_card_id or not card_id.startswith("local-"):
+                if result.final_state == "WIN" or self.close_on_exit:
+                    try:
+                        self.game_client.close_scorecard(card_id)
+                        logger.info(f"Closed scorecard {card_id}")
+                    except Exception as e:
+                        logger.debug(f"Could not close scorecard: {e}")
+                else:
+                    logger.info(
+                        f"Scorecard {card_id} left open for potential checkpoint resume"
+                    )
+                    logger.info(f"Checkpoint saved at: .checkpoint/{actual_checkpoint_id}")
             else:
-                logger.info(f"Scorecard {card_id} left open for potential checkpoint resume")
-                logger.info(f"Checkpoint saved at: .checkpoint/{actual_checkpoint_id}")
+                logger.info(
+                    f"Local-only run completed; no scorecard was opened. "
+                    f"Checkpoint (if any) is under .checkpoint/{actual_checkpoint_id}"
+                )
 
             return result
 
