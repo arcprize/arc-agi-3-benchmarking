@@ -357,12 +357,14 @@ class MultimodalAgent:
         try:
             # Extract action number from ACTION1, ACTION2, etc.
             action_num = action_name.replace("ACTION", "")
-            is_valid = action_num in self._available_actions
+            # Normalize available actions to string numbers for comparison
+            normalized_available = {str(a) for a in self._available_actions}
+            is_valid = action_num in normalized_available
             
             if not is_valid:
                 logger.warning(
                     f"Action {action_name} (number {action_num}) not in available actions: "
-                    f"{self._available_actions}"
+                    f"{sorted(normalized_available)}"
                 )
             
             return is_valid
@@ -554,14 +556,16 @@ class MultimodalAgent:
         """Choose the next human-level action"""
         # Format available actions for the prompt (with fallback)
         if self._available_actions:
+            # Normalize action indices to integers (handles "6" and 6)
+            indices = [int(str(a)) for a in self._available_actions]
             available_actions_list = "\n".join([
-                f"  • {HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[int(a) - 1]]}" 
-                for a in self._available_actions
+                f"  • {HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[i - 1]]}"
+                for i in indices
             ])
             # Get action descriptions for examples
             action_descriptions = [
-                HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[int(a) - 1]] 
-                for a in self._available_actions
+                HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[i - 1]]
+                for i in indices
             ]
         else:
             # Fallback to all actions (shouldn't happen)
@@ -670,13 +674,20 @@ class MultimodalAgent:
     ) -> Dict[str, Any]:
         """Convert human action description to game action"""
         # Format available actions for the prompt
-        available_actions_text = "\n".join([
-            f"{HUMAN_ACTIONS_LIST[int(a) - 1]} = {HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[int(a) - 1]]}" 
-            for a in self._available_actions
-        ])
-        
-        # Format valid action names for the prompt
-        valid_actions = ", ".join([HUMAN_ACTIONS_LIST[int(a) - 1] for a in self._available_actions])
+        if self._available_actions:
+            indices = [int(str(a)) for a in self._available_actions]
+            available_actions_text = "\n".join([
+                f"{HUMAN_ACTIONS_LIST[i - 1]} = {HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[i - 1]]}"
+                for i in indices
+            ])
+            # Format valid action names for the prompt
+            valid_actions = ", ".join([HUMAN_ACTIONS_LIST[i - 1] for i in indices])
+        else:
+            # Fallback to all actions
+            available_actions_text = "\n".join([
+                f"{name} = {desc}" for name, desc in HUMAN_ACTIONS.items()
+            ])
+            valid_actions = ", ".join(HUMAN_ACTIONS_LIST)
         
         # Inject both action_list and valid_actions into the prompt
         prompt_text = self.FIND_ACTION_INSTRUCT.replace("{{action_list}}", available_actions_text)
@@ -722,13 +733,18 @@ class MultimodalAgent:
             result = extract_json_from_response(action_message)
             action_name = result.get("action")
             
-            # Validate action
-            if not self._validate_action(action_name):
+            # Validate action. If invalid, log but do NOT abort the run – let the
+            # game environment handle invalid actions to avoid immediately killing
+            # plays (especially when resuming from older checkpoints).
+            if self._available_actions and not self._validate_action(action_name):
+                # Log which actions we *thought* were available, for debugging.
+                indices = [int(str(a)) for a in self._available_actions]
+                available_names = [HUMAN_ACTIONS_LIST[i - 1] for i in indices]
                 logger.error(
                     f"Invalid action generated: {action_name}. "
-                    f"Available actions: {[HUMAN_ACTIONS_LIST[int(a) - 1] for a in self._available_actions]}"
+                    f"Available actions (normalized): {available_names}"
                 )
-                raise ValueError(f"Invalid action: {action_name} not in available actions")
+                # Keep returning the model's result so the backend can respond.
             
             return result
         except ValueError as e:
