@@ -1,11 +1,10 @@
 """
 Retry utilities with exponential backoff for API calls.
 """
-import time
 import logging
-from typing import Callable, Any, Type, Tuple, Optional
+import time
 from functools import wraps
-
+from typing import Any, Callable, Tuple, Type
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +96,8 @@ def retry_on_rate_limit(
         pass
     
     try:
-        from google.api_core.exceptions import ResourceExhausted as GoogleRateLimitError
+        from google.api_core.exceptions import \
+            ResourceExhausted as GoogleRateLimitError
         rate_limit_exceptions.append(GoogleRateLimitError)
     except ImportError:
         pass

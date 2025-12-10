@@ -1,17 +1,19 @@
 import abc
-
-from arcagi3.utils.retry import retry_with_exponential_backoff
-from .provider import ProviderAdapter
-from dotenv import load_dotenv
-from openai.types.chat import ChatCompletion, ChatCompletionMessage
-from openai.types.chat.chat_completion import Choice as OpenAIChoice
-from openai.types import CompletionUsage
-from arcagi3.schemas import APIType, Cost, Attempt, StreamResponse, Usage, CompletionTokensDetails
-from arcagi3.errors import TokenMismatchError
-from typing import Optional, Any, List, Dict
-from time import sleep
 import logging
 import time
+from time import sleep
+from typing import Any, Dict, List, Optional
+
+from dotenv import load_dotenv
+from openai.types import CompletionUsage
+from openai.types.chat import ChatCompletion, ChatCompletionMessage
+from openai.types.chat.chat_completion import Choice as OpenAIChoice
+
+from arcagi3.schemas import (APIType, Attempt, CompletionTokensDetails, Cost,
+                             StreamResponse, Usage)
+from arcagi3.utils.retry import retry_with_exponential_backoff
+
+from .provider import ProviderAdapter
 
 load_dotenv()
 
@@ -450,7 +452,7 @@ class OpenAIBaseAdapter(ProviderAdapter, abc.ABC):
 
         # Final Sanity Check: Compare computed total against provider's total (if provider gave one)
         if tt_raw and computed_total != tt_raw:
-            from arcagi3.errors import TokenMismatchError # Local import
+            from arcagi3.errors import TokenMismatchError  # Local import
             raise TokenMismatchError(
                 f"Token count mismatch: API reports total {tt_raw}, "
                 f"but computed P:{prompt_tokens_for_cost} + C:{completion_tokens_for_cost} + R:{reasoning_tokens_for_cost} = {computed_total}"

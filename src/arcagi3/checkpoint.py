@@ -5,14 +5,14 @@ This allows for resuming runs after crashes or interruptions.
 """
 import json
 import logging
-import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
 from PIL import Image
 
-from .schemas import GameActionRecord, Cost, Usage, CompletionTokensDetails
+from .schemas import CompletionTokensDetails, Cost, GameActionRecord, Usage
 
 logger = logging.getLogger(__name__)
 

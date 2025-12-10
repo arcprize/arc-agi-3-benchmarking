@@ -1,10 +1,12 @@
-import os
-from arcagi3.schemas import ModelConfig, GameResult
-from typing import Optional, Dict, List, Any
 import json
-import yaml
+import os
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
+
+from arcagi3.schemas import GameResult, ModelConfig
 
 
 def find_hints_file() -> Optional[str]:

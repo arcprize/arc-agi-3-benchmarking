@@ -3,15 +3,13 @@ ARC-AGI-3 Game Client for API communication.
 
 Based on https://docs.arcprize.org/api-reference/
 """
-import json
 import logging
 import os
-from typing import Dict, Any, List, Optional
-import requests
-from requests import Response, Session
+from typing import Any, Dict, List, Optional
+
+from requests import Session
 
 from .utils.retry import retry_with_exponential_backoff
-
 
 logger = logging.getLogger(__name__)
 

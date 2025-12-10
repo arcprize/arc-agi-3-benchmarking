@@ -1,17 +1,20 @@
-from arcagi3.utils.retry import retry_with_exponential_backoff
-from .provider import ProviderAdapter
-import os
 import base64
-from dotenv import load_dotenv
 import json
+import logging
+import os
+from datetime import datetime, timezone
+from typing import List, Optional
 
+from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from typing import List, Optional
-from datetime import datetime, timezone
-from arcagi3.schemas import ARCTaskOutput, AttemptMetadata, Choice, Message, StreamResponse, Usage, Cost, CompletionTokensDetails, Attempt
-import logging
+from arcagi3.schemas import (Attempt, AttemptMetadata, Choice,
+                             CompletionTokensDetails, Cost, Message,
+                             StreamResponse, Usage)
+from arcagi3.utils.retry import retry_with_exponential_backoff
+
+from .provider import ProviderAdapter
 
 load_dotenv()
 logger = logging.getLogger(__name__)

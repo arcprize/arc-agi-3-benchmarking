@@ -1,13 +1,14 @@
-from .provider import ProviderAdapter
-import os
-from dotenv import load_dotenv
 import json
-from openai import OpenAI
-from datetime import datetime, timezone
-from arcagi3.schemas import APIType, AttemptMetadata, Choice, Message, Usage, Cost, CompletionTokensDetails, Attempt
 import logging
-from typing import Optional, Any, List, Dict
-import re
+import os
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from dotenv import load_dotenv
+from openai import OpenAI
+
+from arcagi3.schemas import (APIType, Attempt, AttemptMetadata, Choice,
+                             Message)
 
 # Import the base class
 from .openai_base import OpenAIBaseAdapter

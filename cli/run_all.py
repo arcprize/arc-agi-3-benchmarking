@@ -1,14 +1,14 @@
 """Parallel execution orchestrator for ARC-AGI-3 benchmarking."""
+import argparse
 import asyncio
+import json
+import logging
 import os
 import sys
-import argparse
-import time
-import logging
-import json
 import tempfile
-from typing import List, Tuple, Dict, Any, Optional
+import time
 from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 src_dir = os.path.join(project_root, 'src')
@@ -17,15 +17,11 @@ if project_root not in sys.path:
 if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 
+from arcagi3.utils import (AsyncRequestRateLimiter, generate_execution_map,
+                           generate_summary, read_models_config,
+                           read_provider_rate_limits,
+                           save_result_in_timestamped_structure)
 from main import ARC3Tester
-from arcagi3.utils import (
-    read_models_config,
-    read_provider_rate_limits,
-    save_result_in_timestamped_structure,
-    generate_execution_map,
-    generate_summary,
-    AsyncRequestRateLimiter,
-)
 
 logger = logging.getLogger(__name__)
 

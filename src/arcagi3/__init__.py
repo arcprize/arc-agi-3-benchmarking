@@ -1,21 +1,10 @@
 """ARC-AGI-3 Benchmarking Framework"""
 
-from .schemas import (
-    # ARC-AGI-3 Game Schemas
-    GameAction,
-    GameState,
-    GameResult,
-    # Provider Schemas
-    Cost,
-    Usage,
-    ModelConfig,
-    Attempt,
-    # Adapter compatibility schemas
-    ARCTaskOutput,
-    ARCPair,
-)
 from .agent import MultimodalAgent
 from .game_client import GameClient
+from .schemas import (  # ARC-AGI-3 Game Schemas; Provider Schemas; Adapter compatibility schemas
+    ARCPair, ARCTaskOutput, Attempt, Cost, GameAction, GameResult, GameState,
+    ModelConfig, Usage)
 
 __version__ = "0.1.0"
 

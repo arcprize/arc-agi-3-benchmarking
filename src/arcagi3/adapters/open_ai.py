@@ -1,17 +1,18 @@
-import logging
-
-from arcagi3.utils.retry import retry_with_exponential_backoff
-from .provider import ProviderAdapter
-from .openai_base import OpenAIBaseAdapter
-import os
-from dotenv import load_dotenv
 import json
-from openai import OpenAI
-from datetime import datetime, timezone
-from arcagi3.schemas import APIType, AttemptMetadata, Choice, Message, StreamResponse, Usage, Cost, CompletionTokensDetails, Attempt
-from typing import Optional, Any, List, Dict
-
+import logging
+import os
 import re
+from datetime import datetime, timezone
+from typing import Optional
+
+from dotenv import load_dotenv
+from openai import OpenAI
+
+from arcagi3.schemas import (Attempt, AttemptMetadata, Choice,
+                             Message)
+from arcagi3.utils.retry import retry_with_exponential_backoff
+
+from .openai_base import OpenAIBaseAdapter
 
 load_dotenv()
 

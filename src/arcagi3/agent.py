@@ -4,32 +4,26 @@ Multimodal Agent for playing ARC-AGI-3 games.
 Adapted from the original multimodal agent to use provider adapters.
 """
 import json
-import os
 import logging
 import time
-from textwrap import dedent
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 
 from PIL import Image
 from .adapters import create_provider
 from .game_client import GameClient
-from .utils.image import grid_to_image, image_to_base64, make_image_block, image_diff, display_image_in_terminal
+from .utils.image import grid_to_image, image_to_base64, make_image_block, image_diff
 from .prompts import PromptManager, PromptName, PromptSource
 from .schemas import (
-    GameAction,
-    GameState,
     GameResult,
     GameActionRecord,
     ActionData,
     Cost,
     Usage,
-    CompletionTokensDetails,
-    StreamResponse
+    CompletionTokensDetails
 )
-from .utils.retry import retry_with_exponential_backoff
 from .utils import load_hints, find_hints_file
-from .utils.formatting import get_human_inputs_text, grid_to_text_matrix
+from .utils.formatting import grid_to_text_matrix
 from .utils.parsing import extract_json_from_response
 from .checkpoint import CheckpointManager
 

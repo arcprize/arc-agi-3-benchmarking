@@ -1,14 +1,16 @@
-from .provider import ProviderAdapter
-import os
-from dotenv import load_dotenv
 import json
-from openai import OpenAI
-from datetime import datetime, timezone
-from arcagi3.schemas import ARCTaskOutput, AttemptMetadata, Choice, Message, Usage, Cost, CompletionTokensDetails, Attempt
 import logging
-from typing import Optional, Any, List, Dict
+import os
+from datetime import datetime, timezone
+from typing import Optional
+
+from dotenv import load_dotenv
+from openai import OpenAI
+
+from arcagi3.schemas import (Attempt, AttemptMetadata, Choice,
+                             Message)
+
 from .openai_base import OpenAIBaseAdapter
-import re
 
 load_dotenv()
 logger = logging.getLogger(__name__)

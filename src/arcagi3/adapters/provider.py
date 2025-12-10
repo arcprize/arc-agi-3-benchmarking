@@ -1,7 +1,9 @@
 import abc
-from typing import List, Dict, Any, Optional, Set
+from typing import Any, Dict, List, Optional, Set
+
 from arcagi3.schemas import Attempt, ModelConfig
 from arcagi3.utils.task_utils import read_models_config
+
 
 class ProviderAdapter(abc.ABC):
     """

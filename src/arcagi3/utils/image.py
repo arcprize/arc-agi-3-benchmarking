@@ -6,9 +6,9 @@ Handles conversion of grid data to images and visual diff generation.
 import base64
 import io
 from typing import List, Sequence, Tuple
+
 import numpy as np
 from PIL import Image
-
 
 # 16-color palette (RGBA format)
 _PALETTE: List[Tuple[int, int, int, int]] = [

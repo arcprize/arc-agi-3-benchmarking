@@ -2,7 +2,8 @@
 Utility functions for formatting text and grids.
 """
 import json
-from typing import List, Dict
+from typing import Dict, List
+
 
 def get_human_inputs_text(available_actions: List[str], human_actions_map: Dict[str, str]) -> str:
     """
