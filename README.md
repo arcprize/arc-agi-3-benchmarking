@@ -293,6 +293,172 @@ client.close_scorecard(card_id)
 
 All main CLI options also available.
 
+### Multi-Run Orchestrator (`multimain.py`)
+
+The multi-run orchestrator lets you sweep over models, games, and key agent parameters, running up to **Y agents concurrently** and resuming from checkpoints using a **run manifest YAML**.
+
+#### Key Features
+
+- **Sweepable dimensions** (any can be a single value or a list; all lists are combinatorially combined):
+  - `configs` (model configs from `models.yml`)
+  - `games` (game IDs)
+  - `max_actions`
+  - `num_plays`
+  - `memory_limits` (maps to `memory_word_limit`)
+  - `checkpoint_frequencies`
+  - `use_vision` (True/False)
+- **Sweep repetitions**:
+  - `--sweep-repeats N` or YAML `sweep_repeats: N` runs the **entire sweep N times**, even if there is only a single unique combination. This is useful for building a corpus of repeated trials.
+- **Run-level options** (normally single-valued, but override-able):
+  - `save_results_dir`, `overwrite_results`
+  - `retry_attempts`, `retries`
+  - `show_images`
+  - `close_on_exit`
+  - `no_scorecard_submission`
+  - logging options (`log_level`, `verbose`)
+- **Concurrency**: run up to `--max-concurrent` agents at once (default: 5)
+- **Resumable runs**: manifest YAML tracks all jobs, states, and checkpoint IDs so you can resume unfinished jobs later
+- **Checkpoint safety**: only checkpoints explicitly referenced in the manifest are considered part of a multi-run; unrelated checkpoints are left untouched
+
+#### Basic CLI Usage
+
+Sweep over 2 models × 3 games with up to 5 concurrent agents:
+
+```bash
+python multimain.py \
+  --configs gpt-4o-2024-11-20 claude-sonnet-4-5-20250929 \
+  --games ls20-fa137e247ce6 ft09-16726c5b26ff ls20-016295f7601e \
+  --max-actions 40 \
+  --num-plays 1 3 \
+  --max-concurrent 5
+```
+
+This:
+- Generates all combinations of `configs × games × max_actions × num_plays` (with defaults for unspecified dimensions)
+- Writes a manifest YAML at `results/multirun/multirun_<timestamp>.yml` (unless `--manifest-path` is provided)
+- Saves results JSONs under `results/multirun/<run_name>/` (unless `--save-results-dir` is provided)
+
+You can preview the jobs without running them using `--dry-run`:
+
+```bash
+python multimain.py \
+  --configs gpt-4o-2024-11-20 \
+  --games ls20-fa137e247ce6 ft09-16726c5b26ff \
+  --max-actions 40 80 \
+  --dry-run
+```
+
+#### YAML Sweep Config
+
+You can also define sweeps in a YAML file and then override any setting via CLI. When **CLI args and YAML disagree, CLI wins**.
+
+Example `experiments/multirun_example.yml`:
+
+```yaml
+run_name: my_model_sweep
+
+configs:
+  - gpt-4o-2024-11-20
+  - claude-sonnet-4-5-20250929
+
+games:
+  - ls20-fa137e247ce6
+  - ft09-16726c5b26ff
+  - ls20-016295f7601e
+
+max_actions: [40]
+num_plays: [1, 3]
+memory_limits: [500, 1000]
+checkpoint_frequencies: [1]
+use_vision: [true]
+
+save_results_dir: "results/multirun/my_model_sweep"
+max_concurrent: 5
+sweep_repeats: 3
+overwrite_results: false
+retry_attempts: 3
+retries: 3
+show_images: false
+close_on_exit: false
+no_scorecard_submission: false
+log_level: "INFO"
+verbose: false
+```
+
+Run it with:
+
+```bash
+python multimain.py \
+  --yaml-config experiments/multirun_example.yml \
+  --max-concurrent 8   # CLI override; takes precedence over YAML
+```
+
+#### Run Manifest & Resume Behavior
+
+Each multi-run creates (or reuses) a **manifest YAML** which tracks:
+
+- `version`, `run_id`, `run_name`, `created_at`, `max_concurrent`
+- A snapshot of the sweep definition and run options used
+- A `jobs` list, where each job has:
+  - `job_id`
+  - `config`, `game_id`, `max_actions`, `num_plays`, `memory_limit`, `checkpoint_frequency`, `use_vision`
+  - `status`: `pending`, `running`, `completed`, `failed`, or `removed`
+  - `created_at`, `started_at`, `ended_at`, `updated_at`
+  - `final_score`, `final_state`
+  - `scorecard_url`
+  - `result_file` (best-effort path to the JSON result, if `save_results_dir` is set)
+  - `checkpoint_id` (card_id used for checkpointing, if a `.checkpoint/<id>/` directory exists)
+  - `error` / `removed_reason` (when applicable)
+
+By default, the manifest is written to:
+
+- `results/multirun/<run_name>.yml`
+
+You can override this with `--manifest-path` on initial creation, or by passing an explicit file to `--resume-from` when resuming.
+
+##### Resuming a Multi-Run
+
+To resume an existing multi-run, point `multimain.py` at the manifest:
+
+```bash
+python multimain.py --resume-from results/multirun/my_model_sweep.yml
+```
+
+You can also resume implicitly by **reusing a run name**:
+
+- If you start a run with `--run-name my_model_sweep`, its manifest will be written to `results/multirun/my_model_sweep.yml`.
+- On a later invocation, if you run:
+
+  ```bash
+  python multimain.py --run-name my_model_sweep
+  ```
+
+  and that manifest already exists, `multimain.py` will automatically treat this as a resume of that run and log a message indicating that it is resuming.  
+  If you instead want a fresh run, either delete/rename the existing manifest file or choose a different `--run-name`.
+
+When `--run-name` is **omitted**, `multimain.py` generates a unique UUID-based name for the run and uses it for the manifest and default results directory.
+
+Resume rules:
+
+- Jobs with `status == completed` are skipped.
+- Jobs with a `checkpoint_id`:
+  - If `.checkpoint/<checkpoint_id>/metadata.json` exists:
+    - The job is scheduled with `resume_from_checkpoint=True`.
+  - If the checkpoint directory is missing:
+    - The job is marked `status: removed` with `removed_reason: checkpoint_missing` and is **not** scheduled (treated as not part of the run).
+- Jobs without `checkpoint_id` are scheduled as fresh runs.
+- Checkpoints that were not created by this multi-run (i.e., not referenced in the manifest) are never modified or inspected.
+
+You can also combine resume with `--dry-run` to inspect the manifest:
+
+```bash
+python multimain.py \
+  --resume-from results/multirun/my_model_sweep.yml \
+  --dry-run
+```
+
+This prints all jobs, their configs/games, current status, and any associated checkpoint IDs without running anything.
+
 ## Architecture
 
 ### High-Level Design
