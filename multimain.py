@@ -38,12 +38,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
+from dotenv import load_dotenv
 
 # Add src to path (same as main.py)
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.join(PROJECT_ROOT, "src")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
+
+load_dotenv()
 
 from arcagi3.arc3tester import ARC3Tester  # type: ignore  # noqa: E402
 from arcagi3.checkpoint import CheckpointManager  # type: ignore  # noqa: E402
