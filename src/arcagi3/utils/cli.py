@@ -20,87 +20,102 @@ _thread_local = threading.local()
 # CLI Arguments
 # ============================================================================
 
+def _bool_env(env_var: str, default: str = "false") -> bool:
+    """Helper to parse boolean environment variable."""
+    return os.getenv(env_var, default).lower() in ("true", "1", "yes")
+
+def _int_env(env_var: str, default: int) -> int:
+    """Helper to parse integer environment variable."""
+    val = os.getenv(env_var)
+    return int(val) if val else default
+
+def _str_env(env_var: str, default: str = None) -> str:
+    """Helper to parse string environment variable."""
+    return os.getenv(env_var, default)
+
 def configure_args(parser):
     # Configuration
     parser.add_argument(
         "--config",
         type=str,
-        help="Model configuration name from models.yml. Not required when using --checkpoint."
+        default=_str_env("CONFIG"),
+        help="Model configuration name from models.yml. Not required when using --checkpoint. Can be set via CONFIG env var."
     )
     parser.add_argument(
         "--save_results_dir",
         type=str,
-        default=None,
-        help="Directory to save results (default: results/<config>)"
+        default=_str_env("SAVE_RESULTS_DIR"),
+        help="Directory to save results (default: results/<config>). Can be set via SAVE_RESULTS_DIR env var."
     )
     parser.add_argument(
         "--overwrite_results",
         action="store_true",
-        help="Overwrite existing result files"
+        help="Overwrite existing result files. Can be set via OVERWRITE_RESULTS env var (true/1/yes)."
     )
     parser.add_argument(
         "--max_actions",
         type=int,
-        default=40,
-        help="Maximum actions per game (default: 40)"
+        default=_int_env("MAX_ACTIONS", 40),
+        help="Maximum actions per game (default: 40). Can be set via MAX_ACTIONS env var."
     )
     parser.add_argument(
         "--retry_attempts",
         type=int,
-        default=3,
-        help="Number of retry attempts for API failures (default: 3)"
+        default=_int_env("RETRY_ATTEMPTS", 3),
+        help="Number of retry attempts for API failures (default: 3). Can be set via RETRY_ATTEMPTS env var."
     )
     parser.add_argument(
         "--retries",
         type=int,
-        default=3,
-        help="Number of retry attempts for ARC-AGI-3 API calls (default: 3)"
+        default=_int_env("RETRIES", 3),
+        help="Number of retry attempts for ARC-AGI-3 API calls (default: 3). Can be set via RETRIES env var."
     )
     parser.add_argument(
         "--num_plays",
         type=int,
-        default=1,
-        help="Number of times to play the game (continues session with memory on subsequent plays) (default: 1)"
+        default=_int_env("NUM_PLAYS", 1),
+        help="Number of times to play the game (continues session with memory on subsequent plays) (default: 1). Can be set via NUM_PLAYS env var."
     )
 
     # Display
     parser.add_argument(
         "--show-images",
         action="store_true",
-        help="Display game frames in the terminal"
+        help="Display game frames in the terminal. Can be set via SHOW_IMAGES env var (true/1/yes)."
     )
     parser.add_argument(
         "--log-level",
         type=str,
-        default="INFO",
+        default=_str_env("LOG_LEVEL", "INFO"),
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Set the logging level (default: INFO)"
+        help="Set the logging level (default: INFO). Can be set via LOG_LEVEL env var."
     )
     parser.add_argument(
         "--verbose",
         action="store_true",
-        help="Enable verbose output (DEBUG level for app, WARNING for libraries)"
+        help="Enable verbose output (DEBUG level for app, WARNING for libraries). Can be set via VERBOSE env var (true/1/yes)."
     )
     parser.add_argument(
         "--memory-limit",
         type=int,
-        help="Maximum number of words allowed in memory scratchpad (overrides model config)"
+        default=int(os.getenv("MEMORY_LIMIT")) if os.getenv("MEMORY_LIMIT") else None,
+        help="Maximum number of words allowed in memory scratchpad (overrides model config). Can be set via MEMORY_LIMIT env var."
     )
     parser.add_argument(
         "--use_vision",
         action="store_true",
-        help="Use vision to play the game (default: True)"
+        help="Use vision to play the game (default: True). Can be set via USE_VISION env var (true/1/yes)."
     )
     parser.add_argument(
         "--checkpoint-frequency",
         type=int,
-        default=1,
-        help="Save checkpoint every N actions (default: 1, 0 to disable periodic checkpoints)"
+        default=_int_env("CHECKPOINT_FREQUENCY", 1),
+        help="Save checkpoint every N actions (default: 1, 0 to disable periodic checkpoints). Can be set via CHECKPOINT_FREQUENCY env var."
     )
     parser.add_argument(
         "--close-on-exit",
         action="store_true",
-        help="Close scorecard on exit even if game not won (prevents checkpoint resume)"
+        help="Close scorecard on exit even if game not won (prevents checkpoint resume). Can be set via CLOSE_ON_EXIT env var (true/1/yes)."
     )
 
 def configure_cli_args(parser):
@@ -129,29 +144,58 @@ def configure_main_args(parser):
         "--checkpoint",
         type=str,
         metavar="CARD_ID",
-        help="Resume from existing checkpoint using the specified scorecard ID"
+        default=_str_env("CHECKPOINT"),
+        help="Resume from existing checkpoint using the specified scorecard ID. Can be set via CHECKPOINT env var."
     )
     checkpoint_group.add_argument(
         "--list-checkpoints",
         action="store_true",
-        help="List all available checkpoints and exit"
+        help="List all available checkpoints and exit. Can be set via LIST_CHECKPOINTS env var (true/1/yes)."
     )
     checkpoint_group.add_argument(
         "--close-scorecard",
         type=str,
         metavar="CARD_ID",
-        help="Close a scorecard by ID and exit"
+        default=_str_env("CLOSE_SCORECARD"),
+        help="Close a scorecard by ID and exit. Can be set via CLOSE_SCORECARD env var."
     )
 
     parser.add_argument(
         "--game_id",
         type=str,
-        help="Game ID to play (e.g., 'ls20-016295f7601e'). Not required when using --checkpoint."
+        default=_str_env("GAME_ID"),
+        help="Game ID to play (e.g., 'ls20-016295f7601e'). Not required when using --checkpoint. Can be set via GAME_ID env var."
     )
 
 # ============================================================================
 # CLI Configurers
 # ============================================================================
+
+def apply_env_vars_to_args(args):
+    """
+    Apply environment variables to parsed arguments.
+    This is needed for boolean flags since argparse's store_true action
+    doesn't respect default values from environment variables.
+    """
+    # Boolean flags that can be set via env vars
+    # Only override if env var is set (allows CLI flags to take precedence)
+    if os.getenv("OVERWRITE_RESULTS"):
+        args.overwrite_results = _bool_env("OVERWRITE_RESULTS")
+    if os.getenv("SHOW_IMAGES"):
+        args.show_images = _bool_env("SHOW_IMAGES")
+    if os.getenv("VERBOSE"):
+        args.verbose = _bool_env("VERBOSE")
+    # use_vision defaults to True, so check env var if set
+    if os.getenv("USE_VISION"):
+        args.use_vision = _bool_env("USE_VISION", "true")
+    elif not args.use_vision:  # If flag wasn't set, default to True
+        args.use_vision = True
+    if os.getenv("CLOSE_ON_EXIT"):
+        args.close_on_exit = _bool_env("CLOSE_ON_EXIT")
+    if os.getenv("LIST_CHECKPOINTS"):
+        args.list_checkpoints = _bool_env("LIST_CHECKPOINTS")
+    
+    return args
 
 def validate_args(args, parser):
     if args.checkpoint:

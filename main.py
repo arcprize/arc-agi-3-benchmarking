@@ -19,7 +19,7 @@ from arcagi3.game_client import GameClient
 from arcagi3.utils import read_models_config, save_result, generate_scorecard_tags
 from arcagi3.schemas import GameResult
 
-from arcagi3.utils.cli import configure_logging, validate_args, handle_list_checkpoints, handle_close_scorecard, configure_args, configure_main_args, print_result
+from arcagi3.utils.cli import configure_logging, validate_args, handle_list_checkpoints, handle_close_scorecard, configure_args, configure_main_args, print_result, apply_env_vars_to_args
 from arcagi3.arc3tester import ARC3Tester
 
 load_dotenv()
@@ -36,6 +36,9 @@ def main_cli(cli_args: Optional[list] = None):
     
     # Parse arguments
     args = parser.parse_args(cli_args)
+    
+    # Apply environment variables to args (for boolean flags and overrides)
+    args = apply_env_vars_to_args(args)
 
     # Configure logging
     configure_logging(args)
