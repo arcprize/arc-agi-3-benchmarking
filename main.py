@@ -70,6 +70,7 @@ def main_cli(cli_args: Optional[list] = None):
         submit_scorecard=not getattr(args, "no_scorecard_submission", False),
         use_breakpoint_agent=getattr(args, "breakpointer", False),
         breakpoint_ws_url=getattr(args, "breakpoint_ws_url", None),
+        include_helper_image=not getattr(args, "no_helper_image", False),
     )
 
     # Play game (with checkpoint support)

@@ -91,6 +91,11 @@ def configure_args(parser):
         help="Use vision to play the game (default: True)"
     )
     parser.add_argument(
+        "--no-helper-image",
+        action="store_true",
+        help="Disable helper diff image in analysis (helper image is enabled by default)"
+    )
+    parser.add_argument(
         "--checkpoint-frequency",
         type=int,
         default=1,
@@ -378,6 +383,7 @@ def _run_single_game(
     submit_scorecard: bool = True,
     use_breakpoint_agent: bool = False,
     breakpoint_ws_url: Optional[str] = None,
+    include_helper_image: bool = True,
 ) -> Tuple[str, Optional[GameResult], Optional[Exception]]:
     """
     Run a single game and return the result.
@@ -428,6 +434,7 @@ def _run_single_game(
             submit_scorecard=submit_scorecard,
             use_breakpoint_agent=use_breakpoint_agent,
             breakpoint_ws_url=breakpoint_ws_url,
+            include_helper_image=include_helper_image,
         )
         
         try:
@@ -473,6 +480,7 @@ def run_batch_games(
     submit_scorecard: bool = True,
     use_breakpoint_agent: bool = False,
     breakpoint_ws_url: Optional[str] = None,
+    include_helper_image: bool = True,
 ):
     """
     Run multiple games concurrently in parallel.
@@ -530,6 +538,7 @@ def run_batch_games(
                 submit_scorecard,
                 use_breakpoint_agent,
                 breakpoint_ws_url,
+                include_helper_image,
             ): game_id
             for i, game_id in enumerate(game_ids)
         }

@@ -26,6 +26,9 @@ export interface AgentState {
   last_step?: string;
   current_breakpoint?: AgentBreakpoint | null;
   breakpoints: Record<BreakpointPoint, boolean>;
+  play_num?: number;
+  play_action_counter?: number;
+  action_counter?: number;
 }
 
 export interface GlobalState {

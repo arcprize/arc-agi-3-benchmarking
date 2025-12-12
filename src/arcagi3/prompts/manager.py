@@ -28,7 +28,7 @@ _ALLOWED_PLACEHOLDERS: Dict[PromptName, Set[str]] = {
         "example_actions",
         "json_example_action",
     },
-    PromptName.ANALYZE_INSTRUCT: {"memory_limit"},
+    PromptName.ANALYZE_INSTRUCT: {"memory_limit", "helper_image_description"},
     PromptName.FIND_ACTION_INSTRUCT: {"action_list", "valid_actions"},
     PromptName.COMPRESS_MEMORY: {"current_word_count", "memory_limit", "memory_text"},
 }

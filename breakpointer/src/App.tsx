@@ -70,6 +70,7 @@ export const App: React.FC = () => {
   });
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [breakpointForm, setBreakpointForm] = useState<any | null>(null);
+  const [modalImage, setModalImage] = useState<{ src: string; alt: string } | null>(null);
 
   // Determine active breakpoint for the currently selected agent
   const selectedAgent: AgentState | null = useMemo(() => {
@@ -318,17 +319,114 @@ export const App: React.FC = () => {
   const renderImagePreview = () => {
     if (!selectedAgent?.current_breakpoint) return null;
     const payload = breakpointForm ?? selectedAgent.current_breakpoint.payload;
-    const imageData: string | null = payload.latest_frame_image?.data ?? null;
+    
+    const previousImageData: string | null = payload.previous_frame_image?.data ?? null;
+    const helperImageData: string | null = payload.helper_image?.data ?? null;
+    const currentImageData: string | null = payload.current_frame_image?.data ?? payload.latest_frame_image?.data ?? null;
 
-    if (!imageData) return null;
+    // If no images at all, return null
+    if (!previousImageData && !helperImageData && !currentImageData) return null;
+
+    const handleImageClick = (imageData: string, alt: string) => {
+      if (modalImage && modalImage.src === `data:image/png;base64,${imageData}`) {
+        setModalImage(null);
+      } else {
+        setModalImage({ src: `data:image/png;base64,${imageData}`, alt });
+      }
+    };
 
     return (
-      <div className="image-preview">
-        <img
-          src={`data:image/png;base64,${imageData}`}
-          alt="Breakpoint input"
-        />
-      </div>
+      <>
+        <div className="image-preview" style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+          {previousImageData && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <div style={{ fontSize: '12px', marginBottom: '4px', color: '#666' }}>Prior</div>
+              <img
+                src={`data:image/png;base64,${previousImageData}`}
+                alt="Prior frame"
+                onClick={() => handleImageClick(previousImageData, "Prior frame")}
+                style={{ 
+                  maxWidth: '350px', 
+                  height: 'auto', 
+                  border: '1px solid #ddd',
+                  cursor: 'pointer',
+                  transition: 'opacity 0.2s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.opacity = '0.8'}
+                onMouseLeave={(e) => e.currentTarget.style.opacity = '1'}
+              />
+            </div>
+          )}
+          {helperImageData && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <div style={{ fontSize: '12px', marginBottom: '4px', color: '#666' }}>Helper</div>
+              <img
+                src={`data:image/png;base64,${helperImageData}`}
+                alt="Helper diff image"
+                onClick={() => handleImageClick(helperImageData, "Helper diff image")}
+                style={{ 
+                  maxWidth: '350px', 
+                  height: 'auto', 
+                  border: '1px solid #ddd',
+                  cursor: 'pointer',
+                  transition: 'opacity 0.2s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.opacity = '0.8'}
+                onMouseLeave={(e) => e.currentTarget.style.opacity = '1'}
+              />
+            </div>
+          )}
+          {currentImageData && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <div style={{ fontSize: '12px', marginBottom: '4px', color: '#666' }}>Current</div>
+              <img
+                src={`data:image/png;base64,${currentImageData}`}
+                alt="Current frame"
+                onClick={() => handleImageClick(currentImageData, "Current frame")}
+                style={{ 
+                  maxWidth: '350px', 
+                  height: 'auto', 
+                  border: '1px solid #ddd',
+                  cursor: 'pointer',
+                  transition: 'opacity 0.2s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.opacity = '0.8'}
+                onMouseLeave={(e) => e.currentTarget.style.opacity = '1'}
+              />
+            </div>
+          )}
+        </div>
+        {modalImage && (
+          <div
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: 'rgba(0, 0, 0, 0.9)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 10000,
+              cursor: 'pointer'
+            }}
+            onClick={() => setModalImage(null)}
+          >
+            <img
+              src={modalImage.src}
+              alt={modalImage.alt}
+              style={{
+                maxWidth: '90vw',
+                maxHeight: '90vh',
+                objectFit: 'contain',
+                border: '2px solid #fff'
+              }}
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>
+        )}
+      </>
     );
   };
 
@@ -658,7 +756,7 @@ export const App: React.FC = () => {
                     className={`agent-row ${isSelected ? "selected" : ""} ${
                       isPaused ? "paused" : ""
                     }`}
-                    onClick={() => setSelectedAgentId(agent.agent_id)}
+                    onClick={() => setSelectedAgentId(isSelected ? null : agent.agent_id)}
                   >
                     <div className="agent-row-main">
                       <div className="agent-id">
@@ -669,6 +767,13 @@ export const App: React.FC = () => {
                         <div className="agent-game">
                           {agent.game_id ? `Game · ${agent.game_id}` : "Game · (starting…)"}
                         </div>
+                        {(agent.play_num !== undefined || agent.play_action_counter !== undefined) && (
+                          <div className="agent-step">
+                            {agent.play_num !== undefined && `Play ${agent.play_num}`}
+                            {agent.play_num !== undefined && agent.play_action_counter !== undefined && " · "}
+                            {agent.play_action_counter !== undefined && `Step ${agent.play_action_counter}`}
+                          </div>
+                        )}
                         {agent.last_step && (
                           <div className="agent-step">
                             {formatPointLabel(agent.last_step)}
@@ -777,6 +882,8 @@ export const App: React.FC = () => {
                 <span className="pill muted">
                   {selectedAgent.config || "—"} ·{" "}
                   {selectedAgent.game_id ? `game ${selectedAgent.game_id}` : "game (starting…)"}
+                  {selectedAgent.play_num !== undefined && ` · Play ${selectedAgent.play_num}`}
+                  {selectedAgent.play_action_counter !== undefined && ` · Step ${selectedAgent.play_action_counter}`}
                 </span>
               </div>
               <div className="panel-body details">

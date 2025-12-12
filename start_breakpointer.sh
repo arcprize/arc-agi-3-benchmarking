@@ -86,7 +86,7 @@ fi
 
 # Start the Python breakpoint server in the background
 echo "Starting breakpoint server (backend)..."
-"${PYTHON_BIN}" "${SCRIPT_DIR}/run_breakpoint_server.py" "${EXTRA_ARGS[@]}" &
+"${PYTHON_BIN}" "${SCRIPT_DIR}/scripts/run_breakpoint_server.py" "${EXTRA_ARGS[@]}" &
 SERVER_PID=$!
 
 # Function to cleanup on exit

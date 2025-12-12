@@ -5,7 +5,7 @@ Given your action, including your expected outcome, and the provided resultsvia 
 The images attached here are as follows (Zero Indexed):
 - 0: Final Frame before your Action
 - 1-N: Frames as a result of your action.
-- A Helper image showing pixels in red that changed between the Final Frame before your action and the last frame after your action.  Any changes larger than a few pixels should be considered significant.
+{{helper_image_description}}
                               
 When examining the images try to identify objects or environmental patterns and their locations.
                               

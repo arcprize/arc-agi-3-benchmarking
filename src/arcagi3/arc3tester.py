@@ -32,6 +32,7 @@ class ARC3Tester:
         submit_scorecard: bool = True,
         use_breakpoint_agent: bool = False,
         breakpoint_ws_url: Optional[str] = None,
+        include_helper_image: bool = True,
     ):
         """
         Initialize the tester.
@@ -49,6 +50,7 @@ class ARC3Tester:
             checkpoint_frequency: Save checkpoint every N actions (default: 1, 0 to disable)
             close_on_exit: Close scorecard on exit even if not won (prevents checkpoint resume)
             memory_word_limit: Memory scratchpad word limit (overrides model config, default: from config or 500)
+            include_helper_image: Whether to include helper diff image in analysis (default: True)
         """
         self.config = config
         self.model_config = read_models_config(config)
@@ -64,6 +66,7 @@ class ARC3Tester:
         self.submit_scorecard = submit_scorecard
         self.use_breakpoint_agent = use_breakpoint_agent
         self.breakpoint_ws_url = breakpoint_ws_url
+        self.include_helper_image = include_helper_image
         
         # Determine memory limit: CLI > Config > Default (500)
         if memory_word_limit is not None:
@@ -186,21 +189,23 @@ class ARC3Tester:
                     checkpoint_card_id=checkpoint_card_id,
                     memory_word_limit=self.memory_word_limit,
                     breakpoint_ws_url=self.breakpoint_ws_url or "ws://localhost:8765",
+                    include_helper_image=self.include_helper_image,
                 )
             else:
-            agent = MultimodalAgent(
-                config=self.config,
-                game_client=self.game_client,
-                card_id=card_id,
-                max_actions=self.max_actions,
-                retry_attempts=self.retry_attempts,
-                num_plays=self.num_plays,
-                show_images=self.show_images,
-                use_vision=self.use_vision,
-                checkpoint_frequency=self.checkpoint_frequency,
-                checkpoint_card_id=checkpoint_card_id,
-                memory_word_limit=self.memory_word_limit,
-            )
+                agent = MultimodalAgent(
+                    config=self.config,
+                    game_client=self.game_client,
+                    card_id=card_id,
+                    max_actions=self.max_actions,
+                    retry_attempts=self.retry_attempts,
+                    num_plays=self.num_plays,
+                    show_images=self.show_images,
+                    use_vision=self.use_vision,
+                    checkpoint_frequency=self.checkpoint_frequency,
+                    checkpoint_card_id=checkpoint_card_id,
+                    memory_word_limit=self.memory_word_limit,
+                    include_helper_image=self.include_helper_image,
+                )
 
             # Play game (with checkpoint support)
             result = agent.play_game(game_id, resume_from_checkpoint=resume_from_checkpoint)

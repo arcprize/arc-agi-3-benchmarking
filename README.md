@@ -106,7 +106,7 @@ This produces static assets in `debug_ui/dist`, which are served by the breakpoi
 From the same repo root:
 
 ```bash
-python run_breakpoint_server.py --http-port 8080 --ws-port 8765
+python scripts/run_breakpoint_server.py --http-port 8080 --ws-port 8765
 ```
 
 Then open `http://localhost:8080` in your browser. You should see:

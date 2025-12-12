@@ -74,6 +74,7 @@ class MultimodalAgent:
         checkpoint_frequency: int = 1,
         checkpoint_card_id: Optional[str] = None,
         prompt_overrides: Optional[Dict[str, PromptSource]] = None,
+        include_helper_image: bool = True,
     ):
         """
         Initialize the multimodal agent.
@@ -90,6 +91,7 @@ class MultimodalAgent:
             memory_word_limit: Maximum number of words allowed in memory scratchpad (default: from config or 500)
             checkpoint_frequency: Save checkpoint every N actions (default: 1, 0 to disable)
             checkpoint_card_id: Optional card_id for checkpoint directory (defaults to card_id if not provided)
+            include_helper_image: Whether to include helper diff image in analysis (default: True)
         """
         self.config = config
         self.game_client = game_client
@@ -109,6 +111,7 @@ class MultimodalAgent:
             self.memory_word_limit = self.provider.model_config.kwargs.get("memory_word_limit", 500)
         
         self.checkpoint_frequency = checkpoint_frequency
+        self._include_helper_image = include_helper_image
 
         # Prompt manager (handles default templates + optional overrides)
         self.prompt_manager = PromptManager(prompt_overrides)
@@ -405,9 +408,13 @@ class MultimodalAgent:
         if current_score > self._previous_score:
             level_complete = "NEW LEVEL!!!! - Whatever you did must have been good!"
 
+        helper_image_desc = ""
+        if self._include_helper_image:
+            helper_image_desc = "- A Helper image showing pixels in red that changed between the Final Frame before your action and the last frame after your action.  Any changes larger than a few pixels should be considered significant.\n"
+        
         analyze_instruct = self.prompt_manager.render(
             PromptName.ANALYZE_INSTRUCT,
-            {"memory_limit": self.memory_word_limit},
+            {"memory_limit": self.memory_word_limit, "helper_image_description": helper_image_desc},
         )
         analyze_prompt = f"{level_complete}\n\n{analyze_instruct}\n\n{self._memory_prompt}"
         if self._model_supports_vision and self._use_vision:
@@ -415,8 +422,11 @@ class MultimodalAgent:
             all_imgs = [
                 self._previous_images[-1],
                 *current_frame_images,
-                image_diff(self._previous_images[-1], current_frame_images[-1]),
             ]
+            
+            # Conditionally add helper image
+            if self._include_helper_image:
+                all_imgs.append(image_diff(self._previous_images[-1], current_frame_images[-1]))
 
             # Build message with images
             msg_parts = [
