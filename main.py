@@ -68,6 +68,8 @@ def main_cli(cli_args: Optional[list] = None):
         close_on_exit=args.close_on_exit,
         memory_word_limit=args.memory_limit,
         submit_scorecard=not getattr(args, "no_scorecard_submission", False),
+        use_breakpoint_agent=getattr(args, "breakpointer", False),
+        breakpoint_ws_url=getattr(args, "breakpoint_ws_url", None),
     )
 
     # Play game (with checkpoint support)

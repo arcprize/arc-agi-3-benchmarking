@@ -106,6 +106,17 @@ def configure_args(parser):
         action="store_true",
         help="Do not open or close scorecards on the ARC server; run in local-only mode when no existing card_id is provided."
     )
+    parser.add_argument(
+        "--breakpointer",
+        action="store_true",
+        help="Use the breakpoint agent and pause at configured steps via the breakpoint server."
+    )
+    parser.add_argument(
+        "--breakpoint-ws-url",
+        type=str,
+        default=None,
+        help="WebSocket URL for the breakpoint server (default: ws://localhost:8765).",
+    )
 
 def configure_cli_args(parser):
     # Game selection (mutually exclusive)
@@ -365,6 +376,8 @@ def _run_single_game(
     total_games: int,
     log_dir: Optional[Path] = None,
     submit_scorecard: bool = True,
+    use_breakpoint_agent: bool = False,
+    breakpoint_ws_url: Optional[str] = None,
 ) -> Tuple[str, Optional[GameResult], Optional[Exception]]:
     """
     Run a single game and return the result.
@@ -413,6 +426,8 @@ def _run_single_game(
             close_on_exit=close_on_exit,
             use_vision=use_vision,
             submit_scorecard=submit_scorecard,
+            use_breakpoint_agent=use_breakpoint_agent,
+            breakpoint_ws_url=breakpoint_ws_url,
         )
         
         try:
@@ -456,6 +471,8 @@ def run_batch_games(
     close_on_exit: bool = False,
     use_vision: bool = True,
     submit_scorecard: bool = True,
+    use_breakpoint_agent: bool = False,
+    breakpoint_ws_url: Optional[str] = None,
 ):
     """
     Run multiple games concurrently in parallel.
@@ -511,6 +528,8 @@ def run_batch_games(
                 len(game_ids),
                 log_dir,
                 submit_scorecard,
+                use_breakpoint_agent,
+                breakpoint_ws_url,
             ): game_id
             for i, game_id in enumerate(game_ids)
         }

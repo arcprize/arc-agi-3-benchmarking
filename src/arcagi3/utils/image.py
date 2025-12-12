@@ -81,6 +81,16 @@ def image_to_base64(img: Image.Image) -> str:
     return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
+def base64_to_image(b64_string: str) -> Image.Image:
+    """
+    Decode a base-64 encoded PNG/JPEG/etc (no data-URL prefix) into a Pillow Image.
+    """
+    raw = base64.b64decode(b64_string)
+    img = Image.open(io.BytesIO(raw))
+    # Ensure underlying file handle isn't needed later
+    return img.convert("RGBA")
+
+
 def make_image_block(b64_string: str) -> dict:
     """
     Return the JSON block expected for an inline base-64 image.

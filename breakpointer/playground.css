@@ -1,0 +1,519 @@
+body {
+    min-height: 2000px;
+}
+
+*button:focus {
+    outline: 0;
+}
+
+input:focus {
+    outline: none;
+}
+
+.controls button,
+.controls select {
+    font-size: 11px;
+}
+
+.column {
+    padding: 24px;
+}
+
+.puzzle-container {
+    line-height: 0;
+    width: 100%;
+}
+
+.puzzle {
+    border: 0.5px solid #555;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(3, 1fr);
+}
+
+.game-full {
+    margin: 40px auto;
+    max-width: 1600px;
+    padding: 0 20px;
+}
+
+.game {
+    display: flex;
+}
+
+.game-column {
+    width: 50%;
+}
+
+.game-column:first-child {
+    margin: 0 20px 0 0;
+}
+
+.header-row { 
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.header-row h4 {
+    margin-bottom: 0;
+}
+
+.header-row .text {
+    display: none;
+    font-size: 11px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+#task_name {
+    display: flex;
+    align-items: center;
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+.load_task_control_btns {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+}
+
+.task-nav {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: auto;
+}
+
+.task-nav + .task-nav {
+    margin-left: 0;
+}
+
+#task_order {
+    display: flex;
+    align-items: center;
+}
+
+.task-label {
+    font-size: 13px;
+    line-height: 1;
+    margin-bottom: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.task-label .grid-size {
+    color: #999;
+}
+
+.pair-preview {
+    background-color: #000;
+    display: flex;
+    margin: 0 0 20px;
+    align-items: center;
+    border: 1px solid #555;
+    padding: 10px;
+    justify-content: space-evenly;
+}
+
+.pair-preview:last-child {
+    margin-bottom: 0;
+}
+
+#pair_preview_test {
+    background-color: #191919;
+    border-color: #191919;
+    margin-bottom: 10px;
+}
+
+.grid_size_field {
+    background-color: #333;
+    border: 0 none;
+    color: var(--offwhite);
+    font-family: "Anonymous Pro", "Courier";
+    padding: 5px;
+    width: 50px;
+}
+
+.arrow-column {
+    font-family: Verdana, sans-serif;
+    font-size: 15px;
+    margin: 0 10px;
+    display: flex;
+    align-items: center;
+}
+
+.evalution_outer_box {
+    padding: 10px;
+}
+
+.evalution_input-outer {
+    display: inline-block;
+}
+
+#evaluation_view {
+    display: inline-block;
+}
+
+#toolbar {
+    margin: 10px 0 20px;
+}
+
+#toolbar .tool {
+    display: inline-block;
+}
+
+#toolbar input[type="radio"] {
+    position: absolute;
+}
+
+#toolbar input[type="radio"]:checked+label,
+.Checked+label {
+  background: var(--maroon);
+}
+
+#toolbar label {
+    padding: 5px;
+    border: 1px solid #CCC;
+    cursor: pointer;
+    z-index: 3;
+    background-color: #333;
+    background-color: rgba(255, 255, 255, 0.1);
+    border: 0 none;
+    border-radius: 4px;
+    color: var(--offwhite);
+    font-family: "Anonymous Pro", "Courier";
+    font-size: 13px;
+    padding: 5px 10px 5px 20px;
+    transition: 0.5s ease;
+}
+
+#toolbar label:hover {
+  background: var(--red);
+}
+
+.icon {
+    width: 12px;
+    height: 12px;
+    display: inline-block;
+    background-size: contain;
+    vertical-align: text-top;
+    margin: 0 0 0 -10px;
+}
+
+.icon.fill {
+    background-image: url(/media/images/icon-fill.svg);
+}
+
+.icon.edit {
+    background-image: url(/media/images/icon-pencil.svg);
+}
+
+.icon.select {
+    background-image: url(/media/images/icon-select.svg);
+}
+
+.controls {
+    background-color: #191919;
+    font-size: 13px;
+    padding: 10px;
+    margin: 10px 0 20px;
+}
+
+.controls:last-child {
+    margin-bottom: 0;
+}
+
+#test-controls {
+    display: none;
+}
+
+#info_display {
+    display: inline-block;
+    margin-left: 10px;
+}
+
+.cell {
+    border: 0.5px solid #555555;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    aspect-ratio: 1 / 1;
+}
+
+.edition_grid .cell:hover {
+    border: 1px solid #999;
+}
+
+.grid-row {
+    display: contents;
+}
+
+.grid-row:last-child .cell {
+    padding-top: 0;
+}
+
+.grid-actions {
+    display: inline-block;
+    float: right;
+}
+
+#symbol_picker {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.symbol_preview {
+    border-bottom: 5px solid transparent;
+    width: 25px;
+    height: 20px;
+    text-align: center;
+}
+
+.selected-symbol-preview {
+    border-bottom: 5px solid #FFF;
+}
+
+.symbol_preview span {
+    font-size: 13px;
+}
+
+.ui-selected {
+    background-image: url(../images/black-twill.png), url(../images/brushed-alum.png);
+}
+
+.ui-selectable-helper {
+    border: 1px dotted #ddd;
+    position: absolute;
+    z-index: 1000;
+}
+
+#selection-tooltip {
+    position: absolute; 
+    background: rgba(0,0,0,0.7); 
+    color: #999; 
+    padding: 2px 5px; 
+    display: none;
+    font-size: 13px;
+}
+
+#set {
+  margin-right: 10px;
+}
+
+#daily-puzzle-stats {
+    background-color: #191919;
+    display: flex;
+    justify-content: space-between;
+    width: fit-content;
+    margin: 0 auto 20px;
+    gap: 10px;
+    font-size: 13px;
+    padding: 10px;
+}
+
+/* Game */
+
+.symbol_0 {
+    background-color: var(--black);
+}
+
+.symbol_1 {
+    background-color: var(--blue);
+}
+
+.symbol_2 {
+    background-color: var(--red);
+}
+
+.symbol_3 {
+    background-color: var(--green);
+}
+
+.symbol_4 {
+    background-color: var(--yellow);
+}
+
+.symbol_5 {
+    background-color: var(--gray-light);
+}
+
+.symbol_6 {
+    background-color: var(--magenta);
+}
+
+.symbol_7 {
+    background-color: var(--orange);
+}
+
+.symbol_8 {
+    background-color: var(--blue-light);
+}
+
+.symbol_9 {
+    background-color: var(--maroon);
+}
+
+.symbol_preview.symbol_0 {
+    outline: 1px solid #666666;
+}
+
+.symbol_preview.symbol_1 {
+    outline: 1px solid var(--blue);
+}
+
+.symbol_preview.symbol_2 {
+    outline: 1px solid var(--red);
+}
+
+.symbol_preview.symbol_3 {
+    outline: 1px solid var(--green);
+}
+
+.symbol_preview.symbol_4 {
+    outline: 1px solid var(--yellow);
+}
+
+.symbol_preview.symbol_5 {
+    outline: 1px solid var(--gray-light);
+}
+
+.symbol_preview.symbol_6 {
+    outline: 1px solid var(--magenta);
+}
+
+.symbol_preview.symbol_7 {
+    outline: 1px solid var(--orange);
+}
+
+.symbol_preview.symbol_8 {
+    outline: 1px solid var(--blue-light);
+}
+
+.symbol_preview.symbol_9 {
+    outline: 1px solid var(--maroon);
+}
+
+.symbol_preview span {
+    opacity: 0;
+    cursor: pointer;
+ }
+
+.symbol_preview:hover span {
+   opacity: 1;
+}
+
+.symbol_preview.symbol_0 span {
+    color: gray;
+}
+
+.symbol_preview.symbol_1 span {
+    color: white;
+}
+
+.symbol_preview.symbol_2 span {
+    color: white;
+}
+
+.symbol_preview.symbol_3 span {
+    color: black;
+}
+
+.symbol_preview.symbol_4 span {
+    color: black;
+}
+
+.symbol_preview.symbol_5 span {
+    color: white;
+}
+
+.symbol_preview.symbol_6 span {
+    color: white;
+}
+
+.symbol_preview.symbol_7 span {
+    color: white;
+}
+
+.symbol_preview.symbol_8 span {
+    color: black;
+}
+
+.symbol_preview.symbol_9 span {
+    color: white;
+}
+
+@media screen and (max-width: 810px) {
+    .game {
+        display: block;
+    }
+
+    .game-column {
+        width: 100%;
+    }
+
+    .game-column:first-child {
+        margin: 0;
+    }
+
+    .pair-preview {
+        margin: 0 20px 0 0;
+    }
+
+    .pair-preview:last-child {
+        margin-right: 0;
+    }
+
+    #task_train, #task_test {
+        display: flex;
+        overflow: auto;
+        margin: 0 0 20px;
+    }
+
+    .header-row .text {
+        display: block;
+    }
+
+    .puzzle {
+        width: 150px;
+    }
+
+    .game-full .task-nav {
+        display: block;
+        float: none;
+        margin-top: 10px;
+    }
+
+    .load_task_control_btns {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+    }
+
+    .task-nav {
+        margin-left: 0;
+        width: 100%;
+    }
+}
+
+@media screen and (max-width: 450px) {
+    .task-nav {
+        float: none;  
+        margin-top: 10px;
+        justify-content: space-between;
+        display: flex;
+    }
+
+    .grid-actions {
+        display: block;
+        float: none;
+        margin-top: 10px;
+    }
+}

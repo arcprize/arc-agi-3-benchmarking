@@ -7,6 +7,7 @@ from arcagi3.agent import MultimodalAgent
 from arcagi3.checkpoint import CheckpointManager
 from arcagi3.schemas import GameResult
 from arcagi3.utils import save_result
+from arcagi3.breakpoint_agent import BreakpointMultimodalAgent
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,8 @@ class ARC3Tester:
         close_on_exit: bool = False,
         memory_word_limit: Optional[int] = None,
         submit_scorecard: bool = True,
+        use_breakpoint_agent: bool = False,
+        breakpoint_ws_url: Optional[str] = None,
     ):
         """
         Initialize the tester.
@@ -59,6 +62,8 @@ class ARC3Tester:
         self.checkpoint_frequency = checkpoint_frequency
         self.close_on_exit = close_on_exit
         self.submit_scorecard = submit_scorecard
+        self.use_breakpoint_agent = use_breakpoint_agent
+        self.breakpoint_ws_url = breakpoint_ws_url
         
         # Determine memory limit: CLI > Config > Default (500)
         if memory_word_limit is not None:
@@ -165,8 +170,24 @@ class ARC3Tester:
             else:
                 logger.debug(f"⊘ No hint found for game {game_id}")
             
-            # Create agent
+            # Create agent (regular or breakpoint-enabled)
             # Use checkpoint_card_id for checkpoint management if resuming, otherwise use card_id
+            if self.use_breakpoint_agent:
+                agent = BreakpointMultimodalAgent(
+                    config=self.config,
+                    game_client=self.game_client,
+                    card_id=card_id,
+                    max_actions=self.max_actions,
+                    retry_attempts=self.retry_attempts,
+                    num_plays=self.num_plays,
+                    show_images=self.show_images,
+                    use_vision=self.use_vision,
+                    checkpoint_frequency=self.checkpoint_frequency,
+                    checkpoint_card_id=checkpoint_card_id,
+                    memory_word_limit=self.memory_word_limit,
+                    breakpoint_ws_url=self.breakpoint_ws_url or "ws://localhost:8765",
+                )
+            else:
             agent = MultimodalAgent(
                 config=self.config,
                 game_client=self.game_client,

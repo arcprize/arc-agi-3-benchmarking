@@ -82,6 +82,76 @@ pip install google-genai      # For Gemini models
 
 ## Usage
 
+### Interactive Breakpoint Debugger
+
+You can run games under an interactive breakpoint UI that lets you:
+- Pause agents at key reasoning steps
+- Inspect and edit step inputs (including images) before they execute
+- Continue individual agents or all agents at once
+
+#### 1. Build the breakpoint UI (once)
+
+From the repository root (`/home/keith/projects/arc`):
+
+```bash
+cd debug_ui
+npm install
+npm run build
+```
+
+This produces static assets in `debug_ui/dist`, which are served by the breakpoint server.
+
+#### 2. Start the breakpoint server
+
+From the same repo root:
+
+```bash
+python run_breakpoint_server.py --http-port 8080 --ws-port 8765
+```
+
+Then open `http://localhost:8080` in your browser. You should see:
+- A list of active agents
+- Global and per-agent breakpoint checkboxes
+- A detail panel with the current breakpoint payload and image preview
+
+The server starts in **global pause** mode with all steps breakpointed, so no agent will take actions until you hit **Continue** in the UI.
+
+#### 3. Run a game with breakpoints enabled
+
+In `arc-agi-3-benchmarking/` you can enable the `breakpointer` flag:
+
+```bash
+python main.py \
+  --game_id "ls20-fa137e247ce6" \
+  --config "gpt-4o-mini-2024-07-18" \
+  --breakpointer \
+  --max_actions 40
+```
+
+You can also point to a non-default WebSocket URL:
+
+```bash
+python main.py \
+  --game_id "ls20-fa137e247ce6" \
+  --config "gpt-4o-mini-2024-07-18" \
+  --breakpointer \
+  --breakpoint-ws-url "ws://localhost:9000/ws"
+```
+
+For batch runs:
+
+```bash
+python -m arcagi3.cli \
+  --games "ls20-fa137e247ce6,ft09-16726c5b26ff" \
+  --config "gpt-4o-mini-2024-07-18" \
+  --debug-breakpoints
+```
+
+When breakpoints are enabled:
+- Agents connect to the breakpoint server on startup.
+- At each selected step (`analyze`, `decide`, `convert`, `execute_action`), the agent sends a payload to the server and **waits** until the UI tells it to continue.
+- If the server is down, agents will keep retrying the connection and will not progress until it comes back up.
+
 ### List Available Games
 
 ```bash
