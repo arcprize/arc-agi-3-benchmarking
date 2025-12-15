@@ -40,9 +40,16 @@ class DummyProvider:
 
 
 class DummyGameClient:
+    ROOT_URL: str = "https://test.example.com"
+    
     def __init__(self):
+        self.ROOT_URL = "https://test.example.com"
         self.reset_calls = 0
         self.execute_calls: List[Dict[str, Any]] = []
+
+    def _make_64x64_grid(self) -> List[List[int]]:
+        """Create a 64x64 grid filled with zeros."""
+        return [[0] * 64 for _ in range(64)]
 
     def reset_game(self, card_id: str, game_id: str, guid=None):
         self.reset_calls += 1
@@ -51,7 +58,7 @@ class DummyGameClient:
             "guid": "dummy-guid",
             "score": 0,
             "state": "IN_PROGRESS",
-            "frame": [[[0]]],
+            "frame": [self._make_64x64_grid()],
             "available_actions": ["1"],
         }
 
@@ -62,7 +69,7 @@ class DummyGameClient:
             "guid": data.get("guid", "dummy-guid"),
             "score": 1,
             "state": "GAME_OVER",
-            "frame": [[[0]]],
+            "frame": [self._make_64x64_grid()],
         }
 
 
