@@ -55,7 +55,7 @@ def configure_args(parser):
         "--max_actions",
         type=int,
         default=_int_env("MAX_ACTIONS", 40),
-        help="Maximum actions per game (default: 40). Can be set via MAX_ACTIONS env var."
+        help="Maximum actions for entire run across all games/plays (default: 40, 0 = no limit). Can be set via MAX_ACTIONS env var."
     )
     parser.add_argument(
         "--retry_attempts",
@@ -72,8 +72,14 @@ def configure_args(parser):
     parser.add_argument(
         "--num_plays",
         type=int,
-        default=_int_env("NUM_PLAYS", 1),
-        help="Number of times to play the game (continues session with memory on subsequent plays) (default: 1). Can be set via NUM_PLAYS env var."
+        default=_int_env("NUM_PLAYS", 0),
+        help="Number of times to play each game (0 = infinite, default: 0, continues session with memory on subsequent plays). Can be set via NUM_PLAYS env var."
+    )
+    parser.add_argument(
+        "--max_episode_actions",
+        type=int,
+        default=_int_env("MAX_EPISODE_ACTIONS", 0),
+        help="Maximum actions per game/episode (default: 0 = no limit). Can be set via MAX_EPISODE_ACTIONS env var."
     )
 
     # Display
@@ -400,6 +406,7 @@ def _run_single_game(
     retry_attempts: int,
     api_retries: int,
     num_plays: int,
+    max_episode_actions: int,
     show_images: bool,
     memory_word_limit: Optional[int],
     checkpoint_frequency: int,
@@ -451,6 +458,7 @@ def _run_single_game(
             retry_attempts=retry_attempts,
             api_retries=api_retries,
             num_plays=num_plays,
+            max_episode_actions=max_episode_actions,
             show_images=show_images,
             memory_word_limit=memory_word_limit,
             checkpoint_frequency=checkpoint_frequency,
@@ -494,6 +502,7 @@ def run_batch_games(
     retry_attempts: int = 3,
     api_retries: int = 3,
     num_plays: int = 1,
+    max_episode_actions: int = 0,
     show_images: bool = False,
     memory_word_limit: Optional[int] = None,
     checkpoint_frequency: int = 1,
@@ -509,10 +518,11 @@ def run_batch_games(
         config: Model configuration name
         save_results_dir: Directory to save results
         overwrite_results: Whether to overwrite existing results
-        max_actions: Maximum actions per game
+        max_actions: Maximum actions for entire run across all games/plays (0 = no limit)
         retry_attempts: Number of retry attempts for API failures
         api_retries: Number of retry attempts for ARC-AGI-3 API calls
-        num_plays: Number of times to play each game (continues session with memory)
+        num_plays: Number of times to play each game (0 = infinite, continues session with memory)
+        max_episode_actions: Maximum actions per game/episode (0 = no limit)
         show_images: Whether to display game frames in the terminal
         memory_word_limit: Maximum number of words allowed in memory scratchpad
         checkpoint_frequency: Save checkpoint every N actions (default: 1, 0 to disable periodic checkpoints)
@@ -546,6 +556,7 @@ def run_batch_games(
                 retry_attempts,
                 api_retries,
                 num_plays,
+                max_episode_actions,
                 show_images,
                 memory_word_limit,
                 checkpoint_frequency,

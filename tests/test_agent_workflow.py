@@ -107,6 +107,7 @@ def test_hooked_agent_uses_overridden_convert_to_game_action(monkeypatch):
         max_actions=5,
         retry_attempts=1,
         num_plays=1,
+        max_episode_actions=0,
         show_images=False,
         use_vision=False,
         checkpoint_frequency=0,

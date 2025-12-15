@@ -65,6 +65,7 @@ def main_cli(cli_args: Optional[list] = None):
         retry_attempts=args.retry_attempts,
         api_retries=args.retries,
         num_plays=args.num_plays,
+        max_episode_actions=args.max_episode_actions,
         show_images=args.show_images,
         use_vision=args.use_vision,
         checkpoint_frequency=args.checkpoint_frequency,
