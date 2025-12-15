@@ -644,6 +644,26 @@ models:
       input: 0.25
       output: 2.00
 
+  - name: "gpt-5-2-openrouter"
+    model_name: "openai/gpt-5.2"
+    provider: "openrouter"
+    is_multimodal: true
+    max_tokens: 128000  # Max output tokens (total context window is 400,000 tokens)
+    pricing:
+      date: "2025-01-XX"  # TODO: Update with actual release date
+      input: 15.00   # TODO: Verify pricing on OpenRouter
+      output: 120.00  # TODO: Verify pricing on OpenRouter
+
+  - name: "claude-opus-4-5-openrouter"
+    model_name: "anthropic/claude-opus-4.5"
+    provider: "openrouter"
+    is_multimodal: true
+    max_tokens: 128000
+    pricing:
+      date: "2025-01-XX"  # TODO: Update with actual release date
+      input: 15.00   # TODO: Verify pricing on OpenRouter (estimated based on Claude Opus pricing)
+      output: 75.00  # TODO: Verify pricing on OpenRouter (estimated based on Claude Opus pricing)
+
 
 ###################
 #### Grok (X.AI) ####
