@@ -21,7 +21,7 @@ from arcagi3.utils import (AsyncRequestRateLimiter, generate_execution_map,
                            generate_summary, read_models_config,
                            read_provider_rate_limits,
                            save_result_in_timestamped_structure)
-from main import ARC3Tester
+from arcagi3.arc3tester import ARC3Tester
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,7 @@ async def run_single_game_wrapper(
     retry_attempts: int,
     api_retries: int,
     num_plays: int,
+    max_episode_actions: int,
     use_vision: bool,
 ) -> bool:
     def _synchronous_game_execution():
@@ -77,6 +78,7 @@ async def run_single_game_wrapper(
             retry_attempts=retry_attempts,
             api_retries=api_retries,
             num_plays=num_plays,
+            max_episode_actions=max_episode_actions,
             use_vision=use_vision,
         )
         result = tester.play_game(game_id)
@@ -104,6 +106,7 @@ async def main(
     retry_attempts: int,
     api_retries: int,
     num_plays: int,
+    max_episode_actions: int,
     use_vision: bool,
 ) -> int:
     start_time = time.perf_counter()
@@ -142,7 +145,7 @@ async def main(
             async_tasks_to_execute.append(
                 run_single_game_wrapper(
                     config_name, game_id, limiter, timestamp_dir,
-                    overwrite_results, max_actions, retry_attempts, api_retries, num_plays, use_vision
+                    overwrite_results, max_actions, retry_attempts, api_retries, num_plays, max_episode_actions, use_vision
                 )
             )
         except Exception as e:
@@ -257,7 +260,7 @@ if __name__ == "__main__":
         "--max_actions",
         type=int,
         default=40,
-        help="Maximum actions per game (default: 40)",
+        help="Maximum actions for entire run across all games/plays (default: 40, 0 = no limit)",
     )
     parser.add_argument(
         "--retry_attempts",
@@ -274,8 +277,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num_plays",
         type=int,
-        default=1,
-        help="Number of times to play each game (continues session with memory) (default: 1)",
+        default=0,
+        help="Number of times to play each game (0 = infinite, default: 0, continues session with memory)",
+    )
+    parser.add_argument(
+        "--max_episode_actions",
+        type=int,
+        default=0,
+        help="Maximum actions per game/episode (default: 0 = no limit)",
     )
     parser.add_argument(
         "--use_vision",
@@ -341,6 +350,7 @@ if __name__ == "__main__":
                 retry_attempts=args.retry_attempts,
                 api_retries=args.retries,
                 num_plays=args.num_plays,
+                max_episode_actions=args.max_episode_actions,
                 use_vision=args.use_vision,
             )
         )

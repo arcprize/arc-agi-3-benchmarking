@@ -68,6 +68,7 @@ class MultimodalAgent:
         max_actions: int = 40,
         retry_attempts: int = 3,
         num_plays: int = 1,
+        max_episode_actions: int = 0,
         show_images: bool = False,
         use_vision: bool = True,
         memory_word_limit: Optional[int] = None,
@@ -82,9 +83,10 @@ class MultimodalAgent:
             config: Model configuration name from models.yml
             game_client: GameClient for API communication
             card_id: Scorecard identifier for API calls
-            max_actions: Maximum actions to take before stopping
+            max_actions: Maximum actions for entire run across all games/plays (0 = no limit)
             retry_attempts: Number of retry attempts for failed API calls
-            num_plays: Number of times to play the game (continues session with memory)
+            num_plays: Number of times to play the game (0 = infinite, continues session with memory)
+            max_episode_actions: Maximum actions per game/episode (0 = no limit)
             show_images: Whether to display game frames in the terminal
             use_vision: Whether to use vision (images) or text-only mode
             memory_word_limit: Maximum number of words allowed in memory scratchpad (default: from config or 500)
@@ -97,6 +99,7 @@ class MultimodalAgent:
         self.max_actions = max_actions
         self.retry_attempts = retry_attempts
         self.num_plays = num_plays
+        self.max_episode_actions = max_episode_actions
         self.show_images = show_images
         
         # Initialize provider adapter (needed to access model config)
@@ -313,6 +316,7 @@ class MultimodalAgent:
             self.max_actions = metadata["max_actions"]
             self.retry_attempts = metadata["retry_attempts"]
             self.num_plays = metadata["num_plays"]
+            self.max_episode_actions = metadata.get("max_episode_actions", 0)  # Backward compatibility
             self.action_counter = metadata["action_counter"]
             self._current_play = metadata.get("current_play", 1)
             self._play_action_counter = metadata.get("play_action_counter", 0)
@@ -726,6 +730,7 @@ class MultimodalAgent:
                 "max_actions": self.max_actions,
                 "retry_attempts": self.retry_attempts,
                 "num_plays": self.num_plays,
+                "max_episode_actions": self.max_episode_actions,
                 "action_counter": self.action_counter,
                 "current_play": self._current_play,
                 "play_action_counter": self._play_action_counter,
@@ -795,22 +800,38 @@ class MultimodalAgent:
 
         # Determine starting play number
         start_play = self._current_play if resume_from_checkpoint else 1
+        play_num = start_play
 
-        for play_num in range(start_play, self.num_plays + 1):
+        while True:
+            # Check if we should continue based on num_plays
+            # If num_plays == 0, continue indefinitely (until max_actions or WIN)
+            # If num_plays > 0, continue while play_num <= num_plays
+            if self.num_plays > 0 and play_num > self.num_plays:
+                break
+
+            # Check global max_actions limit before starting new play
+            if self.max_actions > 0 and self.action_counter >= self.max_actions:
+                logger.info(f"Global max_actions ({self.max_actions}) reached. Stopping.")
+                break
+
             self._current_play = play_num
             play_start_time = time.time()
-            
+
+            # Log play start message
             if play_num > 1:
-                logger.info(f"Starting play {play_num}/{self.num_plays} (continuing session with memory)")
-            
+                if self.num_plays == 0:
+                    logger.info(f"Starting play {play_num}")
+                else:
+                    logger.info(f"Starting play {play_num}/{self.num_plays}")
+
             # Initialize session state
             session_restored = False
             state = {}
-            
+
             # Skip reset if resuming from checkpoint in the middle of a play
             if resume_from_checkpoint and play_num == start_play and self._play_action_counter > 0:
                 logger.info(f"Resuming play {play_num} at action {self._play_action_counter}")
-                
+
                 if self._current_guid:
                     guid = self._current_guid
                     current_score = self._previous_score
@@ -824,15 +845,32 @@ class MultimodalAgent:
                         "frame": self._current_grids if self._current_grids else []
                     }
                     logger.info(f"Continuing session with guid: {guid}, score: {current_score}")
-                
+
                 if not session_restored:
                     logger.info("No GUID found, starting new game session with restored memory...")
                     state = self.game_client.reset_game(self.card_id, game_id, guid=None)
                     guid = state.get("guid")
                     current_score = state.get("score", 0)
                     current_state = state.get("state", "IN_PROGRESS")
-                
-                play_action_counter = self._play_action_counter if session_restored else 0
+
+                    # This reset is not the "first ever" reset for this session (we are resuming),
+                    # so count it like the server does.
+                    self.action_counter += 1
+                    self.action_history.append(
+                        GameActionRecord(
+                            action_num=self.action_counter,
+                            action="RESET",
+                            action_data=None,
+                            reasoning={"system": "reset_game (checkpoint recovery)"},
+                            result_score=current_score,
+                            result_state=current_state,
+                            cost=Cost(prompt_cost=0.0, completion_cost=0.0, reasoning_cost=0.0, total_cost=0.0),
+                        )
+                    )
+
+                # If we had to re-reset (checkpoint recovery), that RESET counts as the first action
+                # of this play; otherwise keep the restored counter.
+                play_action_counter = self._play_action_counter if session_restored else 1
                 resume_from_checkpoint = False
             else:
                 # Reset game
@@ -840,18 +878,36 @@ class MultimodalAgent:
                 guid = state.get("guid")
                 current_score = state.get("score", 0)
                 current_state = state.get("state", "IN_PROGRESS")
-                
+
                 # Initialize memory on first play
                 if play_num == 1 and not self._memory_prompt:
                     self._available_actions = state.get("available_actions", list(HUMAN_ACTIONS.keys()))
                     self._memory_prompt = ""  # Initialize memory as empty
-                
-                play_action_counter = 0
+
+                # Per the server: the very first RESET of a fresh run (play 1) is free and does
+                # not count as an action; any other RESET counts.
+                count_reset = resume_from_checkpoint or play_num > 1
+                if count_reset:
+                    self.action_counter += 1
+                    self.action_history.append(
+                        GameActionRecord(
+                            action_num=self.action_counter,
+                            action="RESET",
+                            action_data=None,
+                            reasoning={"system": f"reset_game (start play {play_num})"},
+                            result_score=current_score,
+                            result_state=current_state,
+                            cost=Cost(prompt_cost=0.0, completion_cost=0.0, reasoning_cost=0.0, total_cost=0.0),
+                        )
+                    )
+                    play_action_counter = 1
+                else:
+                    play_action_counter = 0
 
             # Store guid
             self._current_guid = guid
             self._play_action_counter = play_action_counter
-            
+
             # --- Run Game Session ---
             # We pass the initial state to the session runner
             session_result = self._run_session_loop(
@@ -860,15 +916,15 @@ class MultimodalAgent:
                 play_num=play_num,
                 start_action_counter=play_action_counter
             )
-            
+
             current_score = session_result["score"]
             current_state = session_result["state"]
             play_action_counter = session_result["actions_taken"]
             play_action_history = session_result["action_history"]
-            
+
             play_duration = time.time() - play_start_time
             scorecard_url = f"{self.game_client.ROOT_URL}/scorecards/{self.card_id}"
-            
+
             play_result = GameResult(
                 game_id=game_id,
                 config=self.config,
@@ -884,12 +940,19 @@ class MultimodalAgent:
                 scorecard_url=scorecard_url,
                 card_id=self.card_id
             )
-            
-            logger.info(
-                f"Play {play_num}/{self.num_plays} completed: {current_state}, "
-                f"Score: {current_score}, Actions: {play_action_counter}"
-            )
-            
+
+            # Log play completion message
+            if self.num_plays == 0:
+                logger.info(
+                    f"Play {play_num} completed: {current_state}, "
+                    f"Score: {current_score}, Actions: {play_action_counter}"
+                )
+            else:
+                logger.info(
+                    f"Play {play_num}/{self.num_plays} completed: {current_state}, "
+                    f"Score: {current_score}, Actions: {play_action_counter}"
+                )
+
             # Track best result
             if best_result is None:
                 best_result = play_result
@@ -908,8 +971,18 @@ class MultimodalAgent:
                 logger.info(f"Game won on play {play_num}! Stopping early.")
                 break
 
-            if play_num < self.num_plays:
+            # Check global max_actions limit after play
+            if self.max_actions > 0 and self.action_counter >= self.max_actions:
+                logger.info(f"Global max_actions ({self.max_actions}) reached. Stopping.")
+                break
+
+            # Log continuation message (only for finite plays that aren't the last)
+            if self.num_plays > 0 and play_num < self.num_plays:
                 logger.info(f"Play {play_num} ended ({current_state}). Continuing to next play...")
+            elif self.num_plays == 0:
+                logger.info(f"Play {play_num} ended ({current_state}). Continuing to next play...")
+
+            play_num += 1
         
         overall_duration = time.time() - overall_start_time
         
@@ -958,7 +1031,8 @@ class MultimodalAgent:
         
         while (
             current_state not in ["WIN", "GAME_OVER"]
-            and play_action_counter < self.max_actions
+            and (self.max_episode_actions == 0 or play_action_counter < self.max_episode_actions)
+            and (self.max_actions == 0 or self.action_counter < self.max_actions)
         ):
             try:
                 frames = state.get("frame", [])
@@ -1075,6 +1149,14 @@ class MultimodalAgent:
                     f"Play {play_num}, Action {play_action_counter}: {action_name}, "
                     f"Score: {current_score}, State: {current_state}"
                 )
+
+                # Check limits after incrementing counters
+                if self.max_actions > 0 and self.action_counter >= self.max_actions:
+                    logger.info(f"Global max_actions ({self.max_actions}) reached. Stopping session.")
+                    break
+                if self.max_episode_actions > 0 and play_action_counter >= self.max_episode_actions:
+                    logger.info(f"Episode max_episode_actions ({self.max_episode_actions}) reached. Stopping session.")
+                    break
 
                 # Save checkpoint periodically
                 if self.checkpoint_frequency > 0 and play_action_counter % self.checkpoint_frequency == 0:

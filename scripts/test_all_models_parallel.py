@@ -83,6 +83,7 @@ async def run_model_test(
             retry_attempts=2,
             api_retries=2,
             num_plays=1,
+            max_episode_actions=0,
             show_images=False,
             use_vision=True,
             checkpoint_frequency=checkpoint_frequency,

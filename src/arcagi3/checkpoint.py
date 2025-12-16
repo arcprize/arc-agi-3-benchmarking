@@ -56,6 +56,7 @@ class CheckpointManager:
         max_actions = metadata_dict.get("max_actions")
         retry_attempts = metadata_dict.get("retry_attempts")
         num_plays = metadata_dict.get("num_plays")
+        max_episode_actions = metadata_dict.get("max_episode_actions", 0)  # Backward compatibility
         action_counter = metadata_dict.get("action_counter")
         current_play = metadata_dict.get("current_play", 1)
         play_action_counter = metadata_dict.get("play_action_counter", 0)
@@ -86,6 +87,7 @@ class CheckpointManager:
             "max_actions": max_actions,
             "retry_attempts": retry_attempts,
             "num_plays": num_plays,
+            "max_episode_actions": max_episode_actions,
             "action_counter": action_counter,
             "current_play": current_play,
             "play_action_counter": play_action_counter,
