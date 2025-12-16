@@ -1,5 +1,5 @@
 """
-Multi-run orchestration entrypoint for ARC-AGI-3 benchmarking.
+Experiment runner for ARC-AGI-3 benchmarking.
 
 This script lets you:
 - Define sweeps over models, games, and core parameters (via YAML or CLI lists)
@@ -9,20 +9,23 @@ This script lets you:
 Examples:
 
     # Basic sweep over 2 models x 3 games, max 5 concurrent agents
-    python multimain.py \
+    python cli/experiment_runner.py \
       --configs gpt-4o-2024-11-20 claude-sonnet-4-5-20250929 \
       --games ls20-fa137e247ce6 ft09-16726c5b26ff ls20-016295f7601e \
       --max-actions 40 \
       --num-plays 1 3 \
       --max-concurrent 5
 
-    # Use YAML sweep config (CLI args override YAML on conflict)
-    python multimain.py \
-      --yaml-config scripts/multirun_example.yml \
+    # Define complete experiment in YAML (recommended for repeatability)
+    python cli/experiment_runner.py --experiment scripts/experiment_example.yml
+
+    # Use YAML config with CLI overrides (CLI args override YAML on conflict)
+    python cli/experiment_runner.py \
+      --yaml-config scripts/experiment_example.yml \
       --max-concurrent 8
 
     # Resume from an existing multi-run manifest
-    python multimain.py --resume-from results/multirun/my_run.yml
+    python cli/experiment_runner.py --resume-from results/multirun/my_run.yml
 """
 
 import argparse
@@ -53,13 +56,22 @@ from arcagi3.checkpoint import CheckpointManager  # type: ignore  # noqa: E402
 from arcagi3.game_client import GameClient  # type: ignore  # noqa: E402
 from arcagi3.utils.cli import configure_logging  # type: ignore  # noqa: E402
 
+# Import report generation helper
+import sys
+import os
+# Add parent directory to path to import scripts
+PARENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PARENT_DIR not in sys.path:
+    sys.path.insert(0, PARENT_DIR)
+from scripts.multirun_report import generate_multirun_report  # type: ignore  # noqa: E402
+
 
 logger = logging.getLogger(__name__)
 
 
 # Defaults aligned with existing single-run CLI
 DEFAULT_MAX_ACTIONS = 40
-DEFAULT_NUM_PLAYS = 1
+DEFAULT_NUM_PLAYS = 0  # 0 = infinite
 DEFAULT_CHECKPOINT_FREQUENCY = 1
 DEFAULT_MAX_CONCURRENT = 5
 
@@ -70,9 +82,11 @@ class SweepDefinition:
     games: List[str]
     max_actions: List[int]
     num_plays: List[int]
+    max_episode_actions: List[int]
     memory_limits: List[Optional[int]]
     checkpoint_frequencies: List[int]
     use_vision: List[bool]
+    show_helper_images: List[bool]
 
 
 @dataclass
@@ -127,12 +141,24 @@ def build_sweep_definition(args: argparse.Namespace, yaml_cfg: Dict[str, Any]) -
     yaml_configs = _ensure_list(yaml_cfg.get("configs"))
     configs = _first_non_empty(args.configs, yaml_configs)
     if not configs:
+        if yaml_cfg:
+            raise SystemExit(
+                "At least one config/model is required. "
+                "Specify 'configs' in your YAML file or use --configs flag. "
+                "See scripts/experiment_example.yml for an example."
+            )
         raise SystemExit("At least one config/model is required (via --configs or YAML 'configs').")
 
     # games
     yaml_games = _ensure_list(yaml_cfg.get("games"))
     games = _first_non_empty(args.games, yaml_games)
     if not games:
+        if yaml_cfg:
+            raise SystemExit(
+                "At least one game_id is required. "
+                "Specify 'games' in your YAML file or use --games flag. "
+                "See scripts/experiment_example.yml for an example."
+            )
         raise SystemExit("At least one game_id is required (via --games/--game-id or YAML 'games').")
 
     # max_actions
@@ -142,6 +168,10 @@ def build_sweep_definition(args: argparse.Namespace, yaml_cfg: Dict[str, Any]) -
     # num_plays
     yaml_num_plays = _ensure_list(yaml_cfg.get("num_plays"))
     num_plays = _first_non_empty(args.num_plays, yaml_num_plays) or [DEFAULT_NUM_PLAYS]
+
+    # max_episode_actions (0 = no limit, default: 0)
+    yaml_max_episode_actions = _ensure_list(yaml_cfg.get("max_episode_actions"))
+    max_episode_actions = _first_non_empty(args.max_episode_actions, yaml_max_episode_actions) or [0]
 
     # memory_limits (None means: let model config / default decide)
     yaml_memory_limits = _ensure_list(yaml_cfg.get("memory_limits"))
@@ -159,6 +189,12 @@ def build_sweep_definition(args: argparse.Namespace, yaml_cfg: Dict[str, Any]) -
     use_vision_values = _first_non_empty(args.use_vision_values, yaml_use_vision) or [True]
     use_vision = [bool(v) for v in use_vision_values]
 
+    # show_helper_images
+    yaml_show_helper_images = _ensure_list(yaml_cfg.get("show_helper_images"))
+    # args.show_helper_images_values is a list[bool] (from --show-helper-images / --no-helper-images flags)
+    show_helper_images_values = _first_non_empty(args.show_helper_images_values, yaml_show_helper_images) or [True]
+    show_helper_images = [bool(v) for v in show_helper_images_values]
+
     # Deduplicate simple dimensions where it is safe
     configs = sorted(set(configs))
     games = sorted(set(games))
@@ -168,9 +204,11 @@ def build_sweep_definition(args: argparse.Namespace, yaml_cfg: Dict[str, Any]) -
         games=games,
         max_actions=max_actions,
         num_plays=num_plays,
+        max_episode_actions=max_episode_actions,
         memory_limits=memory_limits,
         checkpoint_frequencies=checkpoint_frequencies,
         use_vision=use_vision,
+        show_helper_images=show_helper_images,
     )
 
 
@@ -244,9 +282,11 @@ def generate_jobs(sweep: SweepDefinition, sweep_repeats: int = 1) -> List[Dict[s
             sweep.games,
             sweep.max_actions,
             sweep.num_plays,
+            sweep.max_episode_actions,
             sweep.memory_limits,
             sweep.checkpoint_frequencies,
             sweep.use_vision,
+            sweep.show_helper_images,
         )
     )
 
@@ -263,7 +303,7 @@ def generate_jobs(sweep: SweepDefinition, sweep_repeats: int = 1) -> List[Dict[s
 
     job_counter = 1
     for repeat_index in range(1, max(1, sweep_repeats) + 1):
-        for (config, game_id, max_actions, num_plays, memory_limit, checkpoint_freq, use_vision) in unique_combos:
+        for (config, game_id, max_actions, num_plays, max_episode_actions, memory_limit, checkpoint_freq, use_vision, show_helper_image) in unique_combos:
             job_id = f"job-{job_counter:04d}"
             job_counter += 1
             jobs.append(
@@ -274,9 +314,11 @@ def generate_jobs(sweep: SweepDefinition, sweep_repeats: int = 1) -> List[Dict[s
                     "game_id": str(game_id),
                     "max_actions": int(max_actions),
                     "num_plays": int(num_plays),
+                    "max_episode_actions": int(max_episode_actions),
                     "memory_limit": memory_limit if memory_limit is None else int(memory_limit),
                     "checkpoint_frequency": int(checkpoint_freq),
                     "use_vision": bool(use_vision),
+                    "show_helper_image": bool(show_helper_image),
                     "status": "pending",
                     "created_at": _now_iso(),
                     "started_at": None,
@@ -312,9 +354,11 @@ def create_manifest(
             "games": sweep.games,
             "max_actions": sweep.max_actions,
             "num_plays": sweep.num_plays,
+            "max_episode_actions": sweep.max_episode_actions,
             "memory_limits": sweep.memory_limits,
             "checkpoint_frequencies": sweep.checkpoint_frequencies,
             "use_vision": sweep.use_vision,
+            "show_helper_images": sweep.show_helper_images,
             "sweep_repeats": sweep_repeats,
         },
         "run_options": asdict(run_options),
@@ -408,196 +452,6 @@ def _find_latest_result_file(save_results_dir: str, game_id: str, config: str) -
     return str(latest)
 
 
-def generate_multirun_report(manifest: Dict[str, Any], manifest_path: Path) -> None:
-    """
-    Generate a markdown report summarizing the multirun results.
-    Organized by game -> model -> other settings.
-    """
-    jobs = manifest.get("jobs", [])
-    if not jobs:
-        logger.warning("No jobs found in manifest, skipping report generation")
-        return
-    
-    # Get base URL from GameClient
-    base_url = "https://three.arcprize.org"
-    game_info_map: Dict[str, Dict[str, Any]] = {}
-    
-    try:
-        client = GameClient()
-        base_url = client.ROOT_URL
-        
-        # Fetch game info to get titles/descriptions
-        try:
-            games_list = client.list_games()
-            for game in games_list or []:
-                game_id = game.get("game_id")
-                if game_id:
-                    game_info_map[game_id] = game
-        except Exception as e:
-            logger.warning(f"Failed to fetch game info: {e}")
-    except Exception as e:
-        logger.warning(f"Failed to initialize GameClient: {e}, using default base URL")
-    
-    # Organize jobs by game -> model
-    games_dict: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
-    
-    for job in jobs:
-        game_id = job.get("game_id", "unknown")
-        config = job.get("config", "unknown")
-        
-        if game_id not in games_dict:
-            games_dict[game_id] = {}
-        if config not in games_dict[game_id]:
-            games_dict[game_id][config] = []
-        
-        games_dict[game_id][config].append(job)
-    
-    # Generate markdown
-    lines = []
-    
-    # Header
-    run_name = manifest.get("run_name", "unknown")
-    lines.append(f"# Multirun Report: {run_name}\n")
-    lines.append(f"\n**Generated:** {datetime.now(timezone.utc).isoformat()}\n")
-    lines.append("\n---\n\n")
-    
-    # Sweep configuration summary
-    sweep = manifest.get("sweep", {})
-    lines.append("## Sweep Configuration\n\n")
-    
-    # Show what was varied
-    varied_params = []
-    if len(sweep.get("configs", [])) > 1:
-        varied_params.append("Models")
-    if len(sweep.get("games", [])) > 1:
-        varied_params.append("Games")
-    if len(sweep.get("max_actions", [])) > 1:
-        varied_params.append("Max Actions")
-    if len(sweep.get("num_plays", [])) > 1:
-        varied_params.append("Number of Plays")
-    if len(sweep.get("memory_limits", [])) > 1:
-        varied_params.append("Memory Limits")
-    if len(sweep.get("checkpoint_frequencies", [])) > 1:
-        varied_params.append("Checkpoint Frequencies")
-    if len(sweep.get("use_vision", [])) > 1:
-        varied_params.append("Vision Mode")
-    
-    if varied_params:
-        lines.append(f"**Varied Parameters:** {', '.join(varied_params)}\n\n")
-    
-    # Fixed parameters table
-    lines.append("### Fixed Parameters\n\n")
-    lines.append("| Parameter | Value |\n")
-    lines.append("|-----------|-------|\n")
-    
-    if len(sweep.get("max_actions", [])) == 1:
-        lines.append(f"| Max Actions | {sweep.get('max_actions', [None])[0]} |\n")
-    if len(sweep.get("num_plays", [])) == 1:
-        lines.append(f"| Number of Plays | {sweep.get('num_plays', [None])[0]} |\n")
-    if len(sweep.get("memory_limits", [])) == 1:
-        mem_limit = sweep.get("memory_limits", [None])[0]
-        lines.append(f"| Memory Limit | {mem_limit if mem_limit is not None else 'Unlimited'} |\n")
-    if len(sweep.get("checkpoint_frequencies", [])) == 1:
-        lines.append(f"| Checkpoint Frequency | {sweep.get('checkpoint_frequencies', [None])[0]} |\n")
-    if len(sweep.get("use_vision", [])) == 1:
-        lines.append(f"| Vision Mode | {sweep.get('use_vision', [None])[0]} |\n")
-    
-    lines.append("\n---\n\n")
-    
-    # Games list with links
-    lines.append("## Games Played\n\n")
-    for game_id in sorted(games_dict.keys()):
-        game_info = game_info_map.get(game_id, {})
-        game_title = game_info.get("title", game_id)
-        game_url = f"{base_url}/games/{game_id}"
-        lines.append(f"* {game_title} - [{game_id.upper()}]({game_url})\n")
-    lines.append("\n---\n\n")
-    
-    # Detailed breakdown by game
-    for game_id in sorted(games_dict.keys()):
-        game_info = game_info_map.get(game_id, {})
-        game_title = game_info.get("title", game_id)
-        game_display = game_id.upper()
-        
-        lines.append(f"### Game: {game_display}\n\n")
-        if game_title != game_id:
-            lines.append(f"*{game_title}*\n\n")
-        
-        # For each model
-        model_num = 1
-        for config in sorted(games_dict[game_id].keys()):
-            jobs_for_model = games_dict[game_id][config]
-            
-            # If multiple jobs for same game+model (e.g., from sweep_repeats), show all
-            if len(jobs_for_model) > 1:
-                lines.append(f"{model_num}. **{config}** ({len(jobs_for_model)} runs)\n\n")
-            else:
-                lines.append(f"{model_num}. **{config}**\n\n")
-            
-            # Show each job
-            for job_idx, job in enumerate(jobs_for_model):
-                if len(jobs_for_model) > 1:
-                    lines.append(f"   **Run {job_idx + 1}:**\n\n")
-                
-                checkpoint_id = job.get("checkpoint_id")
-                scorecard_url = job.get("scorecard_url")
-                final_score = job.get("final_score")
-                final_state = job.get("final_state")
-                status = job.get("status", "unknown")
-                
-                # Scorecard link
-                if scorecard_url:
-                    lines.append(f"   [Scorecard]({scorecard_url})\n\n")
-                elif checkpoint_id:
-                    # Construct scorecard URL from checkpoint ID
-                    scorecard_url = f"{base_url}/scorecards/{checkpoint_id}"
-                    lines.append(f"   [Scorecard]({scorecard_url})\n\n")
-                
-                # Checkpoint ID
-                if checkpoint_id:
-                    lines.append(f"   - Checkpoint ID: `{checkpoint_id}`\n")
-                
-                # Final score and state
-                if final_score is not None:
-                    lines.append(f"   - Final Score: {final_score}\n")
-                if final_state:
-                    lines.append(f"   - State: {final_state}\n")
-                
-                # Status
-                if status != "completed":
-                    lines.append(f"   - Status: {status}\n")
-                
-                # Other settings if they vary
-                other_settings = []
-                if len(sweep.get("max_actions", [])) > 1:
-                    other_settings.append(f"Max Actions: {job.get('max_actions')}")
-                if len(sweep.get("num_plays", [])) > 1:
-                    other_settings.append(f"Num Plays: {job.get('num_plays')}")
-                if len(sweep.get("memory_limits", [])) > 1:
-                    mem_limit = job.get("memory_limit")
-                    other_settings.append(f"Memory Limit: {mem_limit if mem_limit is not None else 'Unlimited'}")
-                if len(sweep.get("checkpoint_frequencies", [])) > 1:
-                    other_settings.append(f"Checkpoint Freq: {job.get('checkpoint_frequency')}")
-                if len(sweep.get("use_vision", [])) > 1:
-                    other_settings.append(f"Vision: {job.get('use_vision')}")
-                
-                if other_settings:
-                    lines.append(f"   - {' | '.join(other_settings)}\n")
-                
-                if len(jobs_for_model) > 1 and job_idx < len(jobs_for_model) - 1:
-                    lines.append("\n")
-            
-            lines.append("\n")
-            model_num += 1
-        
-        lines.append("\n")
-    
-    # Write to file
-    report_path = manifest_path.with_suffix(".md")
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write("".join(lines))
-    
-    logger.info(f"Multirun report written to: {report_path}")
 
 
 def _execute_single_job(job: Dict[str, Any], run_options: RunOptions) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -610,18 +464,20 @@ def _execute_single_job(job: Dict[str, Any], run_options: RunOptions) -> Tuple[O
     game_id = job["game_id"]
     max_actions = job["max_actions"]
     num_plays = job["num_plays"]
+    max_episode_actions = job.get("max_episode_actions", 0)  # Default to 0 for backward compatibility
     memory_limit = job["memory_limit"]
     checkpoint_frequency = job["checkpoint_frequency"]
     use_vision = job["use_vision"]
+    show_helper_image = job.get("show_helper_image", True)  # Default to True for backward compatibility
 
     resume_from_checkpoint = bool(job.get("resume_from_checkpoint"))
     checkpoint_id = job.get("checkpoint_id")
 
     logger.info(
         f"Running job {job['job_id']}: game={game_id}, config={config}, "
-        f"max_actions={max_actions}, num_plays={num_plays}, "
+        f"max_actions={max_actions}, num_plays={num_plays}, max_episode_actions={max_episode_actions}, "
         f"memory_limit={memory_limit}, checkpoint_freq={checkpoint_frequency}, "
-        f"use_vision={use_vision}, resume={resume_from_checkpoint}"
+        f"use_vision={use_vision}, show_helper_image={show_helper_image}, resume={resume_from_checkpoint}"
     )
 
     tester = ARC3Tester(
@@ -632,8 +488,10 @@ def _execute_single_job(job: Dict[str, Any], run_options: RunOptions) -> Tuple[O
         retry_attempts=run_options.retry_attempts,
         api_retries=run_options.retries,
         num_plays=num_plays,
+        max_episode_actions=max_episode_actions,
         show_images=run_options.show_images,
         use_vision=use_vision,
+        show_helper_image=show_helper_image,
         checkpoint_frequency=checkpoint_frequency,
         close_on_exit=run_options.close_on_exit,
         memory_word_limit=memory_limit,
@@ -739,8 +597,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     cfg_group = parser.add_mutually_exclusive_group(required=False)
     cfg_group.add_argument(
         "--yaml-config",
+        "--experiment",
+        dest="yaml_config",
         type=str,
-        help="Path to YAML file defining sweep settings (models/games/parameters).",
+        help="Path to YAML file defining experiment/sweep settings (models/games/parameters). "
+        "All CLI flags can be specified in YAML for repeatable experiments. "
+        "See scripts/experiment_example.yml for a complete example.",
     )
     cfg_group.add_argument(
         "--resume-from",
@@ -794,6 +656,14 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="One or more num_plays values to sweep over.",
     )
     parser.add_argument(
+        "--max-episode-actions",
+        dest="max_episode_actions",
+        nargs="+",
+        type=int,
+        default=None,
+        help="One or more max_episode_actions values to sweep over (0 = no limit per episode).",
+    )
+    parser.add_argument(
         "--memory-limit",
         dest="memory_limits",
         nargs="+",
@@ -824,6 +694,22 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         action="append_const",
         const=False,
         help="Include runs with vision disabled.",
+    )
+
+    # show_helper_images sweep: allow True/False combinations
+    parser.add_argument(
+        "--show-helper-images",
+        dest="show_helper_images_values",
+        action="append_const",
+        const=True,
+        help="Include runs with helper images enabled.",
+    )
+    parser.add_argument(
+        "--no-helper-images",
+        dest="show_helper_images_values",
+        action="append_const",
+        const=False,
+        help="Include runs with helper images disabled.",
     )
 
     # Run-level options (mostly mirror main CLI)
@@ -1004,6 +890,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # New run: load YAML (if any) and build sweep + run options
     yaml_cfg = load_yaml_config(args.yaml_config)
+    
+    # If YAML config is provided, log that it's being used
+    if args.yaml_config:
+        logger.info(f"Loading experiment configuration from: {args.yaml_config}")
+        if yaml_cfg.get("run_name"):
+            logger.info(f"Experiment name from YAML: {yaml_cfg.get('run_name')}")
 
     run_options = build_run_options(args, yaml_cfg, run_name)
 
@@ -1030,8 +922,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 f"{job['job_id']}: repeat={job.get('repeat_index', 1)}, "
                 f"game={job['game_id']}, config={job['config']}, "
                 f"max_actions={job['max_actions']}, num_plays={job['num_plays']}, "
+                f"max_episode_actions={job.get('max_episode_actions', 0)}, "
                 f"memory_limit={job['memory_limit']}, checkpoint_freq={job['checkpoint_frequency']}, "
-                f"use_vision={job['use_vision']}"
+                f"use_vision={job['use_vision']}, show_helper_image={job.get('show_helper_image', True)}"
             )
         return 0
 

@@ -71,6 +71,7 @@ class MultimodalAgent:
         max_episode_actions: int = 0,
         show_images: bool = False,
         use_vision: bool = True,
+        show_helper_image: bool = True,
         memory_word_limit: Optional[int] = None,
         checkpoint_frequency: int = 1,
         checkpoint_card_id: Optional[str] = None,
@@ -89,6 +90,7 @@ class MultimodalAgent:
             max_episode_actions: Maximum actions per game/episode (0 = no limit)
             show_images: Whether to display game frames in the terminal
             use_vision: Whether to use vision (images) or text-only mode
+            show_helper_image: Whether to include helper diff image in analysis (default: True)
             memory_word_limit: Maximum number of words allowed in memory scratchpad (default: from config or 500)
             checkpoint_frequency: Save checkpoint every N actions (default: 1, 0 to disable)
             checkpoint_card_id: Optional card_id for checkpoint directory (defaults to card_id if not provided)
@@ -101,6 +103,7 @@ class MultimodalAgent:
         self.num_plays = num_plays
         self.max_episode_actions = max_episode_actions
         self.show_images = show_images
+        self.show_helper_image = show_helper_image
         
         # Initialize provider adapter (needed to access model config)
         self.provider = create_provider(config)
@@ -419,8 +422,10 @@ class MultimodalAgent:
             all_imgs = [
                 self._previous_images[-1],
                 *current_frame_images,
-                image_diff(self._previous_images[-1], current_frame_images[-1]),
             ]
+            # Add helper diff image if enabled
+            if self.show_helper_image:
+                all_imgs.append(image_diff(self._previous_images[-1], current_frame_images[-1]))
 
             # Build message with images
             msg_parts = [

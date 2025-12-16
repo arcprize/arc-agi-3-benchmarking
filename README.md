@@ -293,20 +293,22 @@ client.close_scorecard(card_id)
 
 All main CLI options also available.
 
-### Multi-Run Orchestrator (`multimain.py`)
+### Experiment Runner (`cli/experiment_runner.py`)
 
-The multi-run orchestrator lets you sweep over models, games, and key agent parameters, running up to **Y agents concurrently** and resuming from checkpoints using a **run manifest YAML**.
+The experiment runner lets you define and run comprehensive experiments by sweeping over models, games, and key agent parameters. It supports running up to **N agents concurrently**, resuming from checkpoints using a **run manifest YAML**, and defining complete experiments in YAML files for repeatability.
 
 #### Key Features
 
 - **Sweepable dimensions** (any can be a single value or a list; all lists are combinatorially combined):
   - `configs` (model configs from `models.yml`)
   - `games` (game IDs)
-  - `max_actions`
-  - `num_plays`
+  - `max_actions` (global action limit across all plays)
+  - `num_plays` (number of times to play each game, 0 = infinite)
+  - `max_episode_actions` (per-episode action limit, 0 = no limit)
   - `memory_limits` (maps to `memory_word_limit`)
   - `checkpoint_frequencies`
   - `use_vision` (True/False)
+  - `show_helper_images` (True/False - include diff images in analysis)
 - **Sweep repetitions**:
   - `--sweep-repeats N` or YAML `sweep_repeats: N` runs the **entire sweep N times**, even if there is only a single unique combination. This is useful for building a corpus of repeated trials.
 - **Run-level options** (normally single-valued, but override-able):
@@ -325,7 +327,7 @@ The multi-run orchestrator lets you sweep over models, games, and key agent para
 Sweep over 2 models × 3 games with up to 5 concurrent agents:
 
 ```bash
-python multimain.py \
+python cli/experiment_runner.py \
   --configs gpt-4o-2024-11-20 claude-sonnet-4-5-20250929 \
   --games ls20-fa137e247ce6 ft09-16726c5b26ff ls20-016295f7601e \
   --max-actions 40 \
@@ -335,28 +337,27 @@ python multimain.py \
 
 This:
 - Generates all combinations of `configs × games × max_actions × num_plays` (with defaults for unspecified dimensions)
-- Writes a manifest YAML at `results/multirun/multirun_<timestamp>.yml` (unless `--manifest-path` is provided)
+- Writes a manifest YAML at `results/multirun/<run_name>.yml` (unless `--manifest-path` is provided)
 - Saves results JSONs under `results/multirun/<run_name>/` (unless `--save-results-dir` is provided)
+- Generates a markdown report summarizing all results
 
 You can preview the jobs without running them using `--dry-run`:
 
 ```bash
-python multimain.py \
+python cli/experiment_runner.py \
   --configs gpt-4o-2024-11-20 \
   --games ls20-fa137e247ce6 ft09-16726c5b26ff \
   --max-actions 40 80 \
   --dry-run
 ```
 
-#### YAML Sweep Config
-
-You can also define sweeps in a YAML file and then override any setting via CLI. When **CLI args and YAML disagree, CLI wins**.
-
-Example `experiments/multirun_example.yml`:
+#### Creating Experiment Files (YAML)
+Create an experiment file (e.g., `my_experiment.yml`):
 
 ```yaml
-run_name: my_model_sweep
+run_name: "my_experiment"
 
+# Sweep parameters (can be single values or lists)
 configs:
   - gpt-4o-2024-11-20
   - claude-sonnet-4-5-20250929
@@ -367,14 +368,17 @@ games:
   - ls20-016295f7601e
 
 max_actions: [40]
-num_plays: [1, 3]
-memory_limits: [500, 1000]
+num_plays: [0]  # 0 = infinite plays
+max_episode_actions: [0]  # 0 = no limit per episode
+memory_limits: [null]  # null = use model config default
 checkpoint_frequencies: [1]
 use_vision: [true]
+show_helper_images: [true]  # Include diff images in analysis
 
-save_results_dir: "results/multirun/my_model_sweep"
+# Run-level options
+save_results_dir: "results/multirun/my_experiment"
 max_concurrent: 5
-sweep_repeats: 3
+sweep_repeats: 1
 overwrite_results: false
 retry_attempts: 3
 retries: 3
@@ -385,23 +389,32 @@ log_level: "INFO"
 verbose: false
 ```
 
-Run it with:
+Run the experiment:
 
 ```bash
-python multimain.py \
-  --yaml-config experiments/multirun_example.yml \
-  --max-concurrent 8   # CLI override; takes precedence over YAML
+# Using --experiment flag (recommended)
+python cli/experiment_runner.py --experiment my_experiment.yml
+
+# Or using --yaml-config (same thing)
+python cli/experiment_runner.py --yaml-config my_experiment.yml
+
+# CLI flags override YAML values
+python cli/experiment_runner.py \
+  --experiment my_experiment.yml \
+  --max-concurrent 8   # Overrides YAML value
 ```
 
-#### Run Manifest & Resume Behavior
+See `scripts/experiment_example.yml` for a complete example with all available parameters, or `scripts/EXPERIMENT_YAML.md` for detailed documentation.
 
-Each multi-run creates (or reuses) a **manifest YAML** which tracks:
+#### Run Manifest & Reports
+
+Each experiment creates a **manifest YAML** which tracks:
 
 - `version`, `run_id`, `run_name`, `created_at`, `max_concurrent`
 - A snapshot of the sweep definition and run options used
 - A `jobs` list, where each job has:
   - `job_id`
-  - `config`, `game_id`, `max_actions`, `num_plays`, `memory_limit`, `checkpoint_frequency`, `use_vision`
+  - `config`, `game_id`, `max_actions`, `num_plays`, `max_episode_actions`, `memory_limit`, `checkpoint_frequency`, `use_vision`, `show_helper_image`
   - `status`: `pending`, `running`, `completed`, `failed`, or `removed`
   - `created_at`, `started_at`, `ended_at`, `updated_at`
   - `final_score`, `final_state`
@@ -414,46 +427,58 @@ By default, the manifest is written to:
 
 - `results/multirun/<run_name>.yml`
 
-You can override this with `--manifest-path` on initial creation, or by passing an explicit file to `--resume-from` when resuming.
+You can override this with `--manifest-path` on initial creation.
 
-##### Resuming a Multi-Run
+**Automatic Report Generation**: After an experiment completes, a markdown report is automatically generated at `results/multirun/<run_name>.md` summarizing:
+- Sweep configuration
+- Results organized by game and model
+- Scorecard links
+- Checkpoint information
+- Varied parameters
 
-To resume an existing multi-run, point `multimain.py` at the manifest:
+##### Resuming Experiments
+
+Experiments can be resumed from their manifest, allowing you to:
+- Continue interrupted runs
+- Re-run failed jobs
+- Skip already completed jobs
+
+**Explicit Resume** (recommended):
 
 ```bash
-python multimain.py --resume-from results/multirun/my_model_sweep.yml
+python cli/experiment_runner.py --resume-from results/multirun/my_experiment.yml
 ```
 
-You can also resume implicitly by **reusing a run name**:
+**Implicit Resume** (by run name):
 
-- If you start a run with `--run-name my_model_sweep`, its manifest will be written to `results/multirun/my_model_sweep.yml`.
+- If you start a run with `--run-name my_experiment`, its manifest will be written to `results/multirun/my_experiment.yml`.
 - On a later invocation, if you run:
 
   ```bash
-  python multimain.py --run-name my_model_sweep
+  python cli/experiment_runner.py --run-name my_experiment
   ```
 
-  and that manifest already exists, `multimain.py` will automatically treat this as a resume of that run and log a message indicating that it is resuming.  
+  and that manifest already exists, the experiment runner will automatically treat this as a resume and log a message indicating that it is resuming.  
   If you instead want a fresh run, either delete/rename the existing manifest file or choose a different `--run-name`.
 
-When `--run-name` is **omitted**, `multimain.py` generates a unique UUID-based name for the run and uses it for the manifest and default results directory.
+When `--run-name` is **omitted**, the experiment runner generates a unique UUID-based name for the run.
 
-Resume rules:
+**Resume Rules:**
 
 - Jobs with `status == completed` are skipped.
 - Jobs with a `checkpoint_id`:
   - If `.checkpoint/<checkpoint_id>/metadata.json` exists:
     - The job is scheduled with `resume_from_checkpoint=True`.
   - If the checkpoint directory is missing:
-    - The job is marked `status: removed` with `removed_reason: checkpoint_missing` and is **not** scheduled (treated as not part of the run).
+    - The job is marked `status: removed` with `removed_reason: checkpoint_missing` and is **not** scheduled.
 - Jobs without `checkpoint_id` are scheduled as fresh runs.
-- Checkpoints that were not created by this multi-run (i.e., not referenced in the manifest) are never modified or inspected.
+- Checkpoints that were not created by this experiment (i.e., not referenced in the manifest) are never modified or inspected.
 
-You can also combine resume with `--dry-run` to inspect the manifest:
+**Inspect Manifest** (without running):
 
 ```bash
-python multimain.py \
-  --resume-from results/multirun/my_model_sweep.yml \
+python cli/experiment_runner.py \
+  --resume-from results/multirun/my_experiment.yml \
   --dry-run
 ```
 

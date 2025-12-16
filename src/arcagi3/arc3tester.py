@@ -26,6 +26,7 @@ class ARC3Tester:
         max_episode_actions: int = 0,
         show_images: bool = False,
         use_vision: bool = True,
+        show_helper_image: bool = True,
         checkpoint_frequency: int = 1,
         close_on_exit: bool = False,
         memory_word_limit: Optional[int] = None,
@@ -45,6 +46,7 @@ class ARC3Tester:
             max_episode_actions: Maximum actions per game/episode (0 = no limit)
             show_images: Whether to display game frames in the terminal
             use_vision: Whether to use vision (images) or text-only mode
+            show_helper_image: Whether to include helper diff image in analysis (default: True)
             checkpoint_frequency: Save checkpoint every N actions (default: 1, 0 to disable)
             close_on_exit: Close scorecard on exit even if not won (prevents checkpoint resume)
             memory_word_limit: Memory scratchpad word limit (overrides model config, default: from config or 500)
@@ -59,6 +61,7 @@ class ARC3Tester:
         self.max_episode_actions = max_episode_actions
         self.show_images = show_images
         self.use_vision = use_vision
+        self.show_helper_image = show_helper_image
         self.checkpoint_frequency = checkpoint_frequency
         self.close_on_exit = close_on_exit
         self.submit_scorecard = submit_scorecard
@@ -180,6 +183,7 @@ class ARC3Tester:
                 max_episode_actions=self.max_episode_actions,
                 show_images=self.show_images,
                 use_vision=self.use_vision,
+                show_helper_image=self.show_helper_image,
                 checkpoint_frequency=self.checkpoint_frequency,
                 checkpoint_card_id=checkpoint_card_id,
                 memory_word_limit=self.memory_word_limit,
