@@ -94,6 +94,7 @@ def main_cli(cli_args: Optional[list] = None):
         retry_attempts=args.retry_attempts,
         api_retries=args.retries,
         num_plays=args.num_plays,
+        max_episode_actions=args.max_episode_actions,
         show_images=args.show_images,
         memory_word_limit=args.memory_limit,
         checkpoint_frequency=args.checkpoint_frequency,

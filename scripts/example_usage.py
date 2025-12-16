@@ -63,6 +63,7 @@ def example_single_game():
             card_id=card_id,
             max_actions=10,  # Limit for example
             retry_attempts=2,
+            max_episode_actions=0,
         )
         
         # Play game

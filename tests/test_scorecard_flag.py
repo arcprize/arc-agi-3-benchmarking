@@ -1,11 +1,17 @@
+import json
+import os
+from pathlib import Path
 from typing import Any, Dict, List
 
 from arcagi3.arc3tester import ARC3Tester
-from arcagi3.schemas import GameResult
+from arcagi3.schemas import GameResult, ModelConfig, ModelPricing
 
 
 class FakeGameClient:
+    ROOT_URL: str = "https://test.example.com"
+    
     def __init__(self):
+        self.ROOT_URL = "https://test.example.com"
         self.open_calls: List[Dict[str, Any]] = []
         self.close_calls: List[Dict[str, Any]] = []
         self.reset_calls: List[Dict[str, Any]] = []
@@ -35,7 +41,27 @@ class FakeGameClient:
         }
 
 
-def _make_tester(fake_client: FakeGameClient, submit_scorecard: bool) -> ARC3Tester:
+def _make_tester(fake_client: FakeGameClient, submit_scorecard: bool, monkeypatch=None) -> ARC3Tester:
+    # Mock read_models_config to avoid needing a real config
+    if monkeypatch:
+        from arcagi3.utils import task_utils
+        import arcagi3.arc3tester as arc3tester_module
+        import arcagi3.utils as utils_module
+        import arcagi3.adapters.provider as provider_module
+        dummy_config = ModelConfig(
+            name="dummy-config",
+            model_name="dummy-model",
+            provider="openai",
+            is_multimodal=False,
+            pricing=ModelPricing(date="2024-01-01", input=0.0, output=0.0),
+            kwargs={"memory_word_limit": 100}
+        )
+        # Patch where it's defined and all places it might be imported
+        monkeypatch.setattr(task_utils, "read_models_config", lambda config: dummy_config)
+        monkeypatch.setattr(arc3tester_module, "read_models_config", lambda config: dummy_config)
+        monkeypatch.setattr(utils_module, "read_models_config", lambda config: dummy_config)
+        monkeypatch.setattr(provider_module, "read_models_config", lambda config: dummy_config)
+    
     tester = ARC3Tester(
         config="dummy-config",
         save_results_dir=None,
@@ -44,6 +70,7 @@ def _make_tester(fake_client: FakeGameClient, submit_scorecard: bool) -> ARC3Tes
         retry_attempts=1,
         api_retries=1,
         num_plays=1,
+        max_episode_actions=0,
         show_images=False,
         use_vision=False,
         checkpoint_frequency=0,
@@ -56,9 +83,11 @@ def _make_tester(fake_client: FakeGameClient, submit_scorecard: bool) -> ARC3Tes
     return tester
 
 
-def test_submit_scorecard_disabled_skips_open_and_close_when_no_card_id():
+def test_submit_scorecard_disabled_skips_open_and_close_when_no_card_id(monkeypatch):
+    # Set dummy API key to avoid GameClient initialization error
+    monkeypatch.setenv("ARC_API_KEY", "dummy-key-for-testing")
     fake_client = FakeGameClient()
-    tester = _make_tester(fake_client, submit_scorecard=False)
+    tester = _make_tester(fake_client, submit_scorecard=False, monkeypatch=monkeypatch)
 
     result: GameResult = tester.play_game("dummy-game", card_id=None, resume_from_checkpoint=False)
     assert result.game_id == "dummy-game"
@@ -71,9 +100,39 @@ def test_submit_scorecard_disabled_skips_open_and_close_when_no_card_id():
     assert fake_client.reset_calls[0]["card_id"].startswith("local-")
 
 
-def test_resume_from_existing_checkpoint_still_uses_scorecard_apis():
+def test_resume_from_existing_checkpoint_still_uses_scorecard_apis(monkeypatch, tmp_path):
+    # Set dummy API key to avoid GameClient initialization error
+    monkeypatch.setenv("ARC_API_KEY", "dummy-key-for-testing")
+    
+    # Create a fake checkpoint directory and metadata file
+    checkpoint_dir = tmp_path / ".checkpoint" / "existing-card"
+    checkpoint_dir.mkdir(parents=True)
+    metadata = {
+        "card_id": "existing-card",
+        "config": "dummy-config",
+        "game_id": "dummy-game",
+        "guid": "fake-guid",
+        "max_actions": 1,
+        "retry_attempts": 1,
+        "num_plays": 1,
+        "max_episode_actions": 0,
+        "action_counter": 0,
+        "current_play": 1,
+        "play_action_counter": 0,
+        "previous_score": 0,
+        "use_vision": False,
+        "checkpoint_timestamp": "2024-01-01T00:00:00Z",
+    }
+    with open(checkpoint_dir / "metadata.json", "w") as f:
+        json.dump(metadata, f)
+    
+    # Monkeypatch the checkpoint directory to use our temp directory
+    from arcagi3.checkpoint import CheckpointManager
+    original_checkpoint_dir = CheckpointManager.CHECKPOINT_DIR
+    monkeypatch.setattr(CheckpointManager, "CHECKPOINT_DIR", str(tmp_path / ".checkpoint"))
+    
     fake_client = FakeGameClient()
-    tester = _make_tester(fake_client, submit_scorecard=False)
+    tester = _make_tester(fake_client, submit_scorecard=False, monkeypatch=monkeypatch)
 
     # Even with submit_scorecard=False, when resuming from an existing card_id
     # we should still call get_scorecard but not open a new one.

@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 
-from arcagi3.utils.cli import configure_logging, validate_args, handle_list_checkpoints, handle_close_scorecard, configure_args, configure_main_args, print_result
+from arcagi3.utils.cli import configure_logging, validate_args, handle_list_checkpoints, handle_close_scorecard, configure_args, configure_main_args, print_result, apply_env_vars_to_args
 from arcagi3.arc3tester import ARC3Tester
 
 load_dotenv()
@@ -32,6 +32,9 @@ def main_cli(cli_args: Optional[list] = None):
     
     # Parse arguments
     args = parser.parse_args(cli_args)
+    
+    # Apply environment variables to args (for boolean flags and overrides)
+    args = apply_env_vars_to_args(args)
 
     # Configure logging
     configure_logging(args)
@@ -62,6 +65,7 @@ def main_cli(cli_args: Optional[list] = None):
         retry_attempts=args.retry_attempts,
         api_retries=args.retries,
         num_plays=args.num_plays,
+        max_episode_actions=args.max_episode_actions,
         show_images=args.show_images,
         use_vision=args.use_vision,
         checkpoint_frequency=args.checkpoint_frequency,

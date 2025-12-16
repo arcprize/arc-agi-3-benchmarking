@@ -24,8 +24,10 @@ class ARC3Tester:
         retry_attempts: int = 3,
         api_retries: int = 3,
         num_plays: int = 1,
+        max_episode_actions: int = 0,
         show_images: bool = False,
         use_vision: bool = True,
+        show_helper_image: bool = True,
         checkpoint_frequency: int = 1,
         close_on_exit: bool = False,
         memory_word_limit: Optional[int] = None,
@@ -41,12 +43,14 @@ class ARC3Tester:
             config: Model configuration name from models.yml
             save_results_dir: Directory to save results (None to skip saving)
             overwrite_results: Whether to overwrite existing results
-            max_actions: Maximum actions per game
+            max_actions: Maximum actions for entire run across all games/plays (0 = no limit)
             retry_attempts: Number of retry attempts for API failures
             api_retries: Number of retry attempts for ARC-AGI-3 API calls
-            num_plays: Number of times to play the game (continues session with memory)
+            num_plays: Number of times to play the game (0 = infinite, continues session with memory)
+            max_episode_actions: Maximum actions per game/episode (0 = no limit)
             show_images: Whether to display game frames in the terminal
             use_vision: Whether to use vision (images) or text-only mode
+            show_helper_image: Whether to include helper diff image in analysis (default: True)
             checkpoint_frequency: Save checkpoint every N actions (default: 1, 0 to disable)
             close_on_exit: Close scorecard on exit even if not won (prevents checkpoint resume)
             memory_word_limit: Memory scratchpad word limit (overrides model config, default: from config or 500)
@@ -59,8 +63,10 @@ class ARC3Tester:
         self.max_actions = max_actions
         self.retry_attempts = retry_attempts
         self.num_plays = num_plays
+        self.max_episode_actions = max_episode_actions
         self.show_images = show_images
         self.use_vision = use_vision
+        self.show_helper_image = show_helper_image
         self.checkpoint_frequency = checkpoint_frequency
         self.close_on_exit = close_on_exit
         self.submit_scorecard = submit_scorecard
@@ -183,6 +189,7 @@ class ARC3Tester:
                     max_actions=self.max_actions,
                     retry_attempts=self.retry_attempts,
                     num_plays=self.num_plays,
+                    max_episode_actions=self.max_episode_actions,
                     show_images=self.show_images,
                     use_vision=self.use_vision,
                     checkpoint_frequency=self.checkpoint_frequency,
@@ -199,8 +206,10 @@ class ARC3Tester:
                     max_actions=self.max_actions,
                     retry_attempts=self.retry_attempts,
                     num_plays=self.num_plays,
+                    max_episode_actions=self.max_episode_actions,
                     show_images=self.show_images,
                     use_vision=self.use_vision,
+                    show_helper_image=self.show_helper_image,
                     checkpoint_frequency=self.checkpoint_frequency,
                     checkpoint_card_id=checkpoint_card_id,
                     memory_word_limit=self.memory_word_limit,
