@@ -496,33 +496,74 @@ def save_manifest(manifest: Dict[str, Any], path: Path) -> None:
         yaml.safe_dump(manifest, f, sort_keys=False)
 
 
-def format_job_preview(job: Dict[str, Any]) -> str:
-    """Format a single job for human-readable preview."""
-    parts = [
-        f"  • Model: {job['config']}",
-        f"    Game: {job['game_id']}",
-        f"    Max Actions: {job['max_actions']}",
-        f"    Num Plays: {job['num_plays'] if job['num_plays'] > 0 else 'unlimited'}",
-        f"    Max Episode Actions: {job.get('max_episode_actions', 0) if job.get('max_episode_actions', 0) > 0 else 'unlimited'}",
-        f"    Memory Limit: {job['memory_limit'] if job['memory_limit'] is not None else 'default'}",
-        f"    Checkpoint Frequency: {job['checkpoint_frequency']}",
-        f"    Vision: {'Yes' if job['use_vision'] else 'No'}",
-        f"    Helper Images: {'Yes' if job.get('show_helper_image', True) else 'No'}",
-    ]
-    return "\n".join(parts)
+def get_job_note(use_vision: bool, show_helper_image: bool) -> str:
+    """Generate a descriptive note for a job combination."""
+    if use_vision and show_helper_image:
+        return "Full vision + helpers"
+    elif use_vision and not show_helper_image:
+        return "Vision only (no helpers)"
+    elif not use_vision and not show_helper_image:
+        return "Text-only baseline"
+    else:
+        # This shouldn't happen due to filtering, but handle it
+        return "Text-only (helpers ignored)"
 
 
 def preview_experiments(jobs: List[Dict[str, Any]], sweep: SweepDefinition, run_options: RunOptions, run_name: str) -> None:
     """Display a human-readable preview of all experiments that will run."""
-    print("\n" + "=" * 80)
-    print("EXPERIMENT PREVIEW")
-    print("=" * 80)
-    print(f"\nRun Name: {run_name}")
-    print(f"Total Jobs: {len(jobs)}")
-    print(f"Max Concurrent: {run_options.max_concurrent}")
-    print(f"Results Directory: {run_options.save_results_dir}")
+    if not jobs:
+        print("\nNo jobs to preview.\n")
+        return
     
-    # Group jobs by model for better readability
+    # Extract global parameters (same across all jobs)
+    first_job = jobs[0]
+    global_params = {
+        "game": first_job['game_id'],
+        "max_actions": first_job['max_actions'],
+        "num_plays": first_job['num_plays'],
+        "max_episode_actions": first_job.get('max_episode_actions', 0),
+        "memory_limit": first_job['memory_limit'],
+        "checkpoint_frequency": first_job['checkpoint_frequency'],
+    }
+    
+    # Verify these are truly global (same for all jobs)
+    for job in jobs[1:]:
+        if job['game_id'] != global_params['game']:
+            global_params['game'] = None  # Not global
+        if job['max_actions'] != global_params['max_actions']:
+            global_params['max_actions'] = None
+        if job.get('max_episode_actions', 0) != global_params['max_episode_actions']:
+            global_params['max_episode_actions'] = None
+        if job['memory_limit'] != global_params['memory_limit']:
+            global_params['memory_limit'] = None
+        if job['checkpoint_frequency'] != global_params['checkpoint_frequency']:
+            global_params['checkpoint_frequency'] = None
+    
+    # Identify variation axes
+    vision_values = sorted(set(job['use_vision'] for job in jobs))
+    helper_values = sorted(set(job.get('show_helper_image', True) for job in jobs))
+    
+    variation_axes = []
+    if len(vision_values) > 1:
+        vision_str = ", ".join("On" if v else "Off" for v in vision_values)
+        variation_axes.append(("Vision", vision_str))
+    if len(helper_values) > 1:
+        helper_str = ", ".join("On" if v else "Off" for v in helper_values)
+        variation_axes.append(("Helper Images", helper_str))
+    
+    # Count unique combinations per model (should be same for all models)
+    if jobs:
+        first_model = jobs[0]['config']
+        first_model_combos = set()
+        for job in jobs:
+            if job['config'] == first_model:
+                key = (job['use_vision'], job.get('show_helper_image', True))
+                first_model_combos.add(key)
+        num_combinations = len(first_model_combos)
+    else:
+        num_combinations = 0
+    
+    # Group jobs by model
     jobs_by_model: Dict[str, List[Dict[str, Any]]] = {}
     for job in jobs:
         model = job['config']
@@ -530,19 +571,88 @@ def preview_experiments(jobs: List[Dict[str, Any]], sweep: SweepDefinition, run_
             jobs_by_model[model] = []
         jobs_by_model[model].append(job)
     
-    print(f"\nModels: {len(jobs_by_model)}")
-    for model, model_jobs in sorted(jobs_by_model.items()):
-        print(f"\n  {model} ({len(model_jobs)} job(s)):")
-        # Show first job as example, then summarize if there are more
-        if len(model_jobs) == 1:
-            print(format_job_preview(model_jobs[0]))
-        else:
-            print(format_job_preview(model_jobs[0]))
-            print(f"    ... and {len(model_jobs) - 1} more job(s) with different parameter combinations")
+    # Sort jobs within each model by vision, then helper images
+    for model in jobs_by_model:
+        jobs_by_model[model].sort(
+            key=lambda j: (not j['use_vision'], not j.get('show_helper_image', True))
+        )
     
+    # Print preview
     print("\n" + "=" * 80)
-    print("This experiment will run the above jobs.")
-    print("=" * 80 + "\n")
+    print("EXPERIMENT PREVIEW")
+    print("=" * 80)
+    print(f"\nRun Name: {run_name}")
+    print(f"Results Directory: {run_options.save_results_dir}")
+    print(f"\nTotal Jobs: {len(jobs)}")
+    print(f"Models: {len(jobs_by_model)}")
+    print(f"Max Concurrent Jobs: {run_options.max_concurrent}")
+    
+    # Global parameters section
+    print("\n" + "-" * 80)
+    print("GLOBAL PARAMETERS (shared unless overridden)")
+    print("-" * 80)
+    if global_params['game']:
+        print(f"Game:                   {global_params['game']}")
+    if global_params['max_actions'] is not None:
+        print(f"Max Actions:            {global_params['max_actions']}")
+    if global_params['num_plays'] is not None:
+        num_plays_str = "unlimited" if global_params['num_plays'] == 0 else str(global_params['num_plays'])
+        print(f"Num Plays:              {num_plays_str}")
+    if global_params['max_episode_actions'] is not None:
+        ep_actions_str = "unlimited" if global_params['max_episode_actions'] == 0 else str(global_params['max_episode_actions'])
+        print(f"Max Episode Actions:    {ep_actions_str}")
+    if global_params['memory_limit'] is not None:
+        memory_str = "default" if global_params['memory_limit'] is None else str(global_params['memory_limit'])
+        print(f"Memory Limit:           {memory_str}")
+    if global_params['checkpoint_frequency'] is not None:
+        print(f"Checkpoint Frequency:   {global_params['checkpoint_frequency']}")
+    
+    # Variation axes section
+    if variation_axes:
+        print("\n" + "-" * 80)
+        print("VARIATION AXES")
+        print("-" * 80)
+        for axis_name, axis_values in variation_axes:
+            print(f"{axis_name}:{' ' * (15 - len(axis_name))} [{axis_values}]")
+        if num_combinations > 0:
+            print(f"({num_combinations} combinations per model selected)")
+    
+    # Per-model sections
+    for model_idx, (model, model_jobs) in enumerate(sorted(jobs_by_model.items())):
+        separator = "=" * 80 if model_idx == 0 else "-" * 80
+        print(f"\n{separator}")
+        print(f"MODEL: {model} ({len(model_jobs)} jobs)")
+        print(separator)
+        print("\nJob ID   Vision   Helper Images   Notes")
+        print("------   ------   -------------   " + "-" * 45)
+        
+        for job in model_jobs:
+            # Extract number from job_id (e.g., "job-0001" -> "#01")
+            job_num_str = job['job_id'].replace('job-', '')
+            job_num = int(job_num_str) if job_num_str.isdigit() else 0
+            job_id = f"#{job_num:02d}"
+            vision_str = "On" if job['use_vision'] else "Off"
+            helper_str = "On" if job.get('show_helper_image', True) else "Off"
+            note = get_job_note(job['use_vision'], job.get('show_helper_image', True))
+            print(f"{job_id:<7} {vision_str:<7} {helper_str:<15} {note}")
+    
+    # Summary section
+    print("\n" + "=" * 80)
+    print("SUMMARY")
+    print("=" * 80)
+    print(f"• {len(jobs_by_model)} models")
+    print(f"• {num_combinations} parameter combinations per model")
+    print(f"• {len(jobs)} total experiment jobs")
+    print("\nEach job represents a unique combination of:")
+    
+    combo_parts = ["Model"]
+    if len(vision_values) > 1:
+        combo_parts.append("Vision Mode")
+    if len(helper_values) > 1:
+        combo_parts.append("Helper Image Usage")
+    
+    print(f"  ({' × '.join(combo_parts)})")
+    print("\n" + "=" * 80)
 
 
 def prepare_jobs_for_resume(manifest: Dict[str, Any]) -> List[int]:
