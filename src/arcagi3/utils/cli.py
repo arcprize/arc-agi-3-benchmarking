@@ -1,5 +1,6 @@
 
 import logging
+import os
 import threading
 from pathlib import Path
 from datetime import datetime
@@ -126,11 +127,6 @@ def configure_args(parser):
         "--close-on-exit",
         action="store_true",
         help="Close scorecard on exit even if game not won (prevents checkpoint resume). Can be set via CLOSE_ON_EXIT env var (true/1/yes)."
-    )
-    parser.add_argument(
-        "--no-scorecard-submission",
-        action="store_true",
-        help="Do not open or close scorecards on the ARC server; run in local-only mode when no existing card_id is provided."
     )
     parser.add_argument(
         "--no-scorecard-submission",
