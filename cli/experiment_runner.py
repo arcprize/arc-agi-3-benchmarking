@@ -123,6 +123,61 @@ def _first_non_empty(*values: Optional[List[Any]]) -> Optional[List[Any]]:
     return None
 
 
+# Valid YAML configuration keys (for validation)
+VALID_YAML_KEYS = {
+    # Sweep parameters
+    "configs",
+    "games",
+    "max_actions",
+    "num_plays",
+    "max_episode_actions",
+    "memory_limits",
+    "checkpoint_frequencies",
+    "use_vision",
+    "show_helper_images",
+    # Run options
+    "save_results_dir",
+    "overwrite_results",
+    "retry_attempts",
+    "retries",
+    "show_images",
+    "close_on_exit",
+    "no_scorecard_submission",
+    "max_concurrent",
+    "sweep_repeats",
+    "log_level",
+    "verbose",
+    # Metadata
+    "run_name",
+    "manifest_path",
+}
+
+
+def validate_yaml_config(yaml_cfg: Dict[str, Any], yaml_path: Optional[str] = None) -> None:
+    """
+    Validate that all keys in the YAML config are recognized.
+    Raises SystemExit with a clear error message if unknown keys are found.
+    """
+    if not yaml_cfg:
+        return
+    
+    unknown_keys = set(yaml_cfg.keys()) - VALID_YAML_KEYS
+    if unknown_keys:
+        path_msg = f" in {yaml_path}" if yaml_path else ""
+        error_msg = (
+            f"Unknown configuration key(s){path_msg}: {', '.join(sorted(unknown_keys))}\n\n"
+            f"Valid configuration keys are:\n"
+            f"  Sweep parameters: configs, games, max_actions, num_plays, max_episode_actions, "
+            f"memory_limits, checkpoint_frequencies, use_vision, show_helper_images\n"
+            f"  Run options: save_results_dir, overwrite_results, retry_attempts, retries, "
+            f"show_images, close_on_exit, no_scorecard_submission, max_concurrent, sweep_repeats, "
+            f"log_level, verbose\n"
+            f"  Metadata: run_name, manifest_path\n\n"
+            f"See scripts/EXPERIMENT_YAML.md for documentation."
+        )
+        raise SystemExit(error_msg)
+
+
 def load_yaml_config(path: Optional[str]) -> Dict[str, Any]:
     if not path:
         return {}
@@ -133,6 +188,7 @@ def load_yaml_config(path: Optional[str]) -> Dict[str, Any]:
         data = yaml.safe_load(f) or {}
         if not isinstance(data, dict):
             raise ValueError(f"YAML config root must be a mapping, got {type(data)}")
+        validate_yaml_config(data, str(yaml_path))
         return data
 
 
@@ -273,6 +329,11 @@ def generate_jobs(sweep: SweepDefinition, sweep_repeats: int = 1) -> List[Dict[s
     """
     Generate job definitions for all unique parameter combinations, repeated
     sweep_repeats times.
+    
+    Filters out invalid combinations where use_vision=False and show_helper_images=True,
+    since helper images only affect runs with vision enabled. However, if filtering would
+    remove all use_vision=False combinations, converts one to show_helper_images=False
+    instead to preserve at least one non-vision run.
     """
     jobs: List[Dict[str, Any]] = []
 
@@ -292,14 +353,57 @@ def generate_jobs(sweep: SweepDefinition, sweep_repeats: int = 1) -> List[Dict[s
 
     # Deduplicate combinations once (in case of accidental duplicates in input),
     # but then repeat the full unique set sweep_repeats times.
+    # Also filter out invalid combinations: vision=False + show_helper_images=True
+    # (helper images don't do anything when vision is disabled)
     unique_combos: List[tuple] = []
     seen_keys = set()
+    filtered_count = 0
+    no_vision_combos: List[tuple] = []  # Track all use_vision=False combinations
+    
     for combo in combinations:
+        (config, game_id, max_actions, num_plays, max_episode_actions, 
+         memory_limit, checkpoint_freq, use_vision, show_helper_image) = combo
+        
+        # Track non-vision combinations
+        if not use_vision:
+            no_vision_combos.append(combo)
+        
+        # Filter: skip combinations where vision=False and show_helper_images=True
+        # Helper images don't do anything when vision is disabled
+        if not use_vision and show_helper_image:
+            filtered_count += 1
+            continue
+        
         key = combo
         if key in seen_keys:
             continue
         seen_keys.add(key)
         unique_combos.append(combo)
+    
+    # Check if we filtered out all non-vision combinations
+    remaining_no_vision = [c for c in unique_combos if not c[7]]  # Index 7 is use_vision
+    if len(no_vision_combos) > 0 and len(remaining_no_vision) == 0:
+        # We filtered out all non-vision runs. Convert one filtered combo to show_helper_images=False
+        # to preserve at least one non-vision run (pick the first one for consistency)
+        first_no_vision = no_vision_combos[0]
+        (config, game_id, max_actions, num_plays, max_episode_actions, 
+         memory_limit, checkpoint_freq, use_vision, _) = first_no_vision
+        # Convert to show_helper_images=False
+        converted_combo = (config, game_id, max_actions, num_plays, max_episode_actions,
+                          memory_limit, checkpoint_freq, use_vision, False)
+        if converted_combo not in seen_keys:
+            unique_combos.append(converted_combo)
+            seen_keys.add(converted_combo)
+            logger.info(
+                f"Converted one filtered combination (vision=False, show_helper_images=True) "
+                f"to vision=False, show_helper_images=False to preserve a non-vision run."
+            )
+    
+    if filtered_count > 0:
+        logger.info(
+            f"Filtered out {filtered_count} invalid combination(s) where vision=False and "
+            f"show_helper_images=True (helper images only apply when vision is enabled)."
+        )
 
     job_counter = 1
     for repeat_index in range(1, max(1, sweep_repeats) + 1):
@@ -390,6 +494,55 @@ def save_manifest(manifest: Dict[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(manifest, f, sort_keys=False)
+
+
+def format_job_preview(job: Dict[str, Any]) -> str:
+    """Format a single job for human-readable preview."""
+    parts = [
+        f"  • Model: {job['config']}",
+        f"    Game: {job['game_id']}",
+        f"    Max Actions: {job['max_actions']}",
+        f"    Num Plays: {job['num_plays'] if job['num_plays'] > 0 else 'unlimited'}",
+        f"    Max Episode Actions: {job.get('max_episode_actions', 0) if job.get('max_episode_actions', 0) > 0 else 'unlimited'}",
+        f"    Memory Limit: {job['memory_limit'] if job['memory_limit'] is not None else 'default'}",
+        f"    Checkpoint Frequency: {job['checkpoint_frequency']}",
+        f"    Vision: {'Yes' if job['use_vision'] else 'No'}",
+        f"    Helper Images: {'Yes' if job.get('show_helper_image', True) else 'No'}",
+    ]
+    return "\n".join(parts)
+
+
+def preview_experiments(jobs: List[Dict[str, Any]], sweep: SweepDefinition, run_options: RunOptions, run_name: str) -> None:
+    """Display a human-readable preview of all experiments that will run."""
+    print("\n" + "=" * 80)
+    print("EXPERIMENT PREVIEW")
+    print("=" * 80)
+    print(f"\nRun Name: {run_name}")
+    print(f"Total Jobs: {len(jobs)}")
+    print(f"Max Concurrent: {run_options.max_concurrent}")
+    print(f"Results Directory: {run_options.save_results_dir}")
+    
+    # Group jobs by model for better readability
+    jobs_by_model: Dict[str, List[Dict[str, Any]]] = {}
+    for job in jobs:
+        model = job['config']
+        if model not in jobs_by_model:
+            jobs_by_model[model] = []
+        jobs_by_model[model].append(job)
+    
+    print(f"\nModels: {len(jobs_by_model)}")
+    for model, model_jobs in sorted(jobs_by_model.items()):
+        print(f"\n  {model} ({len(model_jobs)} job(s)):")
+        # Show first job as example, then summarize if there are more
+        if len(model_jobs) == 1:
+            print(format_job_preview(model_jobs[0]))
+        else:
+            print(format_job_preview(model_jobs[0]))
+            print(f"    ... and {len(model_jobs) - 1} more job(s) with different parameter combinations")
+    
+    print("\n" + "=" * 80)
+    print("This experiment will run the above jobs.")
+    print("=" * 80 + "\n")
 
 
 def prepare_jobs_for_resume(manifest: Dict[str, Any]) -> List[int]:
@@ -790,6 +943,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Print the generated job combinations and exit without running them.",
     )
+    parser.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        help="Skip confirmation prompt and run experiments immediately.",
+    )
 
     return parser.parse_args(argv)
 
@@ -927,6 +1086,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                 f"use_vision={job['use_vision']}, show_helper_image={job.get('show_helper_image', True)}"
             )
         return 0
+
+    # Show preview and request confirmation (unless --force is passed)
+    if not args.force:
+        preview_experiments(jobs_preview, sweep, run_options, run_name)
+        try:
+            response = input("Proceed with running these experiments? [y/N]: ").strip().lower()
+            if response not in ('y', 'yes'):
+                print("Experiment run cancelled.")
+                return 0
+        except (EOFError, KeyboardInterrupt):
+            print("\nExperiment run cancelled.")
+            return 0
 
     # Initial manifest path
     manifest_path = Path(
