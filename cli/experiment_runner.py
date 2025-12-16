@@ -102,6 +102,8 @@ class RunOptions:
     log_level: str
     verbose: bool
     dry_run: bool
+    use_breakpoint_agent: bool
+    breakpoint_ws_url: Optional[str]
 
 
 def _now_iso() -> str:
@@ -248,6 +250,14 @@ def build_run_options(
 
     max_concurrent = args.max_concurrent or yaml_cfg.get("max_concurrent", DEFAULT_MAX_CONCURRENT)
 
+    # breakpointer options
+    use_breakpoint_agent = bool(
+        args.breakpointer
+        if args.breakpointer is not None
+        else yaml_cfg.get("use_breakpoint_agent", False)
+    )
+    breakpoint_ws_url = args.breakpoint_ws_url or yaml_cfg.get("breakpoint_ws_url")
+
     # logging options align with arcagi3.utils.cli.configure_logging
     log_level = args.log_level or yaml_cfg.get("log_level", "INFO")
     verbose = bool(args.verbose or yaml_cfg.get("verbose", False))
@@ -266,6 +276,8 @@ def build_run_options(
         log_level=log_level,
         verbose=verbose,
         dry_run=dry_run,
+        use_breakpoint_agent=use_breakpoint_agent,
+        breakpoint_ws_url=breakpoint_ws_url,
     )
 
 
@@ -496,6 +508,8 @@ def _execute_single_job(job: Dict[str, Any], run_options: RunOptions) -> Tuple[O
         close_on_exit=run_options.close_on_exit,
         memory_word_limit=memory_limit,
         submit_scorecard=not run_options.no_scorecard_submission,
+        use_breakpoint_agent=run_options.use_breakpoint_agent,
+        breakpoint_ws_url=run_options.breakpoint_ws_url,
     )
 
     try:
@@ -761,6 +775,18 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=None,
         help="Maximum number of agents to run concurrently (default: 5).",
     )
+    parser.add_argument(
+        "--breakpointer",
+        action="store_true",
+        default=None,
+        help="Use the breakpoint agent and pause at configured steps via the breakpoint server.",
+    )
+    parser.add_argument(
+        "--breakpoint-ws-url",
+        type=str,
+        default=None,
+        help="WebSocket URL for the breakpoint server (default: ws://localhost:8765).",
+    )
 
     parser.add_argument(
         "--sweep-repeats",
@@ -847,6 +873,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             "log_level": args.log_level or stored_run_opts.get("log_level", "INFO"),
             "verbose": bool(args.verbose or stored_run_opts.get("verbose", False)),
             "dry_run": bool(args.dry_run),
+            # Provide defaults for breakpointer options if not in old manifest (backward compatibility)
+            "use_breakpoint_agent": bool(
+                args.breakpointer
+                if args.breakpointer is not None
+                else stored_run_opts.get("use_breakpoint_agent", False)
+            ),
+            "breakpoint_ws_url": args.breakpoint_ws_url or stored_run_opts.get("breakpoint_ws_url"),
         }
         run_options = RunOptions(**merged_run_opts)
 

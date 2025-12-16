@@ -82,76 +82,6 @@ pip install google-genai      # For Gemini models
 
 ## Usage
 
-### Interactive Breakpoint Debugger
-
-You can run games under an interactive breakpoint UI that lets you:
-- Pause agents at key reasoning steps
-- Inspect and edit step inputs (including images) before they execute
-- Continue individual agents or all agents at once
-
-#### 1. Build the breakpoint UI (once)
-
-From the repository root (`/home/keith/projects/arc`):
-
-```bash
-cd debug_ui
-npm install
-npm run build
-```
-
-This produces static assets in `debug_ui/dist`, which are served by the breakpoint server.
-
-#### 2. Start the breakpoint server
-
-From the same repo root:
-
-```bash
-python scripts/run_breakpoint_server.py --http-port 8080 --ws-port 8765
-```
-
-Then open `http://localhost:8080` in your browser. You should see:
-- A list of active agents
-- Global and per-agent breakpoint checkboxes
-- A detail panel with the current breakpoint payload and image preview
-
-The server starts in **global pause** mode with all steps breakpointed, so no agent will take actions until you hit **Continue** in the UI.
-
-#### 3. Run a game with breakpoints enabled
-
-In `arc-agi-3-benchmarking/` you can enable the `breakpointer` flag:
-
-```bash
-python main.py \
-  --game_id "ls20-fa137e247ce6" \
-  --config "gpt-4o-mini-2024-07-18" \
-  --breakpointer \
-  --max_actions 40
-```
-
-You can also point to a non-default WebSocket URL:
-
-```bash
-python main.py \
-  --game_id "ls20-fa137e247ce6" \
-  --config "gpt-4o-mini-2024-07-18" \
-  --breakpointer \
-  --breakpoint-ws-url "ws://localhost:9000/ws"
-```
-
-For batch runs:
-
-```bash
-python -m arcagi3.cli \
-  --games "ls20-fa137e247ce6,ft09-16726c5b26ff" \
-  --config "gpt-4o-mini-2024-07-18" \
-  --debug-breakpoints
-```
-
-When breakpoints are enabled:
-- Agents connect to the breakpoint server on startup.
-- At each selected step (`analyze`, `decide`, `convert`, `execute_action`), the agent sends a payload to the server and **waits** until the UI tells it to continue.
-- If the server is down, agents will keep retrying the connection and will not progress until it comes back up.
-
 ### List Available Games
 
 ```bash
@@ -554,6 +484,74 @@ python cli/experiment_runner.py \
 
 This prints all jobs, their configs/games, current status, and any associated checkpoint IDs without running anything.
 
+### Breakpointer Tool
+
+The breakpointer is an interactive debugging tool that allows you to pause agents at key reasoning steps, inspect and even modify their outputs before execution. This allows you to watch agents work through games live and effectively guide agents in a specific ways for experiments.
+
+#### Setup
+
+**1. Build the breakpoint UI**
+```bash
+cd breakpointer/frontend
+npm install
+npm run build
+```
+
+This produces static assets in `breakpointer/frontend/dist`, which are served by the breakpoint server.
+
+**2. Start the breakpoint server**
+```bash
+python scripts/run_breakpoint_server.py --http-port 8080 --ws-port 8765
+```
+The default ports for the `HTTP` and `ws` servers are `8080` and `8765` if not specified, respectively.
+
+The server starts in a **global pause** mode with all steps breakpointed, so no agent will take actions until you hit **Continue** in the UI for the first time; so don't worry about kicking off agents and missing the start.
+
+#### Using Breakpointer with main.py
+
+Enable breakpointer for a single game:
+
+```bash
+python main.py \
+  --game_id "ls20-fa137e247ce6" \
+  --config "gpt-4o-mini-2024-07-18" \
+  --breakpointer \
+  --max_actions 40
+```
+
+Specify a custom WebSocket URL:
+
+```bash
+python main.py \
+  --game_id "ls20-fa137e247ce6" \
+  --config "gpt-4o-mini-2024-07-18" \
+  --breakpointer \
+  --breakpoint-ws-url "ws://localhost:9000/ws"
+```
+
+#### Using Breakpointer with Experiment Runner
+
+Enable breakpointer for all jobs in an experiment:
+
+```bash
+python cli/experiment_runner.py \
+  --configs gpt-4o-2024-11-20 \
+  --games ls20-fa137e247ce6 ft09-16726c5b26ff \
+  --breakpointer \
+  --max-actions 40
+```
+
+#### Breakpoint Steps
+
+The breakpointer can pause at four key steps in the agent's reasoning loop:
+
+- **analyze**: After an action executes, when the agent analyzes the outcome and updates memory
+- **decide**: When the agent decides on the next high-level human action
+- **convert**: When the agent converts the human action into a specific game command
+- **execute_action**: Just before the action is sent to the game server
+
+You can enable/disable breakpoints for each step type globally or per-agent in the UI.
+
 ## Architecture
 
 ### High-Level Design
@@ -617,9 +615,18 @@ arc-agi-3-benchmarking/
 │       ├── rate_limiter.py  # Rate limiting
 │       ├── metrics.py       # Performance tracking
 │       └── cli.py           # CLI utilities
+├── breakpointer/             # Breakpoint debugging tools
+│   └── frontend/            # Breakpoint UI (React/TypeScript)
+│       ├── src/             # Source files
+│       ├── dist/            # Built static assets (generated)
+│       └── package.json     # Node dependencies
 ├── main.py                   # Single game CLI entry point
-├── cli/run_all.py           # Parallel batch execution
-├── scripts/example_usage.py   # Code examples
+├── cli/                      # CLI tools
+│   ├── experiment_runner.py # Multi-run experiment orchestrator
+│   └── run_all.py           # Parallel batch execution
+├── scripts/                  # Utility scripts
+│   ├── run_breakpoint_server.py  # Breakpoint server launcher
+│   └── example_usage.py     # Code examples
 ├── hints.yml                 # Optional game-specific hints
 ├── .checkpoint/              # Checkpoint storage (auto-created)
 ├── results/                  # Game results (JSON files)

@@ -704,11 +704,14 @@ async def run_breakpoint_server(
         # __file__ is at arc-agi-3-benchmarking/src/arcagi3/breakpoint_server.py
         # Go up 3 levels to get to arc-agi-3-benchmarking/
         root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        # Prefer breakpointer/dist (current UI), fall back to older names, then repo root.
+        # Prefer breakpointer/frontend/dist (current UI), fall back to older names, then repo root.
+        candidate_breakpointer_frontend = os.path.join(root, "breakpointer", "frontend", "dist")
         candidate_breakpointer = os.path.join(root, "breakpointer", "dist")
         candidate_breakpoint_ui = os.path.join(root, "breakpoint_ui", "dist")
         candidate_debug = os.path.join(root, "debug_ui", "dist")
-        if os.path.isdir(candidate_breakpointer):
+        if os.path.isdir(candidate_breakpointer_frontend):
+            static_dir = candidate_breakpointer_frontend
+        elif os.path.isdir(candidate_breakpointer):
             static_dir = candidate_breakpointer
         elif os.path.isdir(candidate_breakpoint_ui):
             static_dir = candidate_breakpoint_ui
