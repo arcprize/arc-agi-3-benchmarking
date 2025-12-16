@@ -853,7 +853,24 @@ class MultimodalAgent:
                     current_score = state.get("score", 0)
                     current_state = state.get("state", "IN_PROGRESS")
 
-                play_action_counter = self._play_action_counter if session_restored else 0
+                    # This reset is not the "first ever" reset for this session (we are resuming),
+                    # so count it like the server does.
+                    self.action_counter += 1
+                    self.action_history.append(
+                        GameActionRecord(
+                            action_num=self.action_counter,
+                            action="RESET",
+                            action_data=None,
+                            reasoning={"system": "reset_game (checkpoint recovery)"},
+                            result_score=current_score,
+                            result_state=current_state,
+                            cost=Cost(prompt_cost=0.0, completion_cost=0.0, reasoning_cost=0.0, total_cost=0.0),
+                        )
+                    )
+
+                # If we had to re-reset (checkpoint recovery), that RESET counts as the first action
+                # of this play; otherwise keep the restored counter.
+                play_action_counter = self._play_action_counter if session_restored else 1
                 resume_from_checkpoint = False
             else:
                 # Reset game
@@ -867,7 +884,25 @@ class MultimodalAgent:
                     self._available_actions = state.get("available_actions", list(HUMAN_ACTIONS.keys()))
                     self._memory_prompt = ""  # Initialize memory as empty
 
-                play_action_counter = 0
+                # Per the server: the very first RESET of a fresh run (play 1) is free and does
+                # not count as an action; any other RESET counts.
+                count_reset = resume_from_checkpoint or play_num > 1
+                if count_reset:
+                    self.action_counter += 1
+                    self.action_history.append(
+                        GameActionRecord(
+                            action_num=self.action_counter,
+                            action="RESET",
+                            action_data=None,
+                            reasoning={"system": f"reset_game (start play {play_num})"},
+                            result_score=current_score,
+                            result_state=current_state,
+                            cost=Cost(prompt_cost=0.0, completion_cost=0.0, reasoning_cost=0.0, total_cost=0.0),
+                        )
+                    )
+                    play_action_counter = 1
+                else:
+                    play_action_counter = 0
 
             # Store guid
             self._current_guid = guid
