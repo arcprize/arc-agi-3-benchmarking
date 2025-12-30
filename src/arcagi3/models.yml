@@ -33,6 +33,19 @@ models:
       input: 1.25
       output: 10.00
 
+  - name: "gpt-5-2-openrouter"
+    model_name: "openai/gpt-5.2"
+    provider: "openrouter"
+    is_multimodal: true
+    max_tokens: 200000
+    extra_body:
+      reasoning:
+        "enabled": true
+    pricing:
+      date: "2025-08-07"
+      input: 1.75
+      output: 14.00
+
   - name: "gpt-5-2025-08-07-medium"
     model_name: "gpt-5-2025-08-07"
     provider: "openai"
@@ -579,6 +592,32 @@ models:
       date: "2025-09-29"
       input: 3.00   # Single input price per 1M tokens.
       output: 15.00 # Single output price per 1M tokens.
+
+  - name: "claude-sonnet-4-5-openrouter"
+    model_name: "anthropic/claude-sonnet-4.5"
+    provider: "openrouter"
+    is_multimodal: true
+    max_tokens: 64000
+    extra_body:
+      reasoning:
+        "enabled": true
+    pricing:
+      date: "2025-08-07"
+      input: 3.00
+      output: 15.00
+
+  - name: "claude-opus-4-5-openrouter"
+    model_name: "anthropic/claude-opus-4.5"
+    provider: "openrouter"
+    is_multimodal: true
+    max_tokens: 64000
+    extra_body:
+      reasoning:
+        "enabled": true
+    pricing:
+      date: "2025-08-07"
+      input: 5.00
+      output: 25.00
 
   - name: "claude-sonnet-4-5-20250929-thinking-16k"
     model_name: "claude-sonnet-4-5-20250929"
