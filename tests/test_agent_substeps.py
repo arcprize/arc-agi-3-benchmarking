@@ -2,7 +2,9 @@ from typing import Any, Dict, List
 
 from PIL import Image
 
-from arcagi3.agent import MultimodalAgent, HUMAN_ACTIONS
+from arcagi3.examples.adcr import ADCRAgent
+from arcagi3.agent import HUMAN_ACTIONS
+from arcagi3.utils.context import SessionContext
 
 
 class DummyProvider:
@@ -22,6 +24,10 @@ class DummyProvider:
 
     def __init__(self):
         self.last_messages: List[Dict[str, Any]] = []
+
+    def call_with_tracking(self, context: SessionContext, messages):
+        # Tests don't charge cost; just record messages.
+        return self.call_provider(messages)
 
     def call_provider(self, messages):
         self.last_messages = messages
@@ -59,22 +65,36 @@ class DummyGameClient:
         }
 
 
-def _make_agent(monkeypatch) -> MultimodalAgent:
+def _make_agent(monkeypatch) -> ADCRAgent:
     import arcagi3.agent as agent_module
+    import arcagi3.adapters as adapters_module
+    from arcagi3.utils import task_utils
 
     dummy_provider = DummyProvider()
+    # Patch create_provider where it's actually referenced by agent.py
     monkeypatch.setattr(agent_module, "create_provider", lambda config: dummy_provider)
+    # Also patch adapters module for completeness
+    monkeypatch.setattr(adapters_module, "create_provider", lambda config: dummy_provider)
+    # Also patch read_models_config to avoid config lookup
+    monkeypatch.setattr(
+        task_utils,
+        "read_models_config",
+        lambda config: type('ModelConfig', (), {
+            'provider': 'dummy',
+            'pricing': type('Pricing', (), {'input': 0, 'output': 0})(),
+            'kwargs': {'memory_word_limit': 100},
+            'is_multimodal': False,
+        })()
+    )
 
     game_client = DummyGameClient()
-    agent = MultimodalAgent(
+    agent = ADCRAgent(
         config="dummy-config",
         game_client=game_client,
         card_id="local-test",
         max_actions=5,
-        retry_attempts=1,
         num_plays=1,
         max_episode_actions=0,
-        show_images=False,
         use_vision=False,
         checkpoint_frequency=0,
     )
@@ -86,17 +106,15 @@ def _make_agent(monkeypatch) -> MultimodalAgent:
 def test_decide_human_action_step_includes_available_actions_and_memory(monkeypatch):
     agent = _make_agent(monkeypatch)
 
-    # Simulate available action codes and memory text.
-    agent._available_actions = ["1", "2", "6"]
-    agent._memory_prompt = "Previous memory scratchpad"
+    context = SessionContext()
+    context.available_actions = ["1", "2", "6"]
+    context.update(frame_grids=[[[0]]], current_score=0, current_state="IN_PROGRESS")
+    context.datastore["memory_prompt"] = "Previous memory scratchpad"
 
     # Simple 1x1 grid frame for text-only path.
-    frame_grids = [[[0]]]
-    frame_images: List[Image.Image] = []
-
     analysis = "Some prior analysis"
 
-    result = agent.decide_human_action_step(frame_images, frame_grids, analysis)
+    result = agent.decide_human_action_step(context, analysis)
     assert result["human_action"] == "ACTION1"
 
     provider = agent._test_provider  # type: ignore[attr-defined]
@@ -115,16 +133,12 @@ def test_decide_human_action_step_includes_available_actions_and_memory(monkeypa
 def test_convert_human_to_game_action_step_includes_valid_actions(monkeypatch):
     agent = _make_agent(monkeypatch)
 
-    agent._available_actions = ["1", "6"]
+    context = SessionContext()
+    context.available_actions = ["1", "6"]
+    context.update(frame_grids=[[[0]]], current_score=0, current_state="IN_PROGRESS")
 
     human_action = "Click the red square"
-    last_frame_grid = [[0]]
-    # Dummy 1x1 image for completeness, although we use text-only path.
-    last_frame_image = Image.new("RGB", (1, 1))
-
-    result = agent.convert_human_to_game_action_step(
-        human_action, last_frame_image, last_frame_grid
-    )
+    result = agent.convert_human_to_game_action_step(context, human_action)
     assert result["action"] == "ACTION1"
 
     provider = agent._test_provider  # type: ignore[attr-defined]
@@ -139,10 +153,11 @@ def test_convert_human_to_game_action_step_includes_valid_actions(monkeypatch):
 
 def test_validate_action_matches_available_actions(monkeypatch):
     agent = _make_agent(monkeypatch)
-    agent._available_actions = ["1", "6"]
+    context = SessionContext()
+    context.available_actions = ["1", "6"]
 
-    assert agent._validate_action("ACTION1") is True
-    assert agent._validate_action("ACTION6") is True
-    assert agent._validate_action("ACTION3") is False
+    assert agent.validate_action(context, "ACTION1") is True
+    assert agent.validate_action(context, "ACTION6") is True
+    assert agent.validate_action(context, "ACTION3") is False
 
 

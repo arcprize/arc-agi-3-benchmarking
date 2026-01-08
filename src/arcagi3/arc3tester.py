@@ -4,12 +4,27 @@ from arcagi3.utils import read_models_config
 from arcagi3.game_client import GameClient
 from arcagi3.utils import generate_scorecard_tags
 from arcagi3.agent import MultimodalAgent
+from arcagi3.utils.context import SessionContext
 from arcagi3.checkpoint import CheckpointManager
-from arcagi3.schemas import GameResult
+from arcagi3.schemas import GameResult, GameStep
 from arcagi3.utils import save_result
 import uuid
 
 logger = logging.getLogger(__name__)
+
+
+class DefaultTesterAgent(MultimodalAgent):
+    """
+    Minimal concrete agent used by ARC3Tester.
+
+    ARC3Tester is primarily orchestration (scorecard + checkpoint + running loops).
+    This default agent picks ACTION1 unconditionally; real usage should supply a
+    custom agent implementation elsewhere.
+    """
+
+    def step(self, context: SessionContext) -> GameStep:
+        return GameStep(action={"action": "ACTION1"}, reasoning={"agent": "default"})
+
 
 class ARC3Tester:
     """Main tester class for running ARC-AGI-3 games"""
@@ -30,6 +45,7 @@ class ARC3Tester:
         close_on_exit: bool = False,
         memory_word_limit: Optional[int] = None,
         submit_scorecard: bool = True,
+        agent_class: Optional[type] = None,
     ):
         """
         Initialize the tester.
@@ -48,8 +64,10 @@ class ARC3Tester:
             checkpoint_frequency: Save checkpoint every N actions (default: 1, 0 to disable)
             close_on_exit: Close scorecard on exit even if not won (prevents checkpoint resume)
             memory_word_limit: Memory scratchpad word limit (overrides model config, default: from config or 500)
+            agent_class: Optional agent class to use instead of DefaultTesterAgent
         """
         self.config = config
+        self.agent_class = agent_class or DefaultTesterAgent
         self.model_config = read_models_config(config)
         self.save_results_dir = save_results_dir
         self.overwrite_results = overwrite_results
@@ -170,23 +188,31 @@ class ARC3Tester:
             
             # Create agent
             # Use checkpoint_card_id for checkpoint management if resuming, otherwise use card_id
-            agent = MultimodalAgent(
-                config=self.config,
-                game_client=self.game_client,
-                card_id=card_id,
-                max_actions=self.max_actions,
-                retry_attempts=self.retry_attempts,
-                num_plays=self.num_plays,
-                max_episode_actions=self.max_episode_actions,
-                show_images=self.show_images,
-                use_vision=self.use_vision,
-                checkpoint_frequency=self.checkpoint_frequency,
-                checkpoint_card_id=checkpoint_card_id,
-                memory_word_limit=self.memory_word_limit,
-            )
+            agent_kwargs = {
+                "config": self.config,
+                "game_client": self.game_client,
+                "card_id": card_id,
+                "max_actions": self.max_actions,
+                "num_plays": self.num_plays,
+                "max_episode_actions": self.max_episode_actions,
+                "checkpoint_frequency": self.checkpoint_frequency,
+            }
+            # Add agent-specific kwargs if using ADCRAgent or similar
+            if self.agent_class != DefaultTesterAgent:
+                agent_kwargs.update({
+                    "use_vision": self.use_vision,
+                    "show_images": self.show_images,
+                    "memory_word_limit": self.memory_word_limit,
+                })
+            agent = self.agent_class(**agent_kwargs)
 
             # Play game (with checkpoint support)
-            result = agent.play_game(game_id, resume_from_checkpoint=resume_from_checkpoint)
+            checkpoint_id = checkpoint_card_id if checkpoint_card_id else card_id
+            result = agent.play_game(
+                game_id,
+                resume_from_checkpoint=resume_from_checkpoint,
+                checkpoint_id=checkpoint_id,
+            )
             
             # Save result if directory provided
             if self.save_results_dir:

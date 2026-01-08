@@ -12,3 +12,4 @@ When examining the images try to identify objects or environmental patterns and 
 Provide your analysis and then after providing `---` update your memory scratchpad. The memory scratchpad is a place for you to remember anything that will help you play the game better. You can structure it however you want - it's your scratchpad to use as you see fit. IMPORTANT: The memory scratchpad should be plain text. Use natural language, bullet points, or any text format you prefer. Keep the memory  scratchpad concise and within approximately {{memory_limit}} words to help manage context window size. Focus on what's most important for understanding the game environment and rules to beat the game in as few moves as possible.
 
 ---
+

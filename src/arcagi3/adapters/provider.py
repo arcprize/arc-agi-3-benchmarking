@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from arcagi3.schemas import Attempt, ModelConfig
 from arcagi3.utils.task_utils import read_models_config
+from arcagi3.utils.context import SessionContext
 
 
 class ProviderAdapter(abc.ABC):
@@ -92,3 +93,20 @@ class ProviderAdapter(abc.ABC):
          Call provider with retry logic
          """
          pass
+
+    def call_with_tracking(self, context: SessionContext, messages: List[Dict[str, Any]]) -> Any:
+        """
+        Call provider and append usage/cost into the invocation SessionContext.
+
+        This is the preferred entrypoint for agents so accounting is always scoped
+        to the current invocation context (not the agent instance).
+        """
+        response = self.call_provider(messages)
+        prompt_tokens, completion_tokens, reasoning_tokens = self.extract_usage(response)
+        context.add_usage_and_cost(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            reasoning_tokens=reasoning_tokens,
+            pricing=self.model_config.pricing,
+        )
+        return response

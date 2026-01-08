@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from requests import Session
 
-from .utils.retry import retry_with_exponential_backoff
+from arcagi3.utils.retry import retry_with_exponential_backoff
 
 logger = logging.getLogger(__name__)
 

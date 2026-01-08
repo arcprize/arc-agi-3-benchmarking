@@ -63,6 +63,18 @@ class GameActionRecord(BaseModel):
     cost: Optional["Cost"] = None
 
 
+class GameStep(BaseModel):
+    """
+    Return type for `MultimodalAgent.step()`.
+
+    - action: the game action to execute (must contain at least {"action": "ACTION1" | ...})
+      Optional additional fields are action-specific (e.g. x/y for ACTION6, or a "data" dict).
+    - reasoning: opaque metadata for logging/debug; deep-copied and sent to the ARC API as-is.
+    """
+    action: Dict[str, Any]
+    reasoning: Dict[str, Any] = {}
+
+
 class GameResult(BaseModel):
     """Complete result of playing a single game"""
     game_id: str

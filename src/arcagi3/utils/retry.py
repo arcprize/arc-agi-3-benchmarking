@@ -2,6 +2,7 @@
 Retry utilities with exponential backoff for API calls.
 """
 import logging
+import random
 import time
 from functools import wraps
 from typing import Any, Callable, Tuple, Type
@@ -40,6 +41,38 @@ def retry_with_exponential_backoff(
                     return func(*args, **kwargs)
                 except exceptions as e:
                     last_exception = e
+
+                    # ------------------------------------------------------------------
+                    # Smart retry behavior for HTTP-like errors:
+                    # - Retry on timeouts/network errors (no response)
+                    # - Retry on 408/425/429 and 5xx
+                    # - Do NOT retry on other 4xx
+                    # - Respect Retry-After when present
+                    # ------------------------------------------------------------------
+                    response = getattr(e, "response", None)
+                    if response is not None:
+                        try:
+                            status_code = int(getattr(response, "status_code", 0) or 0)
+                        except Exception:
+                            status_code = 0
+
+                        retryable_statuses = {408, 425, 429, 500, 502, 503, 504}
+                        if status_code and status_code not in retryable_statuses:
+                            logger.error(
+                                f"Function {func.__name__} failed with non-retryable HTTP status {status_code}. "
+                                f"Error: {type(e).__name__}: {str(e)}"
+                            )
+                            raise
+
+                        # Respect Retry-After header if available (seconds)
+                        try:
+                            headers = getattr(response, "headers", {}) or {}
+                            retry_after = headers.get("Retry-After") or headers.get("retry-after")
+                            if retry_after is not None:
+                                delay = max(delay, float(retry_after))
+                        except Exception:
+                            # Ignore malformed Retry-After
+                            pass
                     
                     if attempt == max_retries:
                         logger.error(
@@ -48,13 +81,17 @@ def retry_with_exponential_backoff(
                         )
                         raise
                     
+                    # Add small jitter to reduce thundering herd
+                    jitter = random.uniform(0.0, min(0.25 * delay, 1.0))
+                    sleep_for = delay + jitter
+
                     logger.warning(
                         f"Function {func.__name__} failed on attempt {attempt + 1}/{max_retries + 1}. "
                         f"Error: {type(e).__name__}: {str(e)}. "
-                        f"Retrying in {delay:.1f}s..."
+                        f"Retrying in {sleep_for:.1f}s..."
                     )
                     
-                    time.sleep(delay)
+                    time.sleep(sleep_for)
                     delay = min(delay * backoff_factor, max_delay)
             
             # Should never reach here, but just in case

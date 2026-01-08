@@ -12,7 +12,7 @@ from arcagi3.schemas import (Attempt, AttemptMetadata, Choice,
                              Message)
 from arcagi3.utils.retry import retry_with_exponential_backoff
 
-from .openai_base import OpenAIBaseAdapter
+from arcagi3.adapters.openai_base import OpenAIBaseAdapter
 
 load_dotenv()
 

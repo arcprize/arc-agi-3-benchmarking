@@ -1,13 +1,20 @@
 """Utility functions for ARC-AGI-3 benchmarking."""
 
-from .rate_limiter import AsyncRequestRateLimiter
-from .retry import (RetryConfig, retry_on_rate_limit,
-                    retry_with_exponential_backoff)
-from .task_utils import (find_hints_file, generate_execution_map,
-                         generate_scorecard_tags, generate_summary, load_hints,
-                         read_models_config, read_provider_rate_limits,
-                         result_exists, save_result,
-                         save_result_in_timestamped_structure)
+from arcagi3.utils.rate_limiter import AsyncRequestRateLimiter
+from arcagi3.utils.retry import RetryConfig, retry_on_rate_limit, retry_with_exponential_backoff
+from arcagi3.utils.task_utils import (
+    find_hints_file,
+    generate_execution_map,
+    generate_scorecard_tags,
+    generate_summary,
+    load_hints,
+    read_models_config,
+    read_provider_rate_limits,
+    result_exists,
+    save_result,
+    save_result_in_timestamped_structure,
+)
+from arcagi3.utils.context import SessionContext
 
 __all__ = [
     "read_models_config",
@@ -24,5 +31,6 @@ __all__ = [
     "retry_on_rate_limit",
     "RetryConfig",
     "AsyncRequestRateLimiter",
+    "SessionContext",
 ]
 

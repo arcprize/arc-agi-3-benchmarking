@@ -5,7 +5,8 @@ from PIL import Image
 import arcagi3.agent as agent_module
 
 from arcagi3.agent import MultimodalAgent
-from arcagi3.schemas import GameResult
+from arcagi3.schemas import GameResult, GameStep
+from arcagi3.utils.context import SessionContext
 
 
 class DummyProvider:
@@ -76,23 +77,12 @@ class DummyGameClient:
 class HookedAgent(MultimodalAgent):
     """Subclass that overrides a specific hook to test customization."""
 
-    def convert_human_to_game_action_step(
-        self,
-        human_action: str,
-        last_frame_image: Image.Image,
-        last_frame_grid,
-    ) -> Dict[str, Any]:
-        """
-        Override the primary conversion hook to force a fixed ACTION1,
-        without consulting the underlying model.
-        """
-        return {
-            "action": "ACTION1",
-            "x": 0,
-            "y": 0,
-            "human_action_dict": {"human_action": human_action},
-            "analysis": "",
-        }
+    def step(self, context: SessionContext) -> GameStep:
+        """Return a fixed ACTION1 without consulting the model."""
+        return GameStep(
+            action={"action": "ACTION1", "x": 0, "y": 0},
+            reasoning={"test": "hooked-agent"},
+        )
 
 
 def test_hooked_agent_uses_overridden_convert_to_game_action(monkeypatch):
@@ -105,11 +95,8 @@ def test_hooked_agent_uses_overridden_convert_to_game_action(monkeypatch):
         game_client=game_client,
         card_id="local-test",
         max_actions=5,
-        retry_attempts=1,
         num_plays=1,
         max_episode_actions=0,
-        show_images=False,
-        use_vision=False,
         checkpoint_frequency=0,
     )
 

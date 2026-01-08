@@ -1,85 +1,90 @@
-import textwrap
-
-from arcagi3.prompts import PromptManager, PromptName
-
-
-def test_default_prompts_load_and_have_expected_content():
-    manager = PromptManager()
-    system_prompt = manager.render(PromptName.SYSTEM)
-    assert "abstract reasoning agent" in system_prompt
-
-    analyze_prompt = manager.render(
-        PromptName.ANALYZE_INSTRUCT, {"memory_limit": 500}
-    )
-    assert "memory scratchpad" in analyze_prompt
-    assert "500" in analyze_prompt
+import importlib.util
+from pathlib import Path
 
 
-def test_placeholder_extraction_and_validation_rejects_unknown():
-    # Create a manager and then try to render with an override containing an
-    # unknown placeholder; this should raise a ValueError.
-    overrides = {
-        "analyze_instruct": "Test with {{unknown_placeholder}}",
-    }
-    manager = PromptManager(overrides=overrides)
-    try:
-        manager.render(PromptName.ANALYZE_INSTRUCT, {"memory_limit": 10})
-    except ValueError as e:
-        assert "unknown_placeholder" in str(e)
-    else:
-        raise AssertionError("Expected ValueError for unknown placeholder")
+def _load_module_from_path(module_path: Path):
+    spec = importlib.util.spec_from_file_location("tmp_prompt_module", str(module_path))
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[attr-defined]
+    return module
 
 
-def test_string_override_and_file_override_and_callable_override(tmp_path):
-    # String override (literal template)
-    overrides = {
-        "compress_memory": "Size={{current_word_count}}, Limit={{memory_limit}}, Text={{memory_text}}"
-    }
-    manager = PromptManager(overrides=overrides)
-    rendered = manager.render(
-        PromptName.COMPRESS_MEMORY,
-        {
-            "current_word_count": 123,
-            "memory_limit": 456,
-            "memory_text": "hello",
-        },
-    )
-    assert "Size=123" in rendered
-    assert "Limit=456" in rendered
-    assert "Text=hello" in rendered
+def test_prompt_manager_loads_prompts_relative_to_caller(tmp_path):
+    # Arrange a fake module on disk with its own ./prompts directory.
+    mod_dir = tmp_path / "foo" / "bar"
+    prompts_dir = mod_dir / "prompts"
+    prompts_dir.mkdir(parents=True)
 
-    # File-path override
-    file_template = tmp_path / "analyze.prompt"
-    file_template.write_text(
-        textwrap.dedent(
-            """
-            File based prompt with limit {{memory_limit}}.
-            """
-        ).strip(),
+    (prompts_dir / "myprompt.prompt").write_text("Hello {{x}}", encoding="utf-8")
+    (prompts_dir / "noext").write_text("NoExt {{y}}", encoding="utf-8")
+
+    module_path = mod_dir / "file.py"
+    module_path.write_text(
+        "\n".join(
+            [
+                "from arcagi3.prompts import PromptManager",
+                "",
+                "def run():",
+                "    mgr = PromptManager()",
+                "    a = mgr.render('myprompt', {'x': 123})",
+                "    b = mgr.render('noext', {'y': 'ok'})",
+                "    return a, b",
+                "",
+            ]
+        ),
         encoding="utf-8",
     )
-    manager = PromptManager(
-        overrides={
-            "analyze_instruct": str(file_template),
-        }
-    )
-    rendered_file = manager.render(
-        PromptName.ANALYZE_INSTRUCT, {"memory_limit": 42}
-    )
-    assert "limit 42" in rendered_file
 
-    # Callable override
-    def dynamic_prompt(vars):
-        return f"Dynamic limit is {vars['memory_limit']}"
+    mod = _load_module_from_path(module_path)
+    a, b = mod.run()
+    assert a == "Hello 123"
+    assert b == "NoExt ok"
 
-    manager = PromptManager(
-        overrides={
-            "analyze_instruct": dynamic_prompt,
-        }
+
+def test_prompt_manager_validates_template_variables(tmp_path):
+    """Test that render() validates template variables strictly."""
+    from arcagi3.prompts import PromptManager
+
+    # Create a test module with prompts
+    mod_dir = tmp_path / "test_mod"
+    prompts_dir = mod_dir / "prompts"
+    prompts_dir.mkdir(parents=True)
+
+    (prompts_dir / "test.prompt").write_text("Hello {{x}} and {{y}}", encoding="utf-8")
+
+    module_path = mod_dir / "test.py"
+    module_path.write_text(
+        "\n".join(
+            [
+                "from arcagi3.prompts import PromptManager",
+                "",
+                "def run():",
+                "    mgr = PromptManager()",
+                "    # Missing variable should raise",
+                "    try:",
+                "        mgr.render('test', {'x': 1})",
+                "        return 'FAIL'",
+                "    except ValueError as e:",
+                "        if 'Missing variable' in str(e):",
+                "            pass  # expected",
+                "    # Extra variable should raise",
+                "    try:",
+                "        mgr.render('test', {'x': 1, 'y': 2, 'z': 3})",
+                "        return 'FAIL'",
+                "    except ValueError as e:",
+                "        if 'Extra variable' in str(e):",
+                "            pass  # expected",
+                "    # Correct variables should work",
+                "    return mgr.render('test', {'x': 1, 'y': 2})",
+                "",
+            ]
+        ),
+        encoding="utf-8",
     )
-    rendered_callable = manager.render(
-        PromptName.ANALYZE_INSTRUCT, {"memory_limit": 99}
-    )
-    assert rendered_callable == "Dynamic limit is 99"
+
+    mod = _load_module_from_path(module_path)
+    result = mod.run()
+    assert result == "Hello 1 and 2"
 
 

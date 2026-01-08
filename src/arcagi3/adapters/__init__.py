@@ -1,35 +1,35 @@
-from .provider import ProviderAdapter
+from arcagi3.adapters.provider import ProviderAdapter
 
 
 # Lazy imports to avoid requiring all provider SDKs
 def _lazy_import_adapter(adapter_name: str):
     """Lazy import adapter to avoid loading all provider SDKs upfront"""
     if adapter_name == "anthropic":
-        from .anthropic import AnthropicAdapter
+        from arcagi3.adapters.anthropic import AnthropicAdapter
         return AnthropicAdapter
     elif adapter_name == "openai":
-        from .open_ai import OpenAIAdapter
+        from arcagi3.adapters.open_ai import OpenAIAdapter
         return OpenAIAdapter
     elif adapter_name == "deepseek":
-        from .deepseek import DeepseekAdapter
+        from arcagi3.adapters.deepseek import DeepseekAdapter
         return DeepseekAdapter
     elif adapter_name == "gemini":
-        from .gemini import GeminiAdapter
+        from arcagi3.adapters.gemini import GeminiAdapter
         return GeminiAdapter
     elif adapter_name == "huggingfacefireworks":
-        from .hugging_face_fireworks import HuggingFaceFireworksAdapter
+        from arcagi3.adapters.hugging_face_fireworks import HuggingFaceFireworksAdapter
         return HuggingFaceFireworksAdapter
     elif adapter_name == "fireworks":
-        from .fireworks import FireworksAdapter
+        from arcagi3.adapters.fireworks import FireworksAdapter
         return FireworksAdapter
     elif adapter_name == "grok":
-        from .grok import GrokAdapter
+        from arcagi3.adapters.grok import GrokAdapter
         return GrokAdapter
     elif adapter_name == "openrouter":
-        from .openrouter import OpenRouterAdapter
+        from arcagi3.adapters.openrouter import OpenRouterAdapter
         return OpenRouterAdapter
     elif adapter_name == "xai":
-        from .xai import XAIAdapter
+        from arcagi3.adapters.xai import XAIAdapter
         return XAIAdapter
     else:
         raise ValueError(f"Unknown adapter: {adapter_name}")

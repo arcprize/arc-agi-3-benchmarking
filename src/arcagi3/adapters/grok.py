@@ -11,7 +11,7 @@ from arcagi3.schemas import (Attempt, AttemptMetadata, Choice,
                              Message)
 
 # Import the base class
-from .openai_base import OpenAIBaseAdapter
+from arcagi3.adapters.openai_base import OpenAIBaseAdapter
 
 load_dotenv()
 logger = logging.getLogger(__name__)

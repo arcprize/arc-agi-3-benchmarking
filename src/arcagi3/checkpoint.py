@@ -10,9 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from PIL import Image
-
-from .schemas import CompletionTokensDetails, Cost, GameActionRecord, Usage
+from arcagi3.schemas import CompletionTokensDetails, Cost, GameActionRecord, Usage
 
 logger = logging.getLogger(__name__)
 
@@ -22,32 +20,33 @@ class CheckpointManager:
     
     CHECKPOINT_DIR = ".checkpoint"
     
-    def __init__(self, card_id: str):
+    def __init__(self, card_id: str, checkpoint_dir: Optional[str] = None):
         """
         Initialize checkpoint manager.
         
         Args:
             card_id: Scorecard ID to use as checkpoint directory name
+            checkpoint_dir: Base directory for checkpoints (defaults to CHECKPOINT_DIR)
         """
         self.card_id = card_id
-        self.checkpoint_path = Path(self.CHECKPOINT_DIR) / card_id
+        base_dir = checkpoint_dir or self.CHECKPOINT_DIR
+        self.checkpoint_path = Path(base_dir) / card_id
         
     def save_state(self, state: Dict[str, Any]):
         """
         Save the current agent state to a checkpoint file.
 
         Args:
-            state: Dictionary containing all state to be saved (with metadata, memory, metrics keys)
+            state: Dictionary containing state to be saved (expects metadata + metrics).
         """
         logger.info(f"Saving checkpoint to {self.checkpoint_path}")
         
         # Create checkpoint directory
         self.checkpoint_path.mkdir(parents=True, exist_ok=True)
         
-        # Extract components from nested structure
-        metadata_dict = state.get("metadata", {})
-        memory_dict = state.get("memory", {})
-        metrics_dict = state.get("metrics", {})
+        # Expect nested structure: {metadata, metrics}
+        metadata_dict = state["metadata"]
+        metrics_dict = state["metrics"]
         
         # Extract metadata fields
         config = metadata_dict.get("config")
@@ -60,24 +59,18 @@ class CheckpointManager:
         action_counter = metadata_dict.get("action_counter")
         current_play = metadata_dict.get("current_play", 1)
         play_action_counter = metadata_dict.get("play_action_counter", 0)
+        current_score = metadata_dict.get("current_score", 0)
+        current_state = metadata_dict.get("current_state", "IN_PROGRESS")
         previous_score = metadata_dict.get("previous_score", 0)
-        
-        # Extract memory fields
-        memory_prompt = memory_dict.get("prompt", "")
-        previous_action = memory_dict.get("previous_action")
-        previous_images = memory_dict.get("previous_images", [])
-        previous_grids = memory_dict.get("previous_grids")
-        current_grids = memory_dict.get("current_grids")
-        available_actions = memory_dict.get("available_actions", [])
+        frame_grids = metadata_dict.get("frame_grids", [])
+        available_actions = metadata_dict.get("available_actions", [])
+        datastore = metadata_dict.get("datastore", {})
         
         # Extract metrics fields
         total_cost = metrics_dict.get("total_cost")
         total_usage = metrics_dict.get("total_usage")
         action_history = metrics_dict.get("action_history", [])
         
-        # Determine use_vision (not in current get_state, but needed for backward compat)
-        use_vision = len(previous_images) > 0
-
         # Save metadata
         metadata = {
             "card_id": self.card_id,
@@ -91,10 +84,17 @@ class CheckpointManager:
             "action_counter": action_counter,
             "current_play": current_play,
             "play_action_counter": play_action_counter,
+            "current_score": current_score,
+            "current_state": current_state,
             "previous_score": previous_score,
-            "use_vision": use_vision,
+            "frame_grids": frame_grids,
+            "available_actions": available_actions,
+            "datastore": datastore,
             "checkpoint_timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+        # Validate JSON-serializability eagerly (fail-fast before writing partial checkpoints)
+        json.dumps(metadata)
         
         with open(self.checkpoint_path / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
@@ -112,42 +112,6 @@ class CheckpointManager:
         action_history_data = [action.model_dump() for action in action_history]
         with open(self.checkpoint_path / "action_history.json", "w") as f:
             json.dump(action_history_data, f, indent=2)
-        
-        # Save memory
-        with open(self.checkpoint_path / "memory.txt", "w") as f:
-            f.write(memory_prompt if memory_prompt else "")
-        
-        # Save previous action
-        if previous_action:
-            with open(self.checkpoint_path / "previous_action.json", "w") as f:
-                json.dump(previous_action, f, indent=2)
-        
-        # Save previous images
-        # Clear existing images directory to prevent stale files from accumulating
-        # (e.g., if previous checkpoint had 3 frames but current has 1)
-        images_dir = self.checkpoint_path / "previous_images"
-        if images_dir.exists():
-            shutil.rmtree(images_dir)
-        
-        if previous_images:
-            images_dir.mkdir(exist_ok=True)
-            for i, img in enumerate(previous_images):
-                img.save(images_dir / f"frame_{i}.png")
-
-        # Save previous grids (for text-only mode)
-        if previous_grids:
-            with open(self.checkpoint_path / "previous_grids.json", "w") as f:
-                json.dump(previous_grids, f)
-
-        # Save current grids (for resuming with correct state)
-        if current_grids:
-            with open(self.checkpoint_path / "current_grids.json", "w") as f:
-                json.dump(current_grids, f)
-
-        # Save available actions
-        if available_actions:
-            with open(self.checkpoint_path / "available_actions.json", "w") as f:
-                json.dump(available_actions, f)
 
         logger.info(f"Checkpoint saved successfully")
     
@@ -200,64 +164,15 @@ class CheckpointManager:
                 action_history_data = json.load(f)
                 action_history = [GameActionRecord(**action) for action in action_history_data]
         
-        # Load memory
-        memory_prompt = ""
-        memory_path = self.checkpoint_path / "memory.txt"
-        if memory_path.exists():
-            with open(memory_path) as f:
-                memory_prompt = f.read()
-        
-        # Load previous action
-        previous_action = None
-        previous_action_path = self.checkpoint_path / "previous_action.json"
-        if previous_action_path.exists():
-            with open(previous_action_path) as f:
-                previous_action = json.load(f)
-        
-        # Load previous images
-        previous_images = []
-        images_dir = self.checkpoint_path / "previous_images"
-        if images_dir.exists():
-            image_files = sorted(images_dir.glob("frame_*.png"), key=lambda p: int(p.stem.split("_")[1]))
-            for img_path in image_files:
-                with Image.open(img_path) as img:
-                    # Create a copy to fully decouple from file handle
-                    previous_images.append(img.copy())
-
-        # Load previous grids (for text-only mode)
-        previous_grids = []
-        grids_path = self.checkpoint_path / "previous_grids.json"
-        if grids_path.exists():
-            with open(grids_path) as f:
-                previous_grids = json.load(f)
-
-        # Load current grids (for resuming)
-        current_grids = []
-        current_grids_path = self.checkpoint_path / "current_grids.json"
-        if current_grids_path.exists():
-            with open(current_grids_path) as f:
-                current_grids = json.load(f)
-
-        # Load available actions
-        available_actions = []
-        available_actions_path = self.checkpoint_path / "available_actions.json"
-        if available_actions_path.exists():
-            with open(available_actions_path) as f:
-                available_actions = json.load(f)
-
         logger.info(f"Checkpoint loaded successfully")
 
         return {
             "metadata": metadata,
-            "total_cost": total_cost,
-            "total_usage": total_usage,
-            "action_history": action_history,
-            "memory_prompt": memory_prompt,
-            "previous_action": previous_action,
-            "previous_images": previous_images,
-            "previous_grids": previous_grids,
-            "current_grids": current_grids,
-            "available_actions": available_actions,
+            "metrics": {
+                "total_cost": total_cost,
+                "total_usage": total_usage,
+                "action_history": action_history,
+            },
         }
     
     def checkpoint_exists(self) -> bool:

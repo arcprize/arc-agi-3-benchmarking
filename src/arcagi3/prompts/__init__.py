@@ -1,10 +1,7 @@
-from .names import PromptName
-from .manager import PromptManager, PromptSource, PromptVars
+from arcagi3.prompts.manager import PromptManager, PromptVars
 
 __all__ = [
     "PromptManager",
-    "PromptName",
-    "PromptSource",
     "PromptVars",
 ]
 

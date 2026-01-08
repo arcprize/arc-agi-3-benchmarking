@@ -10,7 +10,7 @@ from huggingface_hub import InferenceClient
 from arcagi3.schemas import (Attempt, AttemptMetadata, Choice,
                              CompletionTokensDetails, Cost, Message, Usage)
 
-from .provider import ProviderAdapter
+from arcagi3.adapters.provider import ProviderAdapter
 
 load_dotenv()
 logger = logging.getLogger(__name__)

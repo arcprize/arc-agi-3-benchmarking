@@ -13,7 +13,7 @@ from arcagi3.schemas import (APIType, Attempt, CompletionTokensDetails, Cost,
                              StreamResponse, Usage)
 from arcagi3.utils.retry import retry_with_exponential_backoff
 
-from .provider import ProviderAdapter
+from arcagi3.adapters.provider import ProviderAdapter
 
 load_dotenv()
 
