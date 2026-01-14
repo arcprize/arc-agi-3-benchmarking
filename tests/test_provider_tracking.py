@@ -56,17 +56,17 @@ def test_call_with_tracking_updates_session_context(monkeypatch):
 
     provider.call_with_tracking(ctx, [{"role": "user", "content": "hi"}])
 
-    assert ctx.total_usage.prompt_tokens == 10
-    assert ctx.total_usage.completion_tokens == 5
+    assert ctx.metrics.total_usage.prompt_tokens == 10
+    assert ctx.metrics.total_usage.completion_tokens == 5
     # reasoning tokens are stored in completion_tokens_details
-    assert ctx.total_usage.completion_tokens_details is not None
-    assert ctx.total_usage.completion_tokens_details.reasoning_tokens == 2
+    assert ctx.metrics.total_usage.completion_tokens_details is not None
+    assert ctx.metrics.total_usage.completion_tokens_details.reasoning_tokens == 2
 
     # pricing is per 1M tokens, and we set pricing so that:
     # prompt_cost = 10 * 1.0, completion_cost = 5 * 2.0, reasoning_cost = 2 * 2.0
-    assert ctx.total_cost.prompt_cost == 10.0
-    assert ctx.total_cost.completion_cost == 10.0
-    assert (ctx.total_cost.reasoning_cost or 0.0) == 4.0
-    assert ctx.total_cost.total_cost == 24.0
+    assert ctx.metrics.total_cost.prompt_cost == 10.0
+    assert ctx.metrics.total_cost.completion_cost == 10.0
+    assert (ctx.metrics.total_cost.reasoning_cost or 0.0) == 4.0
+    assert ctx.metrics.total_cost.total_cost == 24.0
 
 

@@ -5,7 +5,6 @@ from typing import Any, Dict, List, Optional
 from arcagi3.agent import MultimodalAgent, HUMAN_ACTIONS, HUMAN_ACTIONS_LIST
 from arcagi3.prompts import PromptManager
 from arcagi3.schemas import GameStep
-from arcagi3.types import FrameGrid, FrameGridSequence, FrameImageSequence
 from arcagi3.utils.context import SessionContext
 from arcagi3.utils.formatting import grid_to_text_matrix
 from arcagi3.utils.image import grid_to_image, image_to_base64, make_image_block, image_diff
@@ -62,7 +61,7 @@ class ADCRAgent(MultimodalAgent):
             return "no previous action"
 
         level_complete = ""
-        if context.current_score > context.previous_score:
+        if context.game.current_score > context.game.previous_score:
             level_complete = "NEW LEVEL!!!! - Whatever you did must have been good!"
 
         analyze_instruct = self.prompt_manager.render("analyze_instruct", {"memory_limit": self.memory_word_limit})
@@ -71,11 +70,8 @@ class ADCRAgent(MultimodalAgent):
 
         want_vision = self.use_vision and self.provider.model_config.is_multimodal
         if want_vision:
-            previous_imgs = (
-                [grid_to_image(g) for g in (context.previous_grids or [])]
-                if context.previous_grids
-                else []
-            )
+            previous_grids = context.frames.previous_grids
+            previous_imgs = [grid_to_image(g) for g in previous_grids] if previous_grids else []
             current_imgs = context.frame_images
             if previous_imgs and current_imgs:
                 imgs = [
@@ -91,14 +87,14 @@ class ADCRAgent(MultimodalAgent):
             ]
         else:
             msg_parts: List[Dict[str, Any]] = []
-            if context.previous_grids:
+            if context.frames.previous_grids:
                 msg_parts.append(
                     {
                         "type": "text",
-                        "text": f"Frame 0 (before action):\n{grid_to_text_matrix(context.previous_grids[-1])}",
+                        "text": f"Frame 0 (before action):\n{grid_to_text_matrix(context.frames.previous_grids[-1])}",
                     }
                 )
-            for i, grid in enumerate(context.frame_grids):
+            for i, grid in enumerate(context.frames.frame_grids):
                 msg_parts.append(
                     {"type": "text", "text": f"Frame {i+1} (after action):\n{grid_to_text_matrix(grid)}"}
                 )
@@ -122,8 +118,8 @@ class ADCRAgent(MultimodalAgent):
         return analysis
 
     def decide_human_action_step(self, context: SessionContext, analysis: str) -> Dict[str, Any]:
-        if context.available_actions:
-            indices = [int(str(a)) for a in context.available_actions]
+        if context.game.available_actions:
+            indices = [int(str(a)) for a in context.game.available_actions]
             action_descriptions = [
                 HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[i - 1]]
                 for i in indices
@@ -167,7 +163,7 @@ class ADCRAgent(MultimodalAgent):
                 [make_image_block(image_to_base64(img)) for img in context.frame_images]
             )
         else:
-            for i, grid in enumerate(context.frame_grids):
+            for i, grid in enumerate(context.frames.frame_grids):
                 content.append({"type": "text", "text": f"Frame {i}:\n{grid_to_text_matrix(grid)}"})
         content.append({"type": "text", "text": prompt_text})
 
@@ -181,8 +177,8 @@ class ADCRAgent(MultimodalAgent):
         return extract_json_from_response(action_message)
 
     def convert_human_to_game_action_step(self, context: SessionContext, human_action: str) -> Dict[str, Any]:
-        if context.available_actions:
-            indices = [int(str(a)) for a in context.available_actions]
+        if context.game.available_actions:
+            indices = [int(str(a)) for a in context.game.available_actions]
             available_actions_text = "\n".join(
                 f"{HUMAN_ACTIONS_LIST[i - 1]} = {HUMAN_ACTIONS[HUMAN_ACTIONS_LIST[i - 1]]}"
                 for i in indices
@@ -233,11 +229,11 @@ class ADCRAgent(MultimodalAgent):
     def validate_action(self, context: SessionContext, action_name: str) -> bool:
         if not action_name or not action_name.startswith("ACTION"):
             return False
-        if not context.available_actions:
+        if not context.game.available_actions:
             return True
         try:
             action_num = action_name.replace("ACTION", "")
-            normalized_available = {str(a) for a in context.available_actions}
+            normalized_available = {str(a) for a in context.game.available_actions}
             return action_num in normalized_available
         except Exception:
             return False
@@ -259,7 +255,7 @@ class ADCRAgent(MultimodalAgent):
 
         if not self.validate_action(context, str(action_name)):
             raise ValueError(
-                f"Invalid action '{action_name}' for available_actions={context.available_actions}"
+                f"Invalid action '{action_name}' for available_actions={context.game.available_actions}"
             )
 
         context.datastore["previous_action"] = human_action_dict
@@ -274,5 +270,4 @@ class ADCRAgent(MultimodalAgent):
 
 
 __all__ = ["ADCRAgent"]
-
 

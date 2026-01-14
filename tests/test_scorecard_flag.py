@@ -119,17 +119,45 @@ def test_resume_from_existing_checkpoint_still_uses_scorecard_apis(monkeypatch, 
         "action_counter": 0,
         "current_play": 1,
         "play_action_counter": 0,
+        "current_score": 0,
+        "current_state": "IN_PROGRESS",
         "previous_score": 0,
         "use_vision": False,
         "checkpoint_timestamp": "2024-01-01T00:00:00Z",
     }
     with open(checkpoint_dir / "metadata.json", "w") as f:
         json.dump(metadata, f)
+
+    costs = {
+        "total_cost": {
+            "prompt_cost": 0.0,
+            "completion_cost": 0.0,
+            "reasoning_cost": 0.0,
+            "total_cost": 0.0,
+        },
+        "total_usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "completion_tokens_details": {
+                "reasoning_tokens": 0,
+                "accepted_prediction_tokens": 0,
+                "rejected_prediction_tokens": 0,
+            },
+        },
+    }
+    with open(checkpoint_dir / "costs.json", "w") as f:
+        json.dump(costs, f)
+
+    with open(checkpoint_dir / "action_history.json", "w") as f:
+        json.dump([], f)
     
     # Monkeypatch the checkpoint directory to use our temp directory
     from arcagi3.checkpoint import CheckpointManager
-    original_checkpoint_dir = CheckpointManager.CHECKPOINT_DIR
-    monkeypatch.setattr(CheckpointManager, "CHECKPOINT_DIR", str(tmp_path / ".checkpoint"))
+    original_checkpoint_dir = CheckpointManager.DEFAULT_CHECKPOINT_DIR
+    monkeypatch.setattr(
+        CheckpointManager, "DEFAULT_CHECKPOINT_DIR", str(tmp_path / ".checkpoint")
+    )
     
     fake_client = FakeGameClient()
     tester = _make_tester(fake_client, submit_scorecard=False, monkeypatch=monkeypatch)

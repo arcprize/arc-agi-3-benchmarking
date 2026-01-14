@@ -107,7 +107,7 @@ def test_decide_human_action_step_includes_available_actions_and_memory(monkeypa
     agent = _make_agent(monkeypatch)
 
     context = SessionContext()
-    context.available_actions = ["1", "2", "6"]
+    context.set_available_actions(["1", "2", "6"])
     context.update(frame_grids=[[[0]]], current_score=0, current_state="IN_PROGRESS")
     context.datastore["memory_prompt"] = "Previous memory scratchpad"
 
@@ -134,7 +134,7 @@ def test_convert_human_to_game_action_step_includes_valid_actions(monkeypatch):
     agent = _make_agent(monkeypatch)
 
     context = SessionContext()
-    context.available_actions = ["1", "6"]
+    context.set_available_actions(["1", "6"])
     context.update(frame_grids=[[[0]]], current_score=0, current_state="IN_PROGRESS")
 
     human_action = "Click the red square"
@@ -154,7 +154,7 @@ def test_convert_human_to_game_action_step_includes_valid_actions(monkeypatch):
 def test_validate_action_matches_available_actions(monkeypatch):
     agent = _make_agent(monkeypatch)
     context = SessionContext()
-    context.available_actions = ["1", "6"]
+    context.set_available_actions(["1", "6"])
 
     assert agent.validate_action(context, "ACTION1") is True
     assert agent.validate_action(context, "ACTION6") is True

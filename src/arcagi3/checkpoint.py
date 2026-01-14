@@ -10,15 +10,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from arcagi3.schemas import CompletionTokensDetails, Cost, GameActionRecord, Usage
 
 logger = logging.getLogger(__name__)
+
+
+def _require_dict(value: Any, name: str) -> Dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    raise TypeError(f"{name} must be a dict; got {type(value)}")
 
 
 class CheckpointManager:
     """Manages checkpointing of agent state"""
     
-    CHECKPOINT_DIR = ".checkpoint"
+    DEFAULT_CHECKPOINT_DIR = ".checkpoint"
     
     def __init__(self, card_id: str, checkpoint_dir: Optional[str] = None):
         """
@@ -29,7 +36,7 @@ class CheckpointManager:
             checkpoint_dir: Base directory for checkpoints (defaults to CHECKPOINT_DIR)
         """
         self.card_id = card_id
-        base_dir = checkpoint_dir or self.CHECKPOINT_DIR
+        base_dir = checkpoint_dir or self.DEFAULT_CHECKPOINT_DIR
         self.checkpoint_path = Path(base_dir) / card_id
         
     def save_state(self, state: Dict[str, Any]):
@@ -37,43 +44,61 @@ class CheckpointManager:
         Save the current agent state to a checkpoint file.
 
         Args:
-            state: Dictionary containing state to be saved (expects metadata + metrics).
+            state: Dictionary containing organized state (metadata, frames, game, metrics, history, datastore).
         """
         logger.info(f"Saving checkpoint to {self.checkpoint_path}")
         
         # Create checkpoint directory
         self.checkpoint_path.mkdir(parents=True, exist_ok=True)
         
-        # Expect nested structure: {metadata, metrics}
-        metadata_dict = state["metadata"]
-        metrics_dict = state["metrics"]
+        # Extract from organized structure
+        metadata_dict = state.get("metadata", {})
+        frames_dict = state.get("frames", {})
+        game_dict = state.get("game", {})
+        metrics_dict = state.get("metrics", {})
+        history_dict = state.get("history", {})
+        datastore = state.get("datastore", {})
         
         # Extract metadata fields
         config = metadata_dict.get("config")
-        game_id = metadata_dict.get("game_id")
-        guid = metadata_dict.get("guid")
+        checkpoint_id = metadata_dict.get("checkpoint_id")
         max_actions = metadata_dict.get("max_actions")
-        retry_attempts = metadata_dict.get("retry_attempts")
+        retry_attempts = metadata_dict.get("retry_attempts")  # Legacy field
         num_plays = metadata_dict.get("num_plays")
-        max_episode_actions = metadata_dict.get("max_episode_actions", 0)  # Backward compatibility
-        action_counter = metadata_dict.get("action_counter")
-        current_play = metadata_dict.get("current_play", 1)
-        play_action_counter = metadata_dict.get("play_action_counter", 0)
-        current_score = metadata_dict.get("current_score", 0)
-        current_state = metadata_dict.get("current_state", "IN_PROGRESS")
-        previous_score = metadata_dict.get("previous_score", 0)
-        frame_grids = metadata_dict.get("frame_grids", [])
-        available_actions = metadata_dict.get("available_actions", [])
-        datastore = metadata_dict.get("datastore", {})
+        max_episode_actions = metadata_dict.get("max_episode_actions", 0)
+        
+        # Extract frame fields
+        frame_grids = frames_dict.get("frame_grids", [])
+        
+        # Extract game fields
+        game_id = game_dict.get("game_id", "")
+        guid = game_dict.get("guid")
+        action_counter = game_dict.get("action_counter", 0)
+        current_play = game_dict.get("play_num", 1)
+        play_action_counter = game_dict.get("play_action_counter", 0)
+        current_score = game_dict.get("current_score", 0)
+        current_state = game_dict.get("current_state", "IN_PROGRESS")
+        previous_score = game_dict.get("previous_score", 0)
+        available_actions = game_dict.get("available_actions", [])
         
         # Extract metrics fields
-        total_cost = metrics_dict.get("total_cost")
-        total_usage = metrics_dict.get("total_usage")
-        action_history = metrics_dict.get("action_history", [])
+        total_cost = _require_dict(metrics_dict.get("total_cost"), "metrics.total_cost")
+        total_usage = _require_dict(metrics_dict.get("total_usage"), "metrics.total_usage")
+        
+        # Extract history fields
+        action_history = history_dict.get("action_history", [])
+        if not isinstance(action_history, list):
+            raise TypeError(f"history.action_history must be a list; got {type(action_history)}")
+        for idx, action in enumerate(action_history):
+            if not isinstance(action, dict):
+                raise TypeError(
+                    f"history.action_history[{idx}] must be a dict; got {type(action)}"
+                )
         
         # Save metadata
         metadata = {
             "card_id": self.card_id,
+            "checkpoint_id": checkpoint_id,
             "config": config,
             "game_id": game_id,
             "guid": guid,
@@ -101,15 +126,15 @@ class CheckpointManager:
         
         # Save costs and usage
         costs = {
-            "total_cost": total_cost.model_dump() if total_cost else {},
-            "total_usage": total_usage.model_dump() if total_usage else {},
+            "total_cost": total_cost,
+            "total_usage": total_usage,
         }
         
         with open(self.checkpoint_path / "costs.json", "w") as f:
             json.dump(costs, f, indent=2)
         
         # Save action history
-        action_history_data = [action.model_dump() for action in action_history]
+        action_history_data = action_history
         with open(self.checkpoint_path / "action_history.json", "w") as f:
             json.dump(action_history_data, f, indent=2)
 
@@ -139,40 +164,57 @@ class CheckpointManager:
         with open(metadata_path) as f:
             metadata = json.load(f)
         
-        # Load costs
+        # Load costs (raw dicts)
         costs_path = self.checkpoint_path / "costs.json"
         if costs_path.exists():
             with open(costs_path) as f:
                 costs_data = json.load(f)
-                total_cost = Cost(**costs_data["total_cost"])
-                total_usage = Usage(**costs_data["total_usage"])
+                total_cost = costs_data.get("total_cost", {})
+                total_usage = costs_data.get("total_usage", {})
         else:
-            # Default values if costs file is missing
-            total_cost = Cost(prompt_cost=0.0, completion_cost=0.0, total_cost=0.0)
-            total_usage = Usage(
-                prompt_tokens=0,
-                completion_tokens=0,
-                total_tokens=0,
-                completion_tokens_details=CompletionTokensDetails()
-            )
+            total_cost = {}
+            total_usage = {}
         
-        # Load action history
+        # Load action history (raw dicts)
         action_history = []
         action_history_path = self.checkpoint_path / "action_history.json"
         if action_history_path.exists():
             with open(action_history_path) as f:
                 action_history_data = json.load(f)
-                action_history = [GameActionRecord(**action) for action in action_history_data]
+                action_history = action_history_data
         
         logger.info(f"Checkpoint loaded successfully")
 
         return {
-            "metadata": metadata,
+            "metadata": {
+                "config": metadata.get("config"),
+                "checkpoint_id": metadata.get("checkpoint_id"),
+                "max_actions": metadata.get("max_actions"),
+                "num_plays": metadata.get("num_plays"),
+                "max_episode_actions": metadata.get("max_episode_actions", 0),
+            },
+            "frames": {
+                "frame_grids": metadata.get("frame_grids", []),
+            },
+            "game": {
+                "game_id": metadata.get("game_id", ""),
+                "guid": metadata.get("guid"),
+                "current_score": metadata.get("current_score", 0),
+                "current_state": metadata.get("current_state", "IN_PROGRESS"),
+                "previous_score": metadata.get("previous_score", 0),
+                "play_num": metadata.get("play_num", metadata.get("current_play", 1)),
+                "play_action_counter": metadata.get("play_action_counter", 0),
+                "action_counter": metadata.get("action_counter", 0),
+                "available_actions": metadata.get("available_actions", []),
+            },
             "metrics": {
                 "total_cost": total_cost,
                 "total_usage": total_usage,
+            },
+            "history": {
                 "action_history": action_history,
             },
+            "datastore": metadata.get("datastore", {}),
         }
     
     def checkpoint_exists(self) -> bool:
@@ -188,7 +230,7 @@ class CheckpointManager:
     @staticmethod
     def list_checkpoints() -> List[str]:
         """List all available checkpoint card_ids"""
-        checkpoint_dir = Path(CheckpointManager.CHECKPOINT_DIR)
+        checkpoint_dir = Path(CheckpointManager.DEFAULT_CHECKPOINT_DIR)
         if not checkpoint_dir.exists():
             return []
         
@@ -202,7 +244,7 @@ class CheckpointManager:
     @staticmethod
     def get_checkpoint_info(card_id: str) -> Optional[Dict[str, Any]]:
         """Get metadata about a checkpoint"""
-        checkpoint_path = Path(CheckpointManager.CHECKPOINT_DIR) / card_id
+        checkpoint_path = Path(CheckpointManager.DEFAULT_CHECKPOINT_DIR) / card_id
         metadata_path = checkpoint_path / "metadata.json"
         
         if not metadata_path.exists():
