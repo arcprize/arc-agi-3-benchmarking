@@ -1,91 +1,53 @@
 """
-Main CLI for running ARC-AGI-3 benchmarks on single games.
+Example CLI demonstrating how to use the ARC-AGI-3 runner with prepared agents.
+
+This file shows the minimal setup needed to run the project:
+1. Create an AgentRunner instance
+2. Register one or more prepared agents via their flags
+3. Run the CLI with standard ARC-AGI-3 arguments
 
 Usage:
     python main.py --game_id ls20-016295f7601e --config gpt-4o-2024-11-20
+
+To use a different agent, import its flags and register it:
+    from arcagi3.examples.hypothesis_agent.flags import flags as hypothesis_flags
+    runner.add_flags(hypothesis_flags)
+
+Or use the full runner with all agents pre-registered:
+    python -m arcagi3.runner --agent hypothesis --game_id ... --config ...
 """
-import sys
-import os
-import argparse
-import logging
-from typing import Optional
+from __future__ import annotations
+
 from dotenv import load_dotenv
 
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+from arcagi3.examples.adcr.flags import flags as adcr_flags
+from arcagi3.runner import AgentRunner
 
 
-from arcagi3.utils.cli import configure_logging, validate_args, handle_list_checkpoints, handle_close_scorecard, configure_args, configure_main_args, print_result, apply_env_vars_to_args
-from arcagi3.arc3tester import ARC3Tester
-
-load_dotenv()
-logger = logging.getLogger(__name__)
-
-def main_cli(cli_args: Optional[list] = None):
-    """Main CLI entry point"""
-    parser = argparse.ArgumentParser(
-        description="Run ARC-AGI-3 benchmark on a single game"
-    )
-    # Configure arguments
-    configure_args(parser)
-    configure_main_args(parser)
+def main_cli(cli_args: list | None = None) -> None:
+    """
+    Main entry point demonstrating how to set up and run the ARC-AGI-3 runner.
     
-    # Parse arguments
-    args = parser.parse_args(cli_args)
+    This is a minimal example that:
+    - Loads environment variables (for API keys)
+    - Creates a runner instance
+    - Registers the ADCR agent
+    - Runs the CLI with all standard ARC-AGI-3 arguments
+    """
+    # Load environment variables (API keys, etc.)
+    load_dotenv()
     
-    # Apply environment variables to args (for boolean flags and overrides)
-    args = apply_env_vars_to_args(args)
-
-    # Configure logging
-    configure_logging(args)
-
-    # Handle --list-checkpoints
-    if args.list_checkpoints:
-        handle_list_checkpoints()
-        return
-
-    # Handle --close-scorecard
-    if args.close_scorecard:
-        handle_close_scorecard(args)
-        return
-
-    # Validate arguments
-    validate_args(args, parser)
-   
-    # Set default save directory if not provided
-    if not args.save_results_dir:
-        args.save_results_dir = f"results/{args.config}"
+    # Create a runner instance - this manages the agent registry
+    runner = AgentRunner()
     
-    # Create tester
-    tester = ARC3Tester(
-        config=args.config,
-        save_results_dir=args.save_results_dir,
-        overwrite_results=args.overwrite_results,
-        max_actions=args.max_actions,
-        retry_attempts=args.retry_attempts,
-        api_retries=args.retries,
-        num_plays=args.num_plays,
-        max_episode_actions=args.max_episode_actions,
-        show_images=args.show_images,
-        use_vision=args.use_vision,
-        checkpoint_frequency=args.checkpoint_frequency,
-        close_on_exit=args.close_on_exit,
-        memory_word_limit=args.memory_limit,
-        submit_scorecard=not getattr(args, "no_scorecard_submission", False),
-    )
+    # Register the ADCR agent by adding its flags
+    # Each agent has a flags.py file that defines its CLI args and agent class
+    runner.add_flags(adcr_flags)
+    
+    # Run the CLI - this handles argument parsing, agent instantiation,
+    # game execution, checkpointing, and result printing
+    runner.run(cli_args)
 
-    # Play game (with checkpoint support)
-    card_id = args.checkpoint if args.checkpoint else None
-    resume_from_checkpoint = bool(args.checkpoint)
-    result = tester.play_game(
-        args.game_id,
-        card_id=card_id,
-        resume_from_checkpoint=resume_from_checkpoint
-    )
-    
-    if result:
-        print_result(result)
-    
 
 if __name__ == "__main__":
     main_cli()
