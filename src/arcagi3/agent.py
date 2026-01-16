@@ -14,6 +14,8 @@ from arcagi3.checkpoint import CheckpointManager
 from arcagi3.game_client import GameClient
 from arcagi3.schemas import ActionData, Cost, GameActionRecord, GameResult, GameStep
 from arcagi3.utils.context import SessionContext, GameProgress
+from arcagi3.breakpoints.manager import BreakpointHook, BreakpointManager
+from arcagi3.breakpoints.spec import BreakpointSpec, load_breakpoint_spec, merge_breakpoint_specs
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,9 @@ class MultimodalAgent(ABC):
         max_episode_actions: int = 0,
         checkpoint_frequency: int = 1,
         checkpoint_dir: Optional[str] = None,
+        breakpoints_enabled: bool = False,
+        breakpoint_ws_url: str = "ws://localhost:8765/ws",
+        breakpoint_schema_path: Optional[str] = None,
     ):
         self.config = config
         self.game_client = game_client
@@ -67,7 +72,49 @@ class MultimodalAgent(ABC):
         self.checkpoint_frequency = checkpoint_frequency
         self.checkpoint_dir = checkpoint_dir
 
+        self._breakpoints_enabled = breakpoints_enabled
+        self._breakpoint_ws_url = breakpoint_ws_url
+        self._breakpoint_schema_path = breakpoint_schema_path
+        self._breakpoint_config_spec = load_breakpoint_spec(breakpoint_schema_path)
+        self.breakpoint_manager: Optional[BreakpointManager] = None
+
         super().__init__()
+        if self._breakpoints_enabled and self._breakpoint_config_spec:
+            self.breakpoint_manager = BreakpointManager(
+                enabled=True,
+                ws_url=self._breakpoint_ws_url,
+                spec=self._breakpoint_config_spec,
+                hooks={},
+            )
+            self.breakpoint_manager.update_identity(config=self.config, card_id=self.card_id)
+
+    def get_breakpoint_spec(self) -> Optional[BreakpointSpec]:
+        return None
+
+    def get_breakpoint_hooks(self) -> Dict[str, BreakpointHook]:
+        return {}
+
+    def register_breakpoints(
+        self,
+        *,
+        runtime_spec: Optional[BreakpointSpec] = None,
+        hooks: Optional[Dict[str, BreakpointHook]] = None,
+    ) -> None:
+        if not self._breakpoints_enabled:
+            return
+        merged = merge_breakpoint_specs(self._breakpoint_config_spec, runtime_spec)
+        if self.breakpoint_manager is None:
+            self.breakpoint_manager = BreakpointManager(
+                enabled=True,
+                ws_url=self._breakpoint_ws_url,
+                spec=merged,
+                hooks=hooks or {},
+            )
+        else:
+            self.breakpoint_manager.update_spec(merged)
+            if hooks is not None:
+                self.breakpoint_manager.update_hooks(hooks)
+        self.breakpoint_manager.update_identity(config=self.config, card_id=self.card_id)
 
     def save_checkpoint(self, context: SessionContext) -> None:
         """
@@ -100,6 +147,25 @@ class MultimodalAgent(ABC):
         guid: Optional[str],
         reasoning: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        if self.breakpoint_manager:
+            payload = {
+                "action": action_name,
+                "action_data": action_data or {},
+                "game_id": game_id,
+                "guid": guid,
+                "reasoning": reasoning,
+            }
+            updated = self.breakpoint_manager.pause(
+                "execute_action.pre",
+                payload,
+                context=None,
+                step_name="execute_action.pre",
+            )
+            action_name = updated.get("action", action_name)
+            action_data = updated.get("action_data", action_data)
+            game_id = updated.get("game_id", game_id)
+            guid = updated.get("guid", guid)
+            reasoning = updated.get("reasoning", reasoning)
         data: Dict[str, Any] = {"game_id": game_id}
         if guid:
             data["guid"] = guid
@@ -108,7 +174,18 @@ class MultimodalAgent(ABC):
         # Allow sending empty dicts; use None to omit the field entirely.
         if reasoning is not None:
             data["reasoning"] = reasoning
-        return self.game_client.execute_action(action_name, data)
+        result = self.game_client.execute_action(action_name, data)
+        if self.breakpoint_manager:
+            post_payload = {"result": result}
+            updated = self.breakpoint_manager.pause(
+                "execute_action.post",
+                post_payload,
+                context=None,
+                step_name="execute_action.post",
+            )
+            if isinstance(updated.get("result"), dict):
+                result = updated["result"]
+        return result
 
     def get_state(self, context: SessionContext) -> Dict[str, Any]:
         """Return serializable invocation state for checkpointing."""
@@ -129,6 +206,8 @@ class MultimodalAgent(ABC):
         checkpoint_id: Optional[str] = None,
     ) -> GameResult:
         checkpoint_id = checkpoint_id or self.card_id
+        if self.breakpoint_manager:
+            self.breakpoint_manager.update_identity(game_id=game_id)
 
         if resume_from_checkpoint:
             try:

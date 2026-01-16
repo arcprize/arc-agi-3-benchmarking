@@ -10,6 +10,8 @@ from arcagi3.utils.formatting import grid_to_text_matrix
 from arcagi3.utils.image import grid_to_image, image_to_base64, make_image_block, image_diff
 from arcagi3.utils.parsing import extract_json_from_response
 
+from .breakpoints import get_adcr_breakpoint_spec, get_adcr_breakpoint_hooks
+
 
 class ADCRAgent(MultimodalAgent):
     """
@@ -54,6 +56,11 @@ class ADCRAgent(MultimodalAgent):
                 )
             except Exception:
                 self.memory_word_limit = 500
+
+        self.register_breakpoints(
+            runtime_spec=get_adcr_breakpoint_spec(),
+            hooks=get_adcr_breakpoint_hooks(self),
+        )
 
     def analyze_outcome_step(self, context: SessionContext) -> str:
         previous_action = context.datastore.get("previous_action")
@@ -115,6 +122,48 @@ class ADCRAgent(MultimodalAgent):
         analysis = before.strip()
         if after.strip():
             context.datastore["memory_prompt"] = after.strip()
+
+        if self.breakpoint_manager:
+            latest_frame = context.last_frame_image()
+            previous_frame = context.previous_images[-1] if context.previous_images else None
+            payload = {
+                "analysis": analysis,
+                "memory_prompt": context.datastore.get("memory_prompt", ""),
+                "memory_word_limit": self.memory_word_limit,
+                "latest_frame_image": (
+                    {
+                        "kind": "image",
+                        "data": image_to_base64(latest_frame),
+                    }
+                    if latest_frame
+                    else None
+                ),
+                "previous_frame_image": (
+                    {
+                        "kind": "image",
+                        "data": image_to_base64(previous_frame),
+                    }
+                    if previous_frame
+                    else None
+                ),
+            }
+            updated = self.breakpoint_manager.pause(
+                "analyze.post",
+                payload,
+                context=context,
+                step_name="analyze.post",
+                score=context.game.current_score,
+            )
+            if isinstance(updated.get("analysis"), str):
+                analysis = updated["analysis"]
+            if "memory_prompt" in updated and isinstance(updated.get("memory_prompt"), str):
+                context.datastore["memory_prompt"] = updated["memory_prompt"]
+            if "memory_word_limit" in updated:
+                try:
+                    self.memory_word_limit = int(updated["memory_word_limit"])
+                except Exception:
+                    pass
+
         return analysis
 
     def decide_human_action_step(self, context: SessionContext, analysis: str) -> Dict[str, Any]:
@@ -174,7 +223,32 @@ class ADCRAgent(MultimodalAgent):
 
         response = self.provider.call_with_tracking(context, messages)
         action_message = self.provider.extract_content(response)
-        return extract_json_from_response(action_message)
+        result = extract_json_from_response(action_message)
+
+        if self.breakpoint_manager:
+            payload = {
+                "result": result,
+                "memory_prompt": context.datastore.get("memory_prompt", ""),
+                "memory_word_limit": self.memory_word_limit,
+            }
+            updated = self.breakpoint_manager.pause(
+                "decide.post",
+                payload,
+                context=context,
+                step_name="decide.post",
+                score=context.game.current_score,
+            )
+            if isinstance(updated.get("result"), dict):
+                result = updated["result"]
+            if "memory_prompt" in updated and isinstance(updated.get("memory_prompt"), str):
+                context.datastore["memory_prompt"] = updated["memory_prompt"]
+            if "memory_word_limit" in updated:
+                try:
+                    self.memory_word_limit = int(updated["memory_word_limit"])
+                except Exception:
+                    pass
+
+        return result
 
     def convert_human_to_game_action_step(self, context: SessionContext, human_action: str) -> Dict[str, Any]:
         if context.game.available_actions:
@@ -224,7 +298,32 @@ class ADCRAgent(MultimodalAgent):
 
         response = self.provider.call_with_tracking(context, messages)
         action_message = self.provider.extract_content(response)
-        return extract_json_from_response(action_message)
+        result = extract_json_from_response(action_message)
+
+        if self.breakpoint_manager:
+            payload = {
+                "result": result,
+                "memory_prompt": context.datastore.get("memory_prompt", ""),
+                "memory_word_limit": self.memory_word_limit,
+            }
+            updated = self.breakpoint_manager.pause(
+                "convert.post",
+                payload,
+                context=context,
+                step_name="convert.post",
+                score=context.game.current_score,
+            )
+            if isinstance(updated.get("result"), dict):
+                result = updated["result"]
+            if "memory_prompt" in updated and isinstance(updated.get("memory_prompt"), str):
+                context.datastore["memory_prompt"] = updated["memory_prompt"]
+            if "memory_word_limit" in updated:
+                try:
+                    self.memory_word_limit = int(updated["memory_word_limit"])
+                except Exception:
+                    pass
+
+        return result
 
     def validate_action(self, context: SessionContext, action_name: str) -> bool:
         if not action_name or not action_name.startswith("ACTION"):

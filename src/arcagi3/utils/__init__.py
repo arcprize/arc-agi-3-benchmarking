@@ -15,7 +15,6 @@ from arcagi3.utils.task_utils import (
     save_result_in_timestamped_structure,
 )
 from arcagi3.utils.context import SessionContext
-from arcagi3.utils.truncate import truncate_memory
 
 __all__ = [
     "read_models_config",
@@ -35,4 +34,11 @@ __all__ = [
     "SessionContext",
     "truncate_memory",
 ]
+
+# Lazy import to avoid circular dependency
+def __getattr__(name: str):
+    if name == "truncate_memory":
+        from arcagi3.utils.truncate import truncate_memory
+        return truncate_memory
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

@@ -124,6 +124,14 @@ class AgentRunner:
         if get_kwargs:
             agent_kwargs = get_kwargs(args) or {}
 
+        agent_kwargs.update(
+            {
+                "breakpoints_enabled": bool(getattr(args, "breakpoints", False)),
+                "breakpoint_ws_url": getattr(args, "breakpoint_ws_url", "ws://localhost:8765/ws"),
+                "breakpoint_schema_path": getattr(args, "breakpoint_schema", None),
+            }
+        )
+
         tester = ARC3Tester(
             config=args.config,
             save_results_dir=args.save_results_dir,

@@ -129,6 +129,25 @@ def configure_args(parser):
         help="Do not open or close scorecards on the ARC server; run in local-only mode when no existing card_id is provided."
     )
 
+    # Breakpoints
+    parser.add_argument(
+        "--breakpoints",
+        action="store_true",
+        help="Enable breakpoint UI integration. Can be set via BREAKPOINTS_ENABLED env var (true/1/yes)."
+    )
+    parser.add_argument(
+        "--breakpoint-ws-url",
+        type=str,
+        default=_str_env("BREAKPOINT_WS_URL", "ws://localhost:8765/ws"),
+        help="WebSocket URL for breakpoint server (default: ws://localhost:8765/ws). Can be set via BREAKPOINT_WS_URL env var."
+    )
+    parser.add_argument(
+        "--breakpoint-schema",
+        type=str,
+        default=_str_env("BREAKPOINT_SCHEMA"),
+        help="Path to breakpoint schema JSON file. Can be set via BREAKPOINT_SCHEMA env var."
+    )
+
 def configure_cli_args(parser):
     # Game selection (mutually exclusive)
     game_group = parser.add_mutually_exclusive_group(required=False)
@@ -205,6 +224,8 @@ def apply_env_vars_to_args(args):
         args.close_on_exit = _bool_env("CLOSE_ON_EXIT")
     if os.getenv("LIST_CHECKPOINTS"):
         args.list_checkpoints = _bool_env("LIST_CHECKPOINTS")
+    if os.getenv("BREAKPOINTS_ENABLED"):
+        args.breakpoints = _bool_env("BREAKPOINTS_ENABLED")
     
     return args
 
