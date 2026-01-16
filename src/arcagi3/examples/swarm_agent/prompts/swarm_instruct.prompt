@@ -1,0 +1,22 @@
+You are coordinating multiple games in a swarm. The current game ids are:
+{{game_ids}}
+
+For each game, select the next action that best advances understanding and/or winning.
+Return actions for as many games as you can each round.
+
+Respond with JSON only:
+```json
+{
+    "actions": [
+        {
+            "game_id": "game-1",
+            "action": "ACTION1",
+            "data": {},
+            "notes": "Short reason"
+        }
+    ],
+    "global_notes": "Optional overall plan"
+}
+```
+
+

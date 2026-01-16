@@ -46,6 +46,7 @@ class ARC3Tester:
         memory_word_limit: Optional[int] = None,
         submit_scorecard: bool = True,
         agent_class: Optional[type] = None,
+        agent_kwargs: Optional[dict] = None,
     ):
         """
         Initialize the tester.
@@ -68,6 +69,7 @@ class ARC3Tester:
         """
         self.config = config
         self.agent_class = agent_class or DefaultTesterAgent
+        self.agent_kwargs = agent_kwargs or {}
         self.model_config = read_models_config(config)
         self.save_results_dir = save_results_dir
         self.overwrite_results = overwrite_results
@@ -204,6 +206,8 @@ class ARC3Tester:
                     "show_images": self.show_images,
                     "memory_word_limit": self.memory_word_limit,
                 })
+            if self.agent_kwargs:
+                agent_kwargs.update(self.agent_kwargs)
             agent = self.agent_class(**agent_kwargs)
 
             # Play game (with checkpoint support)

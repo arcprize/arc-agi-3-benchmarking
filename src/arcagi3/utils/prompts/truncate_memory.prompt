@@ -1,0 +1,10 @@
+Your memory scratchpad has grown too large. Please compress it to approximately {{memory_limit}} words while keeping the most important information for playing the game.
+
+Rules to preserve:
+{{rules_block}}
+
+Current memory:
+{{memory_text}}
+
+Provide only the compressed memory scratchpad, nothing else.
+

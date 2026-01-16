@@ -15,6 +15,7 @@ from arcagi3.utils.task_utils import (
     save_result_in_timestamped_structure,
 )
 from arcagi3.utils.context import SessionContext
+from arcagi3.utils.truncate import truncate_memory
 
 __all__ = [
     "read_models_config",
@@ -32,5 +33,6 @@ __all__ = [
     "RetryConfig",
     "AsyncRequestRateLimiter",
     "SessionContext",
+    "truncate_memory",
 ]
 

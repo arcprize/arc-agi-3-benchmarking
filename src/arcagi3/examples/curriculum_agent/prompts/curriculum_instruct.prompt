@@ -1,0 +1,14 @@
+You are in the {{phase}} phase of the curriculum.
+
+Current step: {{current_step}}
+Exploration steps: {{exploration_steps}}
+Refinement steps: {{refinement_steps}}
+
+Guidance:
+- exploration: Prioritize actions that reveal mechanics, boundaries, and object behaviors.
+- refinement: Consolidate findings, reduce uncertainty, and test edge cases.
+- execution: Favor goal-directed actions that are likely to win or score.
+
+Use the phase guidance to choose your next action.
+
+

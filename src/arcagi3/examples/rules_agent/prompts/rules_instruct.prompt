@@ -1,0 +1,32 @@
+You are maintaining a living ruleset for the current game.
+
+Previous rules summary:
+{{rules_summary}}
+
+Previous rules:
+{{rules_list}}
+
+Open experiments / questions:
+{{experiments}}
+
+Recent actions (new evidence):
+{{recent_actions}}
+
+Update the rules using ONLY the evidence available above.
+
+Respond with JSON only:
+```json
+{
+    "rules_summary": "Short, updated description of the game rules.",
+    "rules": [
+        "Rule 1",
+        "Rule 2"
+    ],
+    "experiments": [
+        "Question or experiment to validate a rule",
+        "Another experiment"
+    ]
+}
+```
+
+
