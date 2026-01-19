@@ -30,39 +30,44 @@ _PALETTE: List[Tuple[int, int, int, int]] = [
     (0xA3, 0x56, 0xD6, 0xFF),  # 15 Purple
 ]
 
-_SCALE = 2  # Scale factor for upscaling (64px -> 128px)
-_TARGET_SIZE = 64 * _SCALE
+_SCALE = 2  # Scale factor for upscaling (keeps crisp pixel art)
 
 
 def _validate_grid(grid: Sequence[Sequence[int]]) -> None:
-    """Validate that grid is 64x64 with values 0-15"""
-    if len(grid) != 64 or any(len(row) != 64 for row in grid):
-        raise ValueError("Grid must be 64×64.")
-    if any(cell not in range(16) for row in grid for cell in row):
+    """Validate that grid is rectangular with values 0-15."""
+    if not grid or not isinstance(grid, Sequence):
+        raise ValueError("Grid must be a non-empty 2D sequence.")
+    height = len(grid)
+    width = len(grid[0]) if height else 0
+    if width <= 0 or any(len(row) != width for row in grid):
+        raise ValueError("Grid must be rectangular and non-empty.")
+    if any((not isinstance(cell, int)) or (cell not in range(16)) for row in grid for cell in row):
         raise ValueError("Grid values must be integers 0–15.")
 
 
 def grid_to_image(grid: Sequence[Sequence[int]]) -> Image.Image:
     """
-    Convert a 64×64 int grid to a 128×128 RGBA Pillow Image.
+    Convert an int grid to an upscaled RGBA Pillow Image.
     
     Args:
-        grid: 64x64 grid of integers (0-15) representing colors
+        grid: Rectangular grid of integers (0-15) representing colors
         
     Returns:
-        PIL Image (128x128 RGBA)
+        PIL Image (RGBA), upscaled by `_SCALE` using nearest-neighbor
     """
     _validate_grid(grid)
     
     # Flatten grid into raw bytes (R, G, B, A per pixel)
+    height = len(grid)
+    width = len(grid[0]) if height else 0
     raw = bytearray()
     for row in grid:
         for idx in row:
             raw.extend(_PALETTE[idx])
     
-    img = Image.frombytes("RGBA", (64, 64), bytes(raw))
-    # Nearest-neighbor upscale keeps crisp pixel art
-    img = img.resize((_TARGET_SIZE, _TARGET_SIZE), Image.NEAREST)
+    img = Image.frombytes("RGBA", (width, height), bytes(raw))
+    # Nearest-neighbor upscale keeps crisp pixel art (64px->128px for real ARC frames)
+    img = img.resize((width * _SCALE, height * _SCALE), Image.NEAREST)
     return img
 
 

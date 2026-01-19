@@ -28,56 +28,51 @@ class DummyProvider:
         self.call_count = 0
 
     def call_with_tracking(self, context: SessionContext, messages):
-        self.call_count += 1
         return self.call_provider(messages)
 
     def call_provider(self, messages):
+        import json
+
+        self.call_count += 1
         self.last_messages = messages
-        # Return different responses based on call count
-        if self.call_count == 1:
-            # Rules extraction response
-            return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": '{"rules_summary":"Maze navigation game","rules":["Walls block movement","Goal is at (10,10)"],"experiments":["Test diagonal movement"]}'
-                        }
-                    }
-                ]
-            }
-        elif self.call_count == 2:
-            # Analyze response
-            return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": "Analysis: The action was successful.\n---\nMemory: Walls confirmed"
-                        }
-                    }
-                ]
-            }
-        elif self.call_count == 3:
-            # Decide response
-            return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": '{"human_action":"Move Up following rules"}'
-                        }
-                    }
-                ]
-            }
+        raw_content = messages[-1].get("content", "")
+        if isinstance(raw_content, list):
+            prompt_text = "\n".join(
+                block.get("text", "")
+                for block in raw_content
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
         else:
-            # Convert response
-            return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": '{"action":"ACTION1"}'
-                        }
-                    }
-                ]
-            }
+            prompt_text = str(raw_content)
+        if "You are maintaining a living ruleset for the current game." in prompt_text:
+            # If a prior rules summary exists in the prompt, keep it; otherwise return a default.
+            summary = "Maze navigation game"
+            marker = "Previous rules summary:"
+            if marker in prompt_text:
+                after = prompt_text.split(marker, 1)[1]
+                # Grab the first non-empty line after the marker.
+                for line in after.splitlines():
+                    line = line.strip()
+                    if line:
+                        summary = line
+                        break
+            content = json.dumps(
+                {
+                    "rules_summary": summary,
+                    "rules": ["Walls block movement", "Goal is at (10,10)"],
+                    "experiments": ["Test diagonal movement"],
+                }
+            )
+        elif "Provide your analysis and then after providing `---` update your memory scratchpad." in prompt_text:
+            content = "Analysis: The action was successful.\n---\nMemory: Walls confirmed"
+        elif "AVAILABLE ACTIONS - You MUST choose from ONLY these actions:" in prompt_text:
+            content = json.dumps({"human_action": "Move Up following rules"})
+        elif "Instruct: Given the provided image and the desired action above, you MUST" in prompt_text:
+            content = json.dumps({"action": "ACTION1"})
+        else:
+            content = json.dumps({"action": "ACTION1"})
+
+        return {"choices": [{"message": {"content": content}}]}
 
     def extract_usage(self, response):
         return 0, 0, 0
@@ -373,14 +368,10 @@ def test_step_raises_error_when_human_action_missing(monkeypatch):
         provider.last_messages = messages
         provider.call_count += 1
         if provider.call_count == 1:
-            # Rules extraction (if triggered)
-            return {"choices": [{"message": {"content": '{"rules_summary":"","rules":[]}'}}]}
-        elif provider.call_count == 2:
             # Analyze
             return {"choices": [{"message": {"content": "Analysis\n---\nMemory"}}]}
-        else:
-            # Decide - missing human_action
-            return {"choices": [{"message": {"content": '{"reasoning":"test"}'}}]}
+        # Decide - missing human_action
+        return {"choices": [{"message": {"content": '{"reasoning":"test"}'}}]}
     
     provider.call_provider = mock_call_provider
 
@@ -430,17 +421,13 @@ def test_step_raises_error_when_action_missing_from_convert(monkeypatch):
         provider.last_messages = messages
         provider.call_count += 1
         if provider.call_count == 1:
-            # Rules extraction (if triggered)
-            return {"choices": [{"message": {"content": '{"rules_summary":"","rules":[]}'}}]}
-        elif provider.call_count == 2:
             # Analyze
             return {"choices": [{"message": {"content": "Analysis\n---\nMemory"}}]}
-        elif provider.call_count == 3:
+        if provider.call_count == 2:
             # Decide
             return {"choices": [{"message": {"content": '{"human_action":"Move Up"}'}}]}
-        else:
-            # Convert - missing action
-            return {"choices": [{"message": {"content": '{"reasoning":"test"}'}}]}
+        # Convert - missing action
+        return {"choices": [{"message": {"content": '{"reasoning":"test"}'}}]}
     
     provider.call_provider = mock_call_provider
 

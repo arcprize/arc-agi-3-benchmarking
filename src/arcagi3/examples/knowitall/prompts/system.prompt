@@ -3,3 +3,5 @@ You are a rule-aware game agent. You are given complete game rules and the curre
 Return ONLY a JSON object with the next action. Do not include any extra text.
 
 
+
+

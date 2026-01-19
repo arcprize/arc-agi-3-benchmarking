@@ -688,11 +688,11 @@ export const App: React.FC = () => {
                         <div className="agent-game">
                           {agent.game_id ? `Game · ${agent.game_id}` : "Game · (starting…)"}
                         </div>
-                        {(agent.play_num !== undefined || agent.play_action_counter !== undefined) && (
+                        {(typeof agent.play_num === "number" || typeof agent.play_action_counter === "number") && (
                           <div className="agent-step">
-                            {agent.play_num !== undefined && `Play ${agent.play_num}`}
-                            {agent.play_num !== undefined && agent.play_action_counter !== undefined && " · "}
-                            {agent.play_action_counter !== undefined && `Step ${agent.play_action_counter}`}
+                            {typeof agent.play_num === "number" && `Play ${agent.play_num}`}
+                            {typeof agent.play_num === "number" && typeof agent.play_action_counter === "number" && " · "}
+                            {typeof agent.play_action_counter === "number" && `Step ${agent.play_action_counter}`}
                           </div>
                         )}
                         {agent.last_step && (
@@ -805,8 +805,8 @@ export const App: React.FC = () => {
                 <span className="pill muted">
                   {selectedAgent.config || "—"} ·{" "}
                   {selectedAgent.game_id ? `game ${selectedAgent.game_id}` : "game (starting…)"}
-                  {selectedAgent.play_num !== undefined && ` · Play ${selectedAgent.play_num}`}
-                  {selectedAgent.play_action_counter !== undefined && ` · Step ${selectedAgent.play_action_counter}`}
+                  {typeof selectedAgent.play_num === "number" && ` · Play ${selectedAgent.play_num}`}
+                  {typeof selectedAgent.play_action_counter === "number" && ` · Step ${selectedAgent.play_action_counter}`}
                 </span>
               </div>
               <div className="panel-body details">

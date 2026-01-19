@@ -146,6 +146,7 @@ class MultimodalAgent(ABC):
         game_id: str,
         guid: Optional[str],
         reasoning: Optional[Dict[str, Any]] = None,
+        context: Optional["SessionContext"] = None,
     ) -> Dict[str, Any]:
         if self.breakpoint_manager:
             payload = {
@@ -158,7 +159,7 @@ class MultimodalAgent(ABC):
             updated = self.breakpoint_manager.pause(
                 "execute_action.pre",
                 payload,
-                context=None,
+                context=context,
                 step_name="execute_action.pre",
             )
             action_name = updated.get("action", action_name)
@@ -180,7 +181,7 @@ class MultimodalAgent(ABC):
             updated = self.breakpoint_manager.pause(
                 "execute_action.post",
                 post_payload,
-                context=None,
+                context=context,
                 step_name="execute_action.post",
             )
             if isinstance(updated.get("result"), dict):
@@ -466,7 +467,7 @@ class MultimodalAgent(ABC):
 
                 reasoning_for_api = copy.deepcopy(step.reasoning or {})
 
-                state = self._execute_game_action(action_name, action_data_dict, game_id, guid, reasoning_for_api)
+                state = self._execute_game_action(action_name, action_data_dict, game_id, guid, reasoning_for_api, context=context)
                 guid = state.get("guid", guid)
                 new_score = state.get("score", current_score)
                 current_state = state.get("state", "IN_PROGRESS")

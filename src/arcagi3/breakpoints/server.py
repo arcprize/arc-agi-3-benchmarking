@@ -310,11 +310,11 @@ class BreakpointWebSocketServer:
             state.status = data.get("status", state.status)
             state.score = int(data.get("score", state.score))
             state.last_step = data.get("step_name", state.last_step)
-            if "play_num" in data:
+            if "play_num" in data and data.get("play_num") is not None:
                 state.play_num = data.get("play_num")
-            if "play_action_counter" in data:
+            if "play_action_counter" in data and data.get("play_action_counter") is not None:
                 state.play_action_counter = data.get("play_action_counter")
-            if "action_counter" in data:
+            if "action_counter" in data and data.get("action_counter") is not None:
                 state.action_counter = data.get("action_counter")
             await self._broadcast({"type": "agent_updated", "agent": self._agent_to_dict(state)})
 

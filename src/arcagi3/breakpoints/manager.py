@@ -72,6 +72,16 @@ class BreakpointManager:
         if not self.enabled or not self.has_point(point_id):
             return payload
 
+        # Extract play_num and play_action_counter from context if available
+        play_num = None
+        play_action_counter = None
+        if context is not None and hasattr(context, "game"):
+            game = context.game
+            if hasattr(game, "play_num"):
+                play_num = game.play_num
+            if hasattr(game, "play_action_counter"):
+                play_action_counter = game.play_action_counter
+
         update_payload: Dict[str, Any] = {"type": "agent_update", "agent_id": self._client.agent_id}
         if status_before:
             update_payload["status"] = status_before
@@ -79,6 +89,10 @@ class BreakpointManager:
             update_payload["step_name"] = step_name
         if score is not None:
             update_payload["score"] = score
+        if play_num is not None:
+            update_payload["play_num"] = play_num
+        if play_action_counter is not None:
+            update_payload["play_action_counter"] = play_action_counter
         self._client.send_agent_update(update_payload)
 
         overrides = self._client.await_breakpoint(point_id, payload)
@@ -90,6 +104,10 @@ class BreakpointManager:
             update_payload["step_name"] = step_name
         if score is not None:
             update_payload["score"] = score
+        if play_num is not None:
+            update_payload["play_num"] = play_num
+        if play_action_counter is not None:
+            update_payload["play_action_counter"] = play_action_counter
         self._client.send_agent_update(update_payload)
 
         hook = self._hooks.get(point_id)

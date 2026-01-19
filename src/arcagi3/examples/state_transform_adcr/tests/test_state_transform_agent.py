@@ -129,7 +129,9 @@ def test_state_transform_used_in_all_substeps(monkeypatch):
             block.get("text", "") for block in user_content if block.get("type") == "text"
         )
         assert "TRANSFORMED" in content_text
-        assert "Frame" not in content_text
+        # The analyze instruction template mentions "Frame"; we only want to ensure the
+        # raw frame grid dumps ("Frame 0:", etc.) were not included.
+        assert "Frame 0" not in content_text
         assert any(block.get("type") == "image_url" for block in user_content)
 
 

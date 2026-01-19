@@ -192,6 +192,7 @@ class SwarmAgent(MultimodalAgent):
                     game_id,
                     ctx.game.guid,
                     reasoning={"swarm_plan": item},
+                    context=ctx,
                 )
                 game_states[game_id] = state
 
