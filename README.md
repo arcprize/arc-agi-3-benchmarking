@@ -1,631 +1,225 @@
-# ARC-AGI-3 Benchmarking
+# ARC Harness `arcagi3`
 
-A comprehensive benchmarking framework for evaluating multimodal Large Language Models (LLMs) on ARC-AGI-3 interactive games. The ARC (Abstraction and Reasoning Corpus) Prize challenges AI systems to solve abstract reasoning puzzles that require core knowledge and pattern recognition.
+This is a developer harness for building and benchmarking agentic research workflows on the **ARC-AGI-3** corpus of reasoning games. The goal of this repository is to get developers and researchers running AI agents on ARC games as quickly as possible, with features designed to aid them in their experiments.
 
-## Quick Start
+# Quick Start
+
+## Prerequisites
+
+- **Python**: `3.9+`
+- **Node**: `22+` *optional* - only needed for building the breakpoint tool UI.
+- **ARC-AGI-3 API key**: required to talk to the ARC server. Sign up for a key [here](https://three.arcprize.org/).
+
+## Install
+
+From repo root:
 
 ```bash
-# 1. Install
 pip install -e .
+```
 
-# 2. Configure API keys
-cp .env.example .env
-# Edit .env with your API keys
+If you use `uv`:
 
-# 3. Run a game
-python main.py \
-  --game_id "ls20-fa137e247ce6" \
-  --config "gpt-4o-mini-2024-07-18" \
+```bash
+uv pip install -e .
+```
+
+## Set Environment Variables
+
+You can either set environment variables directly in your shell or utilize a `.env` file. `.env.example` demonstrates all expected environment variables.
+
+## Running an Agent
+
+### 1) List available prepared agents
+
+```bash
+python -m arcagi3.runner --list-agents
+```
+
+As you create your own agents, you can register them with the runner for easier launching. More on that later.
+
+### 2) Run a single game with a prepared agent
+
+```bash
+python -m arcagi3.runner \
+  --agent adcr \
+  --game_id ls20 \
+  --config gpt-4o-mini-2024-07-18 \
   --max_actions 40
 ```
 
-## Features
+- Results (if enabled) are written under `results/<config>/...json`
+- A scorecard URL is printed at the end
+- A checkpoint is continuously updated under `.checkpoint/<card_id>/` (unless disabled) which shows in progress actions and allows resume.
 
-- **Multimodal Agent** - Vision-based reasoning with image analysis using 128x128 PNG images
-- **Multi-Provider Support** - 90+ model configurations across 9 providers (OpenAI, Anthropic, Gemini, Grok, DeepSeek, OpenRouter, Fireworks, Groq, XAI)
-- **Cost Tracking** - Granular per-action token usage and cost calculation
-- **Retry Logic** - Exponential backoff with configurable retry attempts
-- **Rate Limiting** - Provider-specific async rate limiting to prevent throttling
-- **Results Export** - Comprehensive JSON output with full game history and scorecard URLs
-- **Checkpoint System** - Robust save/resume functionality for crash recovery
-- **Extended Thinking** - Support for reasoning models (Claude thinking variants, o1-style)
-- **Memory Management** - Scratchpad-based memory with automatic compression
-- **Multi-Play Sessions** - Continue learning across multiple attempts
-- **Hints System** - Optional game-specific guidance via YAML configuration
-- **Batch Processing** - Run multiple games concurrently
-- **Concurrent Execution** - Parallel game runs with per-game logging and thread-safe execution
-- **Terminal Visualization** - Display game frames as colored blocks during gameplay
-
-## Installation
+### 3) Resume from a checkpoint
 
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd arc-agi-3-benchmarking
-
-# Install dependencies
-pip install -e .
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your API keys
+python -m arcagi3.runner --list-checkpoints
+python -m arcagi3.runner --checkpoint <CARD_ID>
 ```
 
-### Required Environment Variables
+When resuming, `--config` and `--game_id` can be omitted; they’re recovered from checkpoint metadata when possible. By default, checkpoints live under `.checkpoint/<card_id>/`.
 
-Create a `.env` file with the following keys (only add keys for providers you'll use):
+### 4) Run without creating scorecards (local-only mode)
 
 ```bash
-# Required
-ARC_API_KEY=your_arc_api_key_here
-
-# Provider API Keys (add as needed)
-ANTHROPIC_API_KEY=your_anthropic_key_here
-OPENAI_API_KEY=your_openai_key_here
-GOOGLE_API_KEY=your_google_key_here
-XAI_API_KEY=your_xai_key_here
-DEEPSEEK_API_KEY=your_deepseek_key_here
-GROQ_API_KEY=your_groq_key_here
-OPENROUTER_API_KEY=your_openrouter_key_here
-FIREWORKS_API_KEY=your_fireworks_key_here
+python -m arcagi3.runner \
+  --agent adcr \
+  --game_id ls20 \
+  --config gpt-4o-mini-2024-07-18 \
+  --no-scorecard-submission
 ```
 
-### Optional Dependencies
+This avoids opening/closing scorecards, but still plays the game through the ARC API. A `local-<uuid>` `card_id` is used for checkpointing.
 
-Providers load lazily - only install SDKs for providers you'll use:
+## breakpointer (interactive debugging UI)
+
+The breakpointer tool is a UI to help you gain a better understanding of what your model is doing, as well as allow you to manually experiment with agents during a game play session. Breakpoints let you **pause** your agent at named “points” and optionally **override** payload fields (e.g., edit memory, adjust the chosen action, or manually patch reasoning of the model). It is designed to be flexible to whatever pattern your agent utilizes to play games.
+
+### 1) Start the breakpoint server
 
 ```bash
-pip install openai            # For OpenAI models
-pip install anthropic         # For Claude models
-pip install google-genai      # For Gemini models
+python scripts/run_breakpoint_server.py
 ```
-
-## Usage
-
-### List Available Games
+...or specifying addresses:
 
 ```bash
-python -m arcagi3.cli --list-games
+python scripts/run_breakpoint_server.py \
+--breakpoint-ws-url ws://localhost:8765/ws \
+--breakpoint-schema /path/to/schema.json
 ```
 
-### Run Single Game
+The server will automatically serve `breakpointer/dist`. If you change the UI, re-run `npm run build` and restart the server.
+
+### 2) Run an agent with breakpoints enabled
 
 ```bash
-python main.py \
-  --game_id "ls20-fa137e247ce6" \
-  --config "gpt-4o-mini-2024-07-18" \
-  --max_actions 40 \
-  --save_results_dir "results/gpt4o"
+python -m arcagi3.runner \
+  --agent adcr \
+  --game_id ls20 \
+  --config gpt-4o-mini-2024-07-18 \
+  --breakpoints
 ```
 
-### Display Images in Terminal
-Show game frames directly in your terminal during gameplay:
-```bash
-python main.py \
-  --game_id "ls20-fa137e247ce6" \
-  --config "gpt-4o-mini-2024-07-18" \
-  --show-images
-```
-This renders each frame as colored blocks in your terminal, useful for debugging and visualizing the agent's progress in real-time.
+Breakpoints pause only at points defined in the **active breakpoint spec**. That spec can come from an agent’s runtime registration (see `src/arcagi3/examples/adcr/breakpoints.py`) and/or a JSON spec provided via `--breakpoint-schema`.
 
-### Run Multiple Games (Batch Processing)
+We will dive deeper into making your own breakpoints when discussing creating your own agents.
 
-Run multiple games at the same time with automatic per-game log files:
+# Making your own Agent
 
-```bash
-# Run specific games concurrently
-python -m arcagi3.cli \
-  --games "ls20-fa137e247ce6,ft09-16726c5b26ff,ls20-016295f7601e" \
-  --config "gpt-4o-mini-2024-07-18"
+To create your own agent, implement an `MultimodalAgent` child class (`src/arcagi3/agent.py`). Then implement the `step(context) -> GameStep` function.
 
-# Run all available games concurrently
-python -m arcagi3.cli \
-  --all-games \
-  --config "claude-sonnet-4-5-20250929"
-```
+- **State comes in via** `context: SessionContext`
+  - Current/previous frames (as grids and optionally images)
+  - Current score/state, available actions, counters
+  - `context.datastore`: JSON-serializable scratch space for your agent (memory, hypotheses, plans, etc.)
+  - `context.metrics`: aggregated usage/cost
+- **You return** a `GameStep` with:
+  - `action`: a dict with at least `"action": "ACTION1" | ... | "ACTION7"` (or `"RESET"`)
+  - optional `action["data"]` dict (passed through to ARC API)
+  - optional `reasoning` dict (sent to ARC API; keep it small—there’s a hard size limit)
 
-**Concurrent Execution Features:**
-- All games run in parallel using threads (max: number of games)
-- Each game gets its own log file in `logs/<config>/concurrent_<timestamp>/`
-- Separate thread-safe execution for each game
-- Complete summary with aggregate statistics at the end
-- Scorecard URLs for all games printed together
+All history of the game is stored within `context`, allowing you to implement whatever transformations or history tracking that you wish.
 
-**Example output structure:**
-```
-logs/
-└── gpt-4o-mini-2024-07-18/
-    └── concurrent_20251119_143528/
-        ├── ls20-fa137e247ce6.log
-        ├── ft09-16726c5b26ff.log
-        └── ls20-016295f7601e.log
-```
+There are several examples in this repository of creating custom agent flows in the `src/examples` folder.
 
-### Checkpoint & Resume
+## Making your own runner
 
-The checkpoint system automatically saves game progress for crash recovery and resumption.
+The easiest way to run your own agent from the CLI is to create a small entrypoint that:
 
-#### How It Works
+- registers your agent in an `AgentRunner` (via a `flags` dict)
+- delegates all CLI parsing/execution to `runner.run()`
 
-Checkpoints are saved automatically:
-- After every action (configurable via `--checkpoint-frequency`)
-- At the end of each play (for multi-play runs)
-- Stored in `.checkpoint/{scorecard-id}/` directory
-
-Each checkpoint contains:
-- Complete conversation history and agent memory
-- All action records with reasoning
-- Cost and token usage statistics
-- Session identifiers (game_id, guid, card_id)
-- Previous frame images and grids
-- Vision mode setting
-
-#### Quick Start
-
-```bash
-# 1. Start a game (checkpoint created automatically)
-python main.py --game_id "ls20-fa137e247ce6" --config "gpt-4o-2024-11-20"
-# Note the scorecard ID from logs: "Opened scorecard: abc-123-def-456"
-
-# 2. If interrupted (crash, Ctrl-C, etc.), list checkpoints
-python main.py --list-checkpoints
-
-# 3. Resume from checkpoint using the scorecard ID
-python main.py --checkpoint abc-123-def-456
-```
-
-The game continues from where it left off with:
-- ✅ Same conversation history and memory
-- ✅ Accumulated costs and actions
-- ✅ Same session on the server (when possible)
-
-#### Advanced Options
-
-```bash
-# Customize checkpoint frequency (save every 5 actions instead of 1)
-python main.py --game_id "ls20-fa137e247ce6" --config "gpt-4o-2024-11-20" --checkpoint-frequency 5
-
-# Disable periodic checkpoints (only save at end of play)
-python main.py --game_id "ls20-fa137e247ce6" --config "gpt-4o-2024-11-20" --checkpoint-frequency 0
-
-# Close scorecard manually (prevents resume)
-python main.py --close-scorecard abc-123-def-456
-
-# Close scorecard on exit (even if not won)
-python main.py --game_id "ls20-fa137e247ce6" --config "gpt-4o-2024-11-20" --close-on-exit
-```
-
-#### Important Notes
-
-**Session Continuity**: When resuming, the system attempts to restore the exact game session using the saved GUID. If the session has expired (server timeout), the system:
-- Opens a new game session
-- Preserves the agent's memory and learned patterns
-- Continues from the new session with existing knowledge
-
-**Scorecard Management**: By default, scorecards are kept open after crashes/interrupts to enable resume. They're only closed when:
-- ✅ Game is won (WIN state)
-- ✅ `--close-on-exit` flag is used
-- ❌ NOT on Ctrl-C or crash (kept open for resume)
-
-**Storage**: Checkpoints include frame images and can be several MB in size. Delete old checkpoints manually with `rm -rf .checkpoint/{card-id}` if needed.
-
-### Multi-Play Sessions
-
-Continue learning across multiple attempts with preserved memory:
-
-```bash
-# Play the same game 3 times with accumulated knowledge
-python main.py \
-  --game_id "ls20-fa137e247ce6" \
-  --config "gpt-4o-2024-11-20" \
-  --num_plays 3 \
-  --max_actions 40
-```
-
-Features:
-- Same session GUID (maintains server-side state)
-- Preserved memory scratchpad between plays
-- Accumulated costs and actions
-- Returns best result across plays
-- Stops early on WIN
-
-### Programmatic Usage
+Example (`my_runner.py`):
 
 ```python
-from arcagi3 import MultimodalAgent, GameClient
+from dotenv import load_dotenv
 
-# Initialize
-client = GameClient()
-games = client.list_games()
-
-# Open scorecard for tracking
-scorecard_response = client.open_scorecard([games[0]['game_id']])
-card_id = scorecard_response['card_id']
-
-# Create agent
-agent = MultimodalAgent(
-    config="gpt-4o-mini-2024-07-18",
-    game_client=client,
-    card_id=card_id,
-    max_actions=40
-)
-
-# Play game and get results
-result = agent.play_game(games[0]['game_id'])
-print(f"Score: {result.final_score}, Cost: ${result.total_cost.total_cost:.4f}")
-print(f"Scorecard: {result.scorecard_url}")
-
-# Close scorecard when done
-client.close_scorecard(card_id)
-```
-
-## CLI Options
-
-### Main CLI ([main.py](main.py))
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--game_id` | Game ID to play | Required* |
-| `--config` | Model config name from [models.yml](src/arcagi3/models.yml) | Required* |
-| `--checkpoint` | Resume from checkpoint (card_id) | None |
-| `--list-checkpoints` | List all available checkpoints | - |
-| `--close-scorecard` | Close a scorecard by ID | - |
-| `--checkpoint-frequency` | Save checkpoint every N actions (0=disabled) | 1 |
-| `--close-on-exit` | Close scorecard on exit (prevents resume) | False |
-| `--max_actions` | Maximum actions per game | 40 |
-| `--num_plays` | Number of play attempts (continues session) | 1 |
-| `--save_results_dir` | Results output directory | `results/<config>` |
-| `--retry_attempts` | API retry attempts on failure | 3 |
-| `--show-images` | Display frames in terminal | False |
-| `--use_vision` | Use vision mode (images vs text grids) | True |
-| `--memory-limit` | Memory scratchpad word limit | 500 |
-| `--verbose` | Enable verbose logging | False |
-
-*Not required when using `--checkpoint` (loaded from checkpoint)
-
-### Batch CLI (`arcagi3.cli`)
-
-| Option | Description |
-|--------|-------------|
-| `--list-games` | List available games and exit |
-| `--games "id1,id2"` | Run specific games |
-| `--all-games` | Run all available games |
-
-All main CLI options also available.
-
-## Architecture
-
-### High-Level Design
-
-```
-┌─────────────────────────────────────────────┐
-│             Game Client                      │
-│  (ARC-AGI-3 API Communication)              │
-│  • HTTP client with retry logic             │
-│  • Session management                       │
-│  • Action execution (RESET, ACTION1-7)      │
-└──────────────┬──────────────────────────────┘
-               │
-┌──────────────▼──────────────────────────────┐
-│          Multimodal Agent                    │
-│  ┌─────────────────────────────────────┐   │
-│  │ 1. Convert frames to images         │   │
-│  │ 2. Analyze previous results         │   │
-│  │ 3. Choose next action (LLM)         │   │
-│  │ 4. Convert to game command (LLM)    │   │
-│  │ 5. Track costs & execute            │   │
-│  │ 6. Update memory (compress if full) │   │
-│  │ 7. Save checkpoint                  │   │
-│  └─────────────────────────────────────┘   │
-└──────────────┬──────────────────────────────┘
-               │
-┌──────────────▼──────────────────────────────┐
-│          Provider Adapters                   │
-│  (Lazy-loaded, abstract base class)         │
-│  • Anthropic • OpenAI • Gemini              │
-│  • DeepSeek  • Grok   • OpenRouter          │
-│  • Fireworks • Groq   • XAI                 │
-└─────────────────────────────────────────────┘
-```
-
-### Directory Structure
-
-```
-arc-agi-3-benchmarking/
-├── src/arcagi3/              # Main package
-│   ├── agent.py             # Multimodal agent (core game-playing logic)
-│   ├── game_client.py       # ARC-AGI-3 API client
-│   ├── checkpoint.py        # Save/resume functionality
-│   ├── arc3tester.py        # High-level tester orchestrator
-│   ├── cli.py               # Batch CLI for multiple games
-│   ├── schemas.py           # Pydantic data models
-│   ├── models.yml           # 90+ model configurations
-│   ├── adapters/            # Provider-specific implementations
-│   │   ├── provider.py      # Base adapter interface
-│   │   ├── anthropic.py     # Claude models
-│   │   ├── open_ai.py       # GPT models
-│   │   ├── gemini.py        # Google Gemini
-│   │   ├── deepseek.py      # DeepSeek models
-│   │   ├── grok.py          # xAI Grok
-│   │   ├── openrouter.py    # OpenRouter gateway
-│   │   └── ...              # 9 total providers
-│   └── utils/               # Utility modules
-│       ├── image.py         # Grid-to-image conversion
-│       ├── task_utils.py    # Config/result handling
-│       ├── retry.py         # Exponential backoff
-│       ├── rate_limiter.py  # Rate limiting
-│       ├── metrics.py       # Performance tracking
-│       └── cli.py           # CLI utilities
-├── main.py                   # Single game CLI entry point
-├── cli/run_all.py           # Parallel batch execution
-├── scripts/example_usage.py   # Code examples
-├── hints.yml                 # Optional game-specific hints
-├── .checkpoint/              # Checkpoint storage (auto-created)
-├── results/                  # Game results (JSON files)
-└── pyproject.toml           # Package configuration
-```
-
-### Core Components
-
-#### 1. MultimodalAgent ([agent.py](src/arcagi3/agent.py))
-
-The core game-playing engine implementing a sophisticated three-step reasoning loop:
-
-**Agent Workflow:**
-1. **Image Processing**: Converts 64x64 game grids to 128x128 PNG images
-2. **Vision Analysis**: Sends frames to multimodal LLMs for visual reasoning
-3. **Three-Step LLM Reasoning**:
-   - Analyze previous action results and update memory
-   - Choose next high-level human action based on game state
-   - Convert human intent to specific game command
-4. **Memory Management**: Maintains scratchpad with word limit and automatic compression
-5. **Cost Tracking**: Granular per-action token usage and cost tracking
-6. **Checkpoint Support**: Auto-saves state for crash recovery
-
-**Dual Mode Support:**
-- **Vision Mode**: Sends images to multimodal models (default)
-- **Text Mode**: Sends grid matrices as JSON for text-only models
-
-#### 2. GameClient ([game_client.py](src/arcagi3/game_client.py))
-
-HTTP client for ARC-AGI-3 API with comprehensive error handling:
-
-**API Endpoints:**
-- `GET /api/games` - List available games
-- `POST /api/scorecard/open` - Create scorecard for tracking
-- `POST /api/scorecard/close` - Close scorecard
-- `GET /api/scorecard/{card_id}` - Get scorecard info
-- `POST /api/cmd/{action}` - Execute game actions
-
-**Game Actions:**
-- ACTION1-4: Move (Up, Down, Left, Right)
-- ACTION5: Perform action
-- ACTION6: Click object (requires x, y coordinates)
-- ACTION7: Undo
-- RESET: Reset game state
-
-#### 3. Checkpoint System ([checkpoint.py](src/arcagi3/checkpoint.py))
-
-Robust save/resume functionality for handling crashes and interruptions:
-
-**What's Saved:**
-- Complete conversation history
-- Agent memory scratchpad
-- All action records with reasoning
-- Cost and token usage statistics
-- Session identifiers (game_id, guid, card_id)
-- Previous frame images (PNG)
-- Previous grids (JSON for text mode)
-- Current grids for accurate resume
-
-**Storage:** `.checkpoint/{card-id}/`
-
-#### 4. Provider Adapter System
-
-Abstract base class with lazy loading to avoid dependency bloat:
-
-**Base Interface:** `ProviderAdapter` with methods for:
-- `init_client()` - Initialize API client
-- `call_provider()` - Call with messages
-- `extract_usage()` - Get token counts
-- `extract_content()` - Get response text
-- `extract_json()` - Parse JSON responses
-
-**Supported Providers:** 9 total providers with 90+ model configurations
-
-## Configuration
-
-### Model Configuration
-
-Models are defined in [src/arcagi3/models.yml](src/arcagi3/models.yml) with 90+ pre-configured models:
-
-```yaml
-- name: "gpt-4o-mini-2024-07-18"
-  model_name: "gpt-4o-mini-2024-07-18"
-  provider: "openai"
-  is_multimodal: true
-  api_type: "chat_completions"
-  pricing:
-    date: "2025-03-15"
-    input: 0.15   # per 1M tokens
-    output: 0.60
-  kwargs:
-    temperature: 0.7
-    max_tokens: 1000
-```
-
-**Configuration Fields:**
-- `name`: Config identifier (use this in CLI)
-- `model_name`: API model name
-- `provider`: Provider adapter to use
-- `is_multimodal`: Vision capability flag
-- `api_type`: "chat_completions" or "responses"
-- `pricing`: Input/output costs per 1M tokens
-- `kwargs`: Model-specific parameters (temperature, max_tokens, etc.)
-
-**Extended Thinking Support:**
-
-Some models support extended reasoning (Claude thinking variants, o1-style):
-
-```yaml
-reasoning:
-  effort: "high"  # or medium, low, minimal
-  summary: "auto"
-
-memory_word_limit: 1000  # Increased for thinking models
-```
-
-**Example Models Available:**
-- GPT-5 family (Pro, standard, mini, nano)
-- Claude 4.5 Sonnet with thinking variants (1k, 8k, 16k, 32k)
-- Claude 3.7 Sonnet
-- Gemini 2.0/2.5
-- DeepSeek R1
-- Grok-3 variants
-- And many more...
-
-### Hints Configuration
-
-Hints for specific games can be provided via a `hints.yml` file in the project root or current working directory. Hints are automatically loaded and prepended to the system prompt at the start of all LLM calls.
-
-**Example `hints.yml`:**
-```yaml
-ls20-fa137e247ce6: |
-  This is a hint for game ls20-fa137e247ce6.
-  
-  The hint can contain multiple lines and markdown formatting:
-  - Look for patterns in the grid
-  - Pay attention to color changes
-  
-ft09-16726c5b26ff: "Single-line hint for another game."
-```
-
-The agent automatically looks for `hints.yml` in the current working directory or project root. If the file doesn't exist, no hints are used. See `hints.example.yml` for a complete example.
+from arcagi3.runner import AgentRunner
+from my_agent import MyAgent  # your MultimodalAgent subclass
 
 
-## Results Format
-
-Results are saved to `{save_results_dir}/{game_id}_{config}_{timestamp}.json` with comprehensive game data:
-
-```json
-{
-  "game_id": "ls20-fa137e247ce6",
-  "config": "gpt-4o-mini-2024-07-18",
-  "final_score": 850,
-  "final_state": "WIN",
-  "actions_taken": 23,
-  "duration_seconds": 145.3,
-  "total_cost": {
-    "prompt_cost": 0.0234,
-    "completion_cost": 0.0567,
-    "reasoning_cost": 0.0000,
-    "total_cost": 0.0801
-  },
-  "usage": {
-    "prompt_tokens": 7800,
-    "completion_tokens": 3780,
-    "reasoning_tokens": 0,
-    "total_tokens": 11580
-  },
-  "scorecard_url": "https://three.arcprize.org/scorecards/card_uuid",
-  "actions": [
-    {
-      "action_number": 1,
-      "action_type": "ACTION1",
-      "reasoning": "Moving up to reach the target...",
-      "result": "SUCCESS",
-      "score_change": 50,
-      "cost": {
-        "prompt_cost": 0.0012,
-        "completion_cost": 0.0028
-      }
-    }
-  ],
-  "memory_snapshot": "Final agent memory state..."
+flags = {
+    "name": "my-agent",
+    "description": "My experimental agent",
+    "agent_class": MyAgent,
+    # Optional:
+    # "add_args": lambda parser: parser.add_argument("--foo", default="bar"),
+    # "get_kwargs": lambda args: {"foo": args.foo},
 }
+
+
+def main() -> None:
+    load_dotenv()
+    runner = AgentRunner()
+    runner.add_flags(flags)
+    runner.run()
+
+
+if __name__ == "__main__":
+    main()
 ```
 
-**Key Fields:**
-- `scorecard_url`: Direct link to view game replay on ARC Prize platform
-- `actions`: Complete action history with reasoning and per-action costs
-- `memory_snapshot`: Agent's final memory state
-- `reasoning_tokens`: For o1-style models with extended thinking
+See existing `flags` patterns:
+- Minimal: `src/arcagi3/examples/adcr/flags.py`
+- With custom args/kwargs:
+    - `src/arcagi3/examples/knowitall/flags.py`
+    - `src/arcagi3/examples/state_transform_adcr/flags.py`
 
-**Results Organization:**
+## `context.datastore`
 
+`context.datastore` is your agent’s **persistent**, **per-run** state store.
+
+- It’s a JSON-serializable dict that lives on the `SessionContext`.
+- It survives across steps/actions within a run and is saved/restored via **checkpoints** (so it persists across resume). If you run multiple plays in one run, it can also carry across plays of the same game.
+
+For instance - if we had an LLM modifiable memory, and wished to feed the prompt of the model with that memory, a record of its previous reasoning for its move, and a long running experiment to determine game mechanics, we could do that within `step()`:
+
+```python
+# Similar to `adcr`, keep a persistent scratchpad + the last prompt/action.
+memory = context.datastore.get("memory_prompt", "")
+previous_reasoning = context.datastore.get("previous_prompt", "")
+current_experiment = context.datastore.get("current_experiment", "")
+
+# Utilize the memory, prior reasoning, and current long running experiment
+# with current observations of the state
+...
 ```
-results/
-├── gpt-4o-mini-2024-07-18/
-│   └── ls20-fa137e247ce6_gpt-4o-mini-2024-07-18_20251118_134935.json
-├── claude-sonnet-4-5-20250929/
-│   └── ls20-fa137e247ce6_claude-sonnet-4-5-20250929_20251118_140829.json
-└── ...more model directories
-```
 
-## Resources
+# Model configs
 
-- **ARC Prize**: https://arcprize.org
-- **API Documentation**: https://docs.arcprize.org/api-reference/
-- **Code Examples**: See [scripts/example_usage.py](scripts/example_usage.py)
+`--config` selects an entry from:
 
-## Best Practices & Tips
+- `src/arcagi3/models.yml`
+- optional `src/arcagi3/models_private.yml` (local/private; loaded automatically if it exists)
 
-### Cost Management
-- Start with `--max_actions 5` for testing new models
-- Use `gpt-4o-mini-2024-07-18` for development and experimentation
-- Each action costs approximately $0.001-0.01 depending on the model
-- Review per-action costs in result files to optimize model selection
-- Use `--verbose` to see real-time cost accumulation
+Each model config includes:
+- provider (which adapter to use)
+- model name
+- pricing (used for cost calculation)
+- optional kwargs (streaming, reasoning effort, max tokens, etc.)
 
-### Debugging & Development
-- Use `--verbose` flag for detailed logs of LLM calls and reasoning
-- Use `--show-images` to visualize game state in terminal
-- Check `results/` directory for comprehensive JSON output
-- Review action reasoning and memory state in result files
-- Examine checkpoint files in `.checkpoint/{card-id}/` for state inspection
+When specifying a model, it is assumed the environment variables for that provider contains an appropriate key for service.
 
-### Checkpoint Best Practices
-- Checkpoints save automatically after every action (default)
-- Customize save frequency with `--checkpoint-frequency N`
-- Resume with `--checkpoint {card-id}` after crash/interrupt
-- List all checkpoints with `--list-checkpoints`
-- Clean up old checkpoints: `rm -rf .checkpoint/{card-id}`
-- Use `--close-on-exit` to prevent resume (closes scorecard immediately)
+# Docker
 
-### Multi-Play Strategy
-- Use `--num_plays 3` to let the agent learn from multiple attempts
-- Memory and patterns are preserved across plays
-- Best result is returned automatically
-- Execution stops early on WIN state
+There is a `Dockerfile` that installs the package and defaults to running `python main.py`.
+It also exposes a set of environment variables that map to common CLI flags (see the `Dockerfile`).
 
-### Batch Processing Workflow
-1. Test single game first: `python main.py --game_id "..." --config "..."`
-2. If promising, run on more games: `python -m arcagi3.cli --games "id1,id2,id3"`
-3. For full evaluation: `python -m arcagi3.cli --all-games`
-4. For concurrent execution: Games automatically run in parallel when using `arcagi3.cli`
-   - Check per-game logs in `logs/<config>/concurrent_<timestamp>/`
-   - View aggregate statistics after all games complete
-5. For advanced parallel execution across models: `python cli/run_all.py --game_ids "..." --model_configs "model1,model2"`
+# Troubleshooting
 
-### Hints Optimization
-- Create `hints.yml` with game-specific guidance
-- See `hints.example.yml` for format
-- Hints are automatically loaded and prepended to system prompt
-- Use for providing domain knowledge or puzzle-specific strategies
+## “ARC_API_KEY not found”
 
-### Adding New Providers
-1. Create new adapter in `src/arcagi3/adapters/` inheriting from `ProviderAdapter`
-2. Implement required methods: `init_client()`, `call_provider()`, etc.
-3. Add to factory in `src/arcagi3/adapters/__init__.py`
-4. Configure models in [models.yml](src/arcagi3/models.yml)
-5. Add API key to `.env`
+- Set `ARC_API_KEY` in your shell or `.env`
+- Confirm you’re running from a directory where `.env` is picked up (entrypoints call `load_dotenv()`)
 
-See existing adapters for reference implementation patterns.
+## Provider auth errors
 
-## License
+- Your chosen `--config` implies a provider; ensure that provider’s API key env var is set.
 
-MIT License
+## Breakpoints never pause
 
----
-
-**Version**: 0.1.0 | **Package**: `arcagi3` | **Python**: 3.9+
+- Start the server: `python scripts/run_breakpoint_server.py`
+- Run with `--breakpoints`
+- If you changed ports, set `--breakpoint-ws-url`
