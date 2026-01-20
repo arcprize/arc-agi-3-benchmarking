@@ -122,7 +122,19 @@ To create your own agent, implement an `MultimodalAgent` child class (`src/arcag
 
 All history of the game is stored within `context`, allowing you to implement whatever transformations or history tracking that you wish.
 
-There are several examples in this repository of creating custom agent flows in the `src/examples` folder.
+
+## Example Agents
+
+There are several examples in this repository of creating custom agent flows in the `src/arcagi3/examples` folder. Each one demonstrates a unique experimental flow, with further explanations in their own README:
+
+- **`adcr`**: Analyze → Decide → Convert → Review reference loop (baseline). See `src/arcagi3/examples/adcr/README.md`.
+- **`state-transform`**: ADCR variant with a pluggable “state transform” pre-processing step (includes a couple CLI presets). This transforms the state - text or image - per your speciications prior to performing the ADCR loop. See `src/arcagi3/examples/state_transform_adcr/README.md`.
+- **`knowitall`**: Action-only agent that assumes you already know the full rules (provided via `--game-rules`). Excellent for observing agent mechanic interactions. See `src/arcagi3/examples/knowitall/README.md`.
+- **`curriculum`**: Phase-based ADCR (exploration → refinement → execution) to encourage early discovery. See `src/arcagi3/examples/curriculum_agent/README.md`.
+- **`hypothesis`**: Maintains explicit hypotheses + experiments; periodically updates them from recent actions. See `src/arcagi3/examples/hypothesis_agent/README.md`.
+- **`rules`**: Periodically distills “rules so far” and uses them to guide decisions. See `src/arcagi3/examples/rules_agent/README.md`.
+- **`swarm`**: Coordinates action selection across multiple games, having an agent benefit from seeing multiple simultaneous games to speed up mechanics discovery. See `src/arcagi3/examples/swarm_agent/README.md`.
+
 
 ## Making your own runner
 
