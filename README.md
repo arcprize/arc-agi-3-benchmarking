@@ -125,7 +125,7 @@ All history of the game is stored within `context`, allowing you to implement wh
 
 ## Example Agents
 
-There are several examples in this repository of creating custom agent flows in the `src/arcagi3/examples` folder. Each one demonstrates a unique experimental flow, with further explanations in their own README:
+There are several examples in this repository of creating custom agent flows in the `src/arcagi3/examples` folder. Each one demonstrates a unique experimental flow, with further explanations in their own `README`. Note that while these are different approaches for tackling ARC games, *none* can solve an ARC game at present even with, at time of writing, frontier models. These serve as excellent skeleton builds to inspire your own approaches.
 
 - **`adcr`**: Analyze → Decide → Convert → Review reference loop (baseline). See `src/arcagi3/examples/adcr/README.md`.
 - **`state-transform`**: ADCR variant with a pluggable “state transform” pre-processing step (includes a couple CLI presets). This transforms the state - text or image - per your speciications prior to performing the ADCR loop. See `src/arcagi3/examples/state_transform_adcr/README.md`.
