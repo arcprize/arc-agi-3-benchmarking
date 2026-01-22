@@ -75,22 +75,30 @@ This avoids opening/closing scorecards, but still plays the game through the ARC
 
 ## breakpointer (interactive debugging UI)
 
-The breakpointer tool is a UI to help you gain a better understanding of what your model is doing, as well as allow you to manually experiment with agents during a game play session. Breakpoints let you **pause** your agent at named “points” and optionally **override** payload fields (e.g., edit memory, adjust the chosen action, or manually patch reasoning of the model). It is designed to be flexible to whatever pattern your agent utilizes to play games.
+The breakpointer tool is a UI to help you gain a better understanding of what your model is doing, as well as allow you to manually experiment with agents during a game play session. Breakpoints let you **pause** your agent at named breakpoints and optionally **override** payload fields (e.g., edit memory, adjust the chosen action, or manually patch reasoning of the model). It is designed to be flexible to whatever pattern your agent utilizes to play games.
+
+**Note:** Building the breakpoint UI requires Node.js (see Prerequisites).
+
+### 0) Build the UI (first time setup)
+
+Before using the breakpoint tool, you need to build the UI:
+
+```bash
+cd breakpointer
+npm install
+npm run build
+cd ..
+```
+
+This creates the `breakpointer/dist` directory that the server will serve. If you modify the UI source code later, re-run `npm run build` and restart the server.
 
 ### 1) Start the breakpoint server
 
 ```bash
 python scripts/run_breakpoint_server.py
 ```
-...or specifying addresses:
 
-```bash
-python scripts/run_breakpoint_server.py \
---breakpoint-ws-url ws://localhost:8765/ws \
---breakpoint-schema /path/to/schema.json
-```
-
-The server will automatically serve `breakpointer/dist`. If you change the UI, re-run `npm run build` and restart the server.
+The server will automatically serve `breakpointer/dist` if it exists, otherwise it will serve from the project root (which won't have the UI).
 
 ### 2) Run an agent with breakpoints enabled
 
