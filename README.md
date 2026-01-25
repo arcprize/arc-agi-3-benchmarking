@@ -7,6 +7,7 @@ This is a developer harness for building and benchmarking agentic research workf
 ## Prerequisites
 
 - **Python**: `3.9+`
+- **uv**: recommended package manager. Install from [uv.pm](https://github.com/astral-sh/uv) or `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - **Node**: `22+` *optional* - only needed for building the breakpoint tool UI.
 - **ARC-AGI-3 API key**: required to talk to the ARC server. Sign up for a key [here](https://three.arcprize.org/).
 
@@ -15,13 +16,15 @@ This is a developer harness for building and benchmarking agentic research workf
 From repo root:
 
 ```bash
-pip install -e .
+uv sync
 ```
 
-If you use `uv`:
+This will create a virtual environment (if needed) and install the project and all dependencies in editable mode.
+
+Alternatively, if you're not using `uv`:
 
 ```bash
-uv pip install -e .
+pip install -e .
 ```
 
 ## Set Environment Variables
