@@ -3,7 +3,20 @@ import logging
 import os
 from arcagi3.checkpoint import CheckpointManager
 from arcagi3.game_client import GameClient
-from typing import List
+from typing import List, Dict, Any, Optional
+from arcagi3.utils.api_tests import (
+    test_anthropic,
+    test_arc_api_key,
+    test_deepseek,
+    test_fireworks,
+    test_gemini,
+    test_groq,
+    test_huggingface,
+    test_openai,
+    test_openrouter,
+    test_provider_api_key,
+    test_xai,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -263,17 +276,48 @@ def list_available_games(game_client: GameClient) -> List[dict]:
         logger.error(f"Failed to list games: {e}")
         return []
 
-def handle_list_games(game_client: GameClient):
+def handle_list_games(game_client: GameClient, json_output: bool = False):
+    """List available games, optionally in JSON format."""
+    import json
+    
     games = list_available_games(game_client)
-    if games:
-        logger.info("\nAvailable Games:")
-        logger.info("=" * 60)
-        for game in games:
-            logger.info(f"  {game['game_id']:<30} {game['title']}")
-        logger.info("=" * 60)
-        logger.info(f"Total: {len(games)} games\n")
-    else:
-        logger.warning("No games available or failed to fetch games.")
+    if not games:
+        if json_output:
+            print(json.dumps([], indent=2))
+        else:
+            print("No games available or failed to fetch games.")
+        return
+    
+    if json_output:
+        print(json.dumps(games, indent=2))
+        return
+    
+    # Create a nice table format
+    # Calculate column widths
+    max_id_len = max(len(game['game_id']) for game in games)
+    max_title_len = max(len(game.get('title', '')) for game in games)
+    
+    # Set minimum widths
+    id_width = max(max_id_len, 20)
+    title_width = max(max_title_len, 30)
+    
+    # Calculate total width
+    total_width = id_width + title_width + 7
+    
+    # Print header
+    print("\n" + "=" * total_width)
+    print(f"{'Game ID':<{id_width}}  {'Title':<{title_width}}")
+    print("=" * total_width)
+    
+    # Print games (sorted by game_id)
+    for game in sorted(games, key=lambda x: x['game_id']):
+        game_id = game['game_id']
+        title = game.get('title', 'N/A')
+        print(f"{game_id:<{id_width}}  {title:<{title_width}}")
+    
+    # Print footer
+    print("=" * total_width)
+    print(f"\nTotal: {len(games)} game{'s' if len(games) != 1 else ''}\n")
 
 def handle_list_checkpoints():
     checkpoints = CheckpointManager.list_checkpoints()
@@ -324,3 +368,116 @@ def print_result(result):
     logger.info(f"Total Tokens: {result.usage.total_tokens}")
     logger.info(f"\nView your scorecard online: {result.scorecard_url}")
     logger.info(f"{'='*60}\n")
+
+def handle_check():
+    """Check environment variables and test API keys."""
+    results: List[Dict[str, Any]] = []
+    games_list: Optional[List[Dict[str, str]]] = None
+    
+    # Test ARC API key
+    arc_status, arc_message, games_list = test_arc_api_key()
+    results.append({
+        "name": "ARC-AGI-3 API",
+        "env_var": "ARC_API_KEY",
+        "status": arc_status,
+        "message": arc_message
+    })
+    
+    # Test provider API keys with provider mapping
+    provider_mapping = {
+        "openai": ("OpenAI", "OPENAI_API_KEY", test_openai),
+        "anthropic": ("Anthropic", "ANTHROPIC_API_KEY", test_anthropic),
+        "gemini": ("Google Gemini", "GOOGLE_API_KEY", test_gemini),
+        "openrouter": ("OpenRouter", "OPENROUTER_API_KEY", test_openrouter),
+        "fireworks": ("Fireworks", "FIREWORKS_API_KEY", test_fireworks),
+        "groq": ("Groq", "GROQ_API_KEY", test_groq),
+        "deepseek": ("DeepSeek", "DEEPSEEK_API_KEY", test_deepseek),
+        "xai": ("xAI", "XAI_API_KEY", test_xai),
+        "huggingfacefireworks": ("Hugging Face", "HUGGING_FACE_API_KEY", test_huggingface),
+    }
+    
+    working_provider = None
+    for provider_id, (provider_name, env_var, test_func) in provider_mapping.items():
+        status, message = test_provider_api_key(provider_name, env_var, test_func)
+        results.append({
+            "name": provider_name,
+            "env_var": env_var,
+            "status": status,
+            "message": message,
+            "provider_id": provider_id
+        })
+        if status is True and working_provider is None:
+            working_provider = provider_id
+    
+    # Print results table
+    print("\n" + "=" * 80)
+    print(f"{'Service':<25} {'Environment Variable':<30} {'Status':<25}")
+    print("=" * 80)
+    
+    for result in results:
+        status_display = result["message"]
+        print(f"{result['name']:<25} {result['env_var']:<30} {status_display:<25}")
+    
+    print("=" * 80)
+    
+    # Determine ready status
+    arc_passed = results[0]["status"] is True
+    provider_passed = any(r["status"] is True for r in results[1:])
+    
+    ready = arc_passed and provider_passed
+    
+    print(f"\n{'='*80}")
+    if ready:
+        print("✓ READY TO BENCHMARK")
+        print("  - ARC-AGI-3 API: ✓ Connected")
+        print(f"  - Provider APIs: {sum(1 for r in results[1:] if r['status'] is True)} configured and working")
+        
+        # Generate example command
+        if games_list and working_provider:
+                # Get first game
+                example_game = games_list[0]["game_id"]
+                
+                # Find a model config for the working provider
+                try:
+                    import yaml
+                    import os
+                    from pathlib import Path
+                    
+                    # Load models.yml (same path logic as task_utils)
+                    base_dir = os.path.dirname(os.path.dirname(__file__))
+                    models_file = os.path.join(base_dir, "models.yml")
+                    
+                    if os.path.exists(models_file):
+                        with open(models_file, 'r') as f:
+                            models_data = yaml.safe_load(f)
+                        
+                        # Find first model for this provider
+                        example_config = None
+                        for model in models_data.get("models", []):
+                            if model.get("provider") == working_provider:
+                                example_config = model.get("name")
+                                break
+                        
+                        if example_config:
+                            print(f"\n  Example command:")
+                            print(f"  uv run python -m arcagi3.runner \\")
+                            print(f"    --agent adcr \\")
+                            print(f"    --game_id {example_game} \\")
+                            print(f"    --config {example_config} \\")
+                            print(f"    --max_actions 3")
+                except Exception:
+                    # If we can't find a model, just show a generic example
+                    example_game = games_list[0]["game_id"]
+                    print(f"\n  Example command:")
+                    print(f"  uv run python -m arcagi3.runner \\")
+                    print(f"    --agent adcr \\")
+                    print(f"    --game_id {example_game} \\")
+                    print(f"    --config <model-config> \\")
+                    print(f"    --max_actions 3")
+    else:
+        print("✗ NOT READY TO BENCHMARK")
+        if not arc_passed:
+            print("  - ARC-AGI-3 API: ✗ Not connected")
+        if not provider_passed:
+            print("  - Provider APIs: ✗ No working provider configured")
+    print("=" * 80 + "\n")

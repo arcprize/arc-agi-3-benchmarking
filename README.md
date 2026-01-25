@@ -31,17 +31,43 @@ pip install -e .
 
 You can either set environment variables directly in your shell or utilize a `.env` file. `.env.example` demonstrates all expected environment variables.
 
+### Check Your Configuration
+
+Before running agents, you can verify your environment variables and test your API keys:
+
+```bash
+uv run python -m arcagi3.runner --check
+```
+
+This will:
+- Test your ARC-AGI-3 API key by connecting to the server
+- Test all configured provider API keys (OpenAI, Anthropic, Google Gemini, etc.)
+- Display a table showing which services are configured and working
+- Indicate whether you're ready to benchmark (requires ARC API key + at least one working provider)
+
 ## Running an Agent
 
 ### 1) List available prepared agents
 
 ```bash
-python -m arcagi3.runner --list-agents
+uv run python -m arcagi3.runner --list-agents
 ```
 
 As you create your own agents, you can register them with the runner for easier launching. More on that later.
 
-### 2) Run a single game with a prepared agent
+### 2) List available games
+
+```bash
+python -m arcagi3.runner --list-games
+```
+
+This displays a table of all available games from the ARC-AGI-3 API with their game IDs and titles. To get the output in JSON format (useful for scripting), use:
+
+```bash
+python -m arcagi3.runner --list-games --json
+```
+
+### 3) Run a single game with a prepared agent
 
 ```bash
 python -m arcagi3.runner \
@@ -55,7 +81,7 @@ python -m arcagi3.runner \
 - A scorecard URL is printed at the end
 - A checkpoint is continuously updated under `.checkpoint/<card_id>/` (unless disabled) which shows in progress actions and allows resume.
 
-### 3) Resume from a checkpoint
+### 4) Resume from a checkpoint
 
 ```bash
 python -m arcagi3.runner --list-checkpoints
@@ -64,7 +90,7 @@ python -m arcagi3.runner --checkpoint <CARD_ID>
 
 When resuming, `--config` and `--game_id` can be omitted; they’re recovered from checkpoint metadata when possible. By default, checkpoints live under `.checkpoint/<card_id>/`.
 
-### 4) Run without creating scorecards (local-only mode)
+### 5) Run without creating scorecards (local-only mode)
 
 ```bash
 python -m arcagi3.runner \

@@ -14,13 +14,16 @@ from dotenv import load_dotenv
 
 from arcagi3.arc3tester import ARC3Tester
 from arcagi3.adcr_agent.flags import flags as adcr_flags
+from arcagi3.game_client import GameClient
 from arcagi3.utils.cli import (
     apply_env_vars_to_args,
     configure_args,
     configure_logging,
     configure_main_args,
+    handle_check,
     handle_close_scorecard,
     handle_list_checkpoints,
+    handle_list_games,
     print_result,
     validate_args,
 )
@@ -58,17 +61,35 @@ class AgentRunner:
             description="Run ARC-AGI-3 benchmark on a single game with a prepared agent"
         )
         configure_args(parser)
+        
+        # Add list commands before configure_main_args to avoid conflicts
+        parser.add_argument(
+            "--list-agents",
+            action="store_true",
+            help="List available prepared agents and exit",
+        )
+        parser.add_argument(
+            "--list-games",
+            action="store_true",
+            help="List available games from the ARC-AGI-3 API and exit",
+        )
+        parser.add_argument(
+            "--json",
+            action="store_true",
+            help="Output results in JSON format (use with --list-games)",
+        )
+        parser.add_argument(
+            "--check",
+            action="store_true",
+            help="Check environment variables and test API keys",
+        )
+        
         configure_main_args(parser)
 
         parser.add_argument(
             "--agent",
             default="adcr",
             help="Prepared agent name (use --list-agents to see options)",
-        )
-        parser.add_argument(
-            "--list-agents",
-            action="store_true",
-            help="List available prepared agents and exit",
         )
         for agent in self.list_agents():
             add_args = agent.get("add_args")
@@ -77,10 +98,11 @@ class AgentRunner:
         return parser
 
     def _resolve_agent(self, args: argparse.Namespace) -> Dict[str, Any]:
-        if args.agent not in self._agents:
+        agent_name = args.agent or "adcr"
+        if agent_name not in self._agents:
             available = ", ".join(sorted(self._agents))
-            raise ValueError(f"Unknown agent '{args.agent}'. Available: {available}")
-        return self._agents[args.agent]
+            raise ValueError(f"Unknown agent '{agent_name}'. Available: {available}")
+        return self._agents[agent_name]
 
     def _print_agents(self) -> None:
         print("Available prepared agents:")
@@ -96,6 +118,22 @@ class AgentRunner:
 
         if args.list_agents:
             self._print_agents()
+            return
+
+        if args.check:
+            handle_check()
+            return
+
+        if args.list_games:
+            try:
+                game_client = GameClient()
+                handle_list_games(game_client, json_output=getattr(args, 'json', False))
+            except Exception as e:
+                if getattr(args, 'json', False):
+                    import json
+                    print(json.dumps({"error": str(e)}, indent=2))
+                else:
+                    logger.error(f"Failed to list games: {e}")
             return
 
         if args.list_checkpoints:
