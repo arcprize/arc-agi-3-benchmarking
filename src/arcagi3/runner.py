@@ -13,13 +13,7 @@ from typing import Any, Dict, Iterable, Optional, Sequence
 from dotenv import load_dotenv
 
 from arcagi3.arc3tester import ARC3Tester
-from arcagi3.examples.adcr.flags import flags as adcr_flags
-from arcagi3.examples.curriculum_agent.flags import flags as curriculum_flags
-from arcagi3.examples.hypothesis_agent.flags import flags as hypothesis_flags
-from arcagi3.examples.knowitall.flags import flags as knowitall_flags
-from arcagi3.examples.rules_agent.flags import flags as rules_flags
-from arcagi3.examples.state_transform_adcr.flags import flags as state_transform_flags
-from arcagi3.examples.swarm_agent.flags import flags as swarm_flags
+from arcagi3.adcr_agent.flags import flags as adcr_flags
 from arcagi3.utils.cli import (
     apply_env_vars_to_args,
     configure_args,
@@ -165,17 +159,7 @@ class AgentRunner:
 
 def _build_default_registry() -> AgentRunner:
     runner = AgentRunner()
-    runner.add_flags(
-        [
-            adcr_flags,
-            curriculum_flags,
-            hypothesis_flags,
-            knowitall_flags,
-            rules_flags,
-            state_transform_flags,
-            swarm_flags,
-        ]
-    )
+    runner.add_flags(adcr_flags)
     return runner
 
 

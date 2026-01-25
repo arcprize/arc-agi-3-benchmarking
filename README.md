@@ -113,7 +113,7 @@ python -m arcagi3.runner \
   --breakpoints
 ```
 
-Breakpoints pause only at points defined in the **active breakpoint spec**. That spec can come from an agent’s runtime registration (see `src/arcagi3/examples/adcr/breakpoints.py`) and/or a JSON spec provided via `--breakpoint-schema`.
+Breakpoints pause only at points defined in the **active breakpoint spec**. That spec can come from an agent's runtime registration (see `src/arcagi3/adcr_agent/breakpoints.py`) and/or a JSON spec provided via `--breakpoint-schema`.
 
 We will dive deeper into making your own breakpoints when discussing creating your own agents.
 
@@ -134,17 +134,11 @@ To create your own agent, implement an `MultimodalAgent` child class (`src/arcag
 All history of the game is stored within `context`, allowing you to implement whatever transformations or history tracking that you wish.
 
 
-## Example Agents
+## Reference Agent
 
-There are several examples in this repository of creating custom agent flows in the `src/arcagi3/examples` folder. Each one demonstrates a unique experimental flow, with further explanations in their own `README`. Note that while these are different approaches for tackling ARC games, *none* can solve an ARC game at present even with, at time of writing, frontier models. These serve as excellent skeleton builds to inspire your own approaches.
+The repository includes a reference implementation of the **ADCR agent** (Analyze → Decide → Convert → Review) in `src/arcagi3/adcr_agent/`. This serves as a baseline implementation demonstrating a common multi-step prompting pipeline. See `src/arcagi3/adcr_agent/README.md` for detailed documentation.
 
-- **`adcr`**: Analyze → Decide → Convert → Review reference loop (baseline). See `src/arcagi3/examples/adcr/README.md`.
-- **`state-transform`**: ADCR variant with a pluggable “state transform” pre-processing step (includes a couple CLI presets). This transforms the state - text or image - per your speciications prior to performing the ADCR loop. See `src/arcagi3/examples/state_transform_adcr/README.md`.
-- **`knowitall`**: Action-only agent that assumes you already know the full rules (provided via `--game-rules`). Excellent for observing agent mechanic interactions. See `src/arcagi3/examples/knowitall/README.md`.
-- **`curriculum`**: Phase-based ADCR (exploration → refinement → execution) to encourage early discovery. See `src/arcagi3/examples/curriculum_agent/README.md`.
-- **`hypothesis`**: Maintains explicit hypotheses + experiments; periodically updates them from recent actions. See `src/arcagi3/examples/hypothesis_agent/README.md`.
-- **`rules`**: Periodically distills “rules so far” and uses them to guide decisions. See `src/arcagi3/examples/rules_agent/README.md`.
-- **`swarm`**: Coordinates action selection across multiple games, having an agent benefit from seeing multiple simultaneous games to speed up mechanics discovery. See `src/arcagi3/examples/swarm_agent/README.md`.
+Note that even with frontier models at the time of writing, this agent cannot solve ARC games. It serves as an excellent skeleton build to inspire your own approaches.
 
 
 ## Making your own runner
@@ -184,11 +178,8 @@ if __name__ == "__main__":
     main()
 ```
 
-See existing `flags` patterns:
-- Minimal: `src/arcagi3/examples/adcr/flags.py`
-- With custom args/kwargs:
-    - `src/arcagi3/examples/knowitall/flags.py`
-    - `src/arcagi3/examples/state_transform_adcr/flags.py`
+See the reference implementation for a minimal example:
+- `src/arcagi3/adcr_agent/flags.py`
 
 ## `context.datastore`
 

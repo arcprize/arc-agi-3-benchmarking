@@ -2,7 +2,7 @@ from typing import Any, Dict, List
 
 from PIL import Image
 
-from arcagi3.examples.adcr import ADCRAgent
+from arcagi3.adcr_agent import ADCRAgent
 from arcagi3.agent import HUMAN_ACTIONS
 from arcagi3.utils.context import SessionContext
 

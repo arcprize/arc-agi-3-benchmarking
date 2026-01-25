@@ -12,7 +12,7 @@ This agent is intentionally “pattern-first”: it’s a reference implementati
 
 ## How it works (Analyze → Decide → Convert → Review)
 
-Implemented in `src/arcagi3/examples/adcr/agent.py`:
+Implemented in `src/arcagi3/adcr_agent/agent.py`:
 
 - **Analyze** (`analyze_outcome_step`): looks at the outcome of the previous action (frames + score change) and produces an analysis.  
   - If the model includes a `---` divider, everything after it becomes the updated `memory_prompt`.
@@ -35,9 +35,9 @@ ADCR uses `context.datastore` (checkpoint-persisted) with these keys:
 
 ## Breakpoints (interactive debugging UI)
 
-ADCR is the most “breakpointer-ready” agent in the repo:
+ADCR is fully breakpointer-ready:
 
-- Runtime spec + hooks live in `src/arcagi3/examples/adcr/breakpoints.py`
+- Runtime spec + hooks live in `src/arcagi3/adcr_agent/breakpoints.py`
 - The agent registers breakpoints in `__init__()` via `self.register_breakpoints(...)`
 
 Key pause points include:
@@ -55,7 +55,7 @@ python -m arcagi3.runner --agent adcr --game_id <GAME_ID> --config <CONFIG> --br
 
 ## Prompts
 
-Prompts are loaded relative to the module folder (`src/arcagi3/examples/adcr/prompts/`) via `PromptManager`:
+Prompts are loaded relative to the module folder (`src/arcagi3/adcr_agent/prompts/`) via `PromptManager`:
 
 - `system.prompt`
 - `analyze_instruct.prompt`
@@ -77,6 +77,6 @@ Common runner flags that affect ADCR behavior:
 ## When to use / when not to use
 
 - **Use it when**: you want a baseline pipeline to iterate on, or you want breakpoint-friendly debugging.
-- **Avoid it when**: you want a single-pass “action-only” policy or an explicit structured reasoning object (see `knowitall`, `rules`, `hypothesis`).
+- **Avoid it when**: you want a single-pass "action-only" policy or an explicit structured reasoning object.
 
 

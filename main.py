@@ -9,18 +9,18 @@ This file shows the minimal setup needed to run the project:
 Usage:
     python main.py --game_id ls20-016295f7601e --config gpt-4o-2024-11-20
 
-To use a different agent, import its flags and register it:
-    from arcagi3.examples.hypothesis_agent.flags import flags as hypothesis_flags
-    runner.add_flags(hypothesis_flags)
+To use a different agent, create your own agent class and register it:
+    from my_agent import MyAgent
+    runner.add_flags({"name": "my-agent", "agent_class": MyAgent})
 
-Or use the full runner with all agents pre-registered:
-    python -m arcagi3.runner --agent hypothesis --game_id ... --config ...
+Or use the full runner with the ADCR agent pre-registered:
+    python -m arcagi3.runner --agent adcr --game_id ... --config ...
 """
 from __future__ import annotations
 
 from dotenv import load_dotenv
 
-from arcagi3.examples.adcr.flags import flags as adcr_flags
+from arcagi3.adcr_agent.flags import flags as adcr_flags
 from arcagi3.runner import AgentRunner
 
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from arcagi3.examples.adcr import ADCRAgent
+from arcagi3.adcr_agent import ADCRAgent
 
 
 flags = {
