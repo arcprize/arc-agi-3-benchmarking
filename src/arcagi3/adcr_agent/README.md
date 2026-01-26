@@ -14,7 +14,7 @@ This agent is intentionally “pattern-first”: it’s a reference implementati
 
 Implemented in `src/arcagi3/adcr_agent/agent.py`:
 
-- **Analyze** (`analyze_outcome_step`): looks at the outcome of the previous action (frames + score change) and produces an analysis.  
+- **Analyze** (`analyze_outcome_step`): looks at the outcome of the previous action and produces an analysis.  
   - If the model includes a `---` divider, everything after it becomes the updated `memory_prompt`.
 - **Decide** (`decide_human_action_step`): chooses a *human-level* action from the allowed action descriptions.
 - **Convert** (`convert_human_to_game_action_step`): maps the chosen human-level action to a concrete ARC action (`ACTIONn`), respecting `available_actions`.

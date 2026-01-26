@@ -294,7 +294,7 @@ class MultimodalAgent(ABC):
                     logger.info("No GUID found, starting new game session with restored state...")
                     state = self.game_client.reset_game(self.card_id, game_id, guid=None)
                     guid = state.get("guid")
-                    current_score = state.get("score", 0)
+                    current_score = state.get("levels_completed", 0)
                     current_state = state.get("state", "IN_PROGRESS")
                     context.set_available_actions(
                         state.get("available_actions", context.game.available_actions)
@@ -319,7 +319,7 @@ class MultimodalAgent(ABC):
             else:
                 state = self.game_client.reset_game(self.card_id, game_id, guid=guid)
                 guid = state.get("guid")
-                current_score = state.get("score", 0)
+                current_score = state.get("levels_completed", 0)
                 current_state = state.get("state", "IN_PROGRESS")
                 context.set_available_actions(
                     state.get(
@@ -418,7 +418,7 @@ class MultimodalAgent(ABC):
     def _run_session_loop(self, game_id: str, initial_state: Dict[str, Any], context: SessionContext) -> Dict[str, Any]:
         state = initial_state
         guid = state.get("guid")
-        current_score = state.get("score", 0)
+        current_score = state.get("levels_completed", 0)
         current_state = state.get("state", "IN_PROGRESS")
         play_action_counter = context.game.play_action_counter
 
@@ -471,7 +471,7 @@ class MultimodalAgent(ABC):
 
                 state = self._execute_game_action(action_name, action_data_dict, game_id, guid, reasoning_for_api, context=context)
                 guid = state.get("guid", guid)
-                new_score = state.get("score", current_score)
+                new_score = state.get("levels_completed", current_score)
                 current_state = state.get("state", "IN_PROGRESS")
 
                 context.update(

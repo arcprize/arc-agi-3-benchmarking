@@ -1,4 +1,4 @@
-Instruct: Given the provided image and the desired action above, you MUST
+Instruct: Given the provided {% if use_vision %}image{% else %}text grid{% endif %} and the desired action above, you MUST
 select from ONLY these available actions:
 {{action_list}}
 

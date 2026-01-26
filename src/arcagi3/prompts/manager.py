@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import inspect
-import re
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable, Dict, Mapping, Optional, Set, Union
+from typing import Any, Callable, Dict, Optional, Union
+
+from jinja2 import Environment, Template, UndefinedError
 
 
 PromptVars = Dict[str, Any]
@@ -14,7 +15,7 @@ PromptSource = Union[str, PromptCallable]
 
 class PromptManager:
     """
-    Minimal prompt loader/renderer.
+    Minimal prompt loader/renderer with jinja2 templating support.
 
     **No built-in prompt registry**: prompts are discovered relative to the *caller*.
 
@@ -23,13 +24,21 @@ class PromptManager:
     this will load, in order:
       - `/foo/bar/prompts/myprompt.prompt`
       - `/foo/bar/prompts/myprompt`
+    
+    Templates support jinja2 syntax including conditionals, loops, and filters.
     """
-
-    # {{ var }} placeholder syntax
-    __re = re.compile(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}")
 
     __lock = Lock()
     __cache: Dict[Path, str] = {}
+    __template_cache: Dict[Path, Template] = {}
+    
+    def __init__(self):
+        """Initialize jinja2 environment."""
+        self._jinja_env = Environment(
+            trim_blocks=True,
+            lstrip_blocks=True,
+            keep_trailing_newline=True,
+        )
 
     def load(self, name: str) -> str:
         """
@@ -74,33 +83,68 @@ class PromptManager:
 
     def render(self, name: str, vars: Optional[PromptVars] = None) -> str:
         """
-        Renders the named prompt with the given variables. Loads and caches
-        the prompt if it is not already cached.
+        Renders the named prompt with the given variables using jinja2 templating.
+        Loads and caches the prompt if it is not already cached.
 
-        If the template has variables not passed in, or you pass in variables
-        not within the prompt, a ValueError will be raised.
+        Templates support full jinja2 syntax including:
+        - Variables: {{ var }}
+        - Conditionals: {% if condition %}...{% endif %}
+        - Loops: {% for item in items %}...{% endfor %}
+        - Filters: {{ var|upper }}
+
+        If the template references variables not passed in, a ValueError will be raised.
+        Extra variables that are not used in the template are allowed (useful for conditionals).
         """
         template_text = self.load(name)
+        
+        # Get the file path for template caching
+        stack = inspect.stack()
+        caller_frame = None
+        for frame_info in stack[1:]:  # Skip current frame (render)
+            frame = frame_info.frame
+            module_name = frame.f_globals.get('__name__', '')
+            if module_name != 'arcagi3.prompts.manager' or frame_info.function not in ('load', 'render'):
+                caller_frame = frame_info
+                break
+        
+        if caller_frame is None:
+            caller_frame = stack[1]
+            
+        caller_filepath = caller_frame.filename
+        caller_directory = Path(caller_filepath).parent
+        filepath = caller_directory / "prompts" / f"{name}"
+        
+        # Find the actual file path (with or without .prompt extension)
+        with self.__lock:
+            candidates = [filepath.with_suffix(".prompt"), filepath]
+            template_path = None
+            for candidate in candidates:
+                if candidate.exists():
+                    template_path = candidate
+                    break
+            
+            if template_path is None:
+                raise FileNotFoundError(
+                    f"Prompt '{name}' not found. Tried: {[str(p) for p in candidates]}"
+                )
+            
+            # Get or create jinja2 template
+            if template_path not in self.__template_cache:
+                self.__template_cache[template_path] = self._jinja_env.from_string(template_text)
+            
+            template = self.__template_cache[template_path]
 
         if not vars:
             vars = {}
 
-        # Find all template variables in the template (as a set)
-        template_vars = set(m.group(1) for m in self.__re.finditer(template_text))
-        passed_vars = set(vars.keys())
-
-        # Check: any template var missing in vars?
-        missing_vars = template_vars - passed_vars
-        if missing_vars:
-            raise ValueError(f"Missing variable(s) for template: {', '.join(sorted(missing_vars))}")
-
-        # Check: any passed var not in template?
-        extra_vars = passed_vars - template_vars
-        if extra_vars:
-            raise ValueError(f"Extra variable(s) supplied that do not exist in template: {', '.join(sorted(extra_vars))}")
-
-        def replacer(match):
-            var_name = match.group(1)
-            return str(vars[var_name])
-
-        return self.__re.sub(replacer, template_text)
+        # Render with jinja2 - this will raise UndefinedError if a required variable is missing
+        try:
+            return template.render(**vars)
+        except UndefinedError as e:
+            # Extract variable name from jinja2 error message
+            error_msg = str(e)
+            # Error format: "'variable_name' is undefined"
+            if "'" in error_msg:
+                var_name = error_msg.split("'")[1]
+                raise ValueError(f"Missing variable(s) for template: {var_name}")
+            raise ValueError(f"Template rendering error: {error_msg}")

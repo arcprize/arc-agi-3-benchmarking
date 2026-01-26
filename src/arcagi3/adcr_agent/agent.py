@@ -62,6 +62,27 @@ class ADCRAgent(MultimodalAgent):
             hooks=get_adcr_breakpoint_hooks(self),
         )
 
+    def _get_want_vision(self, context: SessionContext) -> bool:
+        """
+        Get want_vision from context datastore, or calculate and store it if not
+        present.
+        
+        This value is cached in the datastore since it depends on agent instance
+        properties that don't change during a session.
+        
+        Uses .get() with a sentinel to avoid race conditions in the
+        check-then-set pattern.
+        """
+        # Use a sentinel to check if key exists, since False is a valid value
+        _SENTINEL = object()
+        want_vision = context.datastore.get("want_vision", _SENTINEL)
+        if want_vision is _SENTINEL:
+            want_vision = self.use_vision and bool(
+                getattr(self.provider.model_config, "is_multimodal", False)
+            )
+            context.datastore["want_vision"] = want_vision
+        return want_vision
+
     def analyze_outcome_step(self, context: SessionContext) -> str:
         previous_action = context.datastore.get("previous_action")
         if not isinstance(previous_action, dict) or not previous_action:
@@ -71,11 +92,13 @@ class ADCRAgent(MultimodalAgent):
         if context.game.current_score > context.game.previous_score:
             level_complete = "NEW LEVEL!!!! - Whatever you did must have been good!"
 
-        analyze_instruct = self.prompt_manager.render("analyze_instruct", {"memory_limit": self.memory_word_limit})
+        want_vision = self._get_want_vision(context)
+        analyze_instruct = self.prompt_manager.render(
+            "analyze_instruct",
+            {"memory_limit": self.memory_word_limit, "use_vision": want_vision}
+        )
         memory_prompt = context.datastore.get("memory_prompt", "")
         analyze_prompt = f"{level_complete}\n\n{analyze_instruct}\n\n{memory_prompt}"
-
-        want_vision = self.use_vision and self.provider.model_config.is_multimodal
         if want_vision:
             previous_grids = context.frames.previous_grids
             previous_imgs = [grid_to_image(g) for g in previous_grids] if previous_grids else []
@@ -109,7 +132,7 @@ class ADCRAgent(MultimodalAgent):
 
         previous_prompt = context.datastore.get("previous_prompt", "")
         messages = [
-            {"role": "system", "content": self.prompt_manager.render("system")},
+            {"role": "system", "content": self.prompt_manager.render("system", {"use_vision": want_vision})},
             {"role": "user", "content": [{"type": "text", "text": previous_prompt}]},
             {"role": "assistant", "content": [{"type": "text", "text": str(previous_action)}]},
             {"role": "user", "content": msg_parts},
@@ -187,12 +210,14 @@ class ADCRAgent(MultimodalAgent):
             f'"{action_descriptions[0]}"' if action_descriptions else '"Move Up"'
         )
 
+        want_vision = self._get_want_vision(context)
         action_instruct = self.prompt_manager.render(
             "action_instruct",
             {
                 "available_actions_list": available_actions_list,
                 "example_actions": example_actions,
                 "json_example_action": json_example_action,
+                "use_vision": want_vision,
             },
         )
 
@@ -204,9 +229,6 @@ class ADCRAgent(MultimodalAgent):
         context.datastore["previous_prompt"] = prompt_text
 
         content: List[Dict[str, Any]] = []
-        want_vision = self.use_vision and bool(
-            getattr(self.provider.model_config, "is_multimodal", False)
-        )
         if want_vision:
             content.extend(
                 [make_image_block(image_to_base64(img)) for img in context.frame_images]
@@ -217,7 +239,7 @@ class ADCRAgent(MultimodalAgent):
         content.append({"type": "text", "text": prompt_text})
 
         messages = [
-            {"role": "system", "content": self.prompt_manager.render("system")},
+            {"role": "system", "content": self.prompt_manager.render("system", {"use_vision": want_vision})},
             {"role": "user", "content": content},
         ]
 
@@ -269,15 +291,13 @@ class ADCRAgent(MultimodalAgent):
             )
             valid_actions = ", ".join(HUMAN_ACTIONS_LIST)
 
+        want_vision = self._get_want_vision(context)
         find_action_instruct = self.prompt_manager.render(
             "find_action_instruct",
-            {"action_list": available_actions_text, "valid_actions": valid_actions},
+            {"action_list": available_actions_text, "valid_actions": valid_actions, "use_vision": want_vision},
         )
 
         content: List[Dict[str, Any]] = []
-        want_vision = self.use_vision and bool(
-            getattr(self.provider.model_config, "is_multimodal", False)
-        )
         if want_vision:
             img = context.last_frame_image()
             if img is not None:
@@ -292,7 +312,7 @@ class ADCRAgent(MultimodalAgent):
         )
 
         messages = [
-            {"role": "system", "content": self.prompt_manager.render("system")},
+            {"role": "system", "content": self.prompt_manager.render("system", {"use_vision": want_vision})},
             {"role": "user", "content": content},
         ]
 
