@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import logging
 import time
+import traceback
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -14,6 +15,7 @@ from arcagi3.checkpoint import CheckpointManager
 from arcagi3.game_client import GameClient
 from arcagi3.schemas import ActionData, Cost, GameActionRecord, GameResult, GameStep
 from arcagi3.utils.context import SessionContext, GameProgress
+from arcagi3.utils import errors
 from arcagi3.breakpoints.manager import BreakpointHook, BreakpointManager
 from arcagi3.breakpoints.spec import BreakpointSpec, load_breakpoint_spec, merge_breakpoint_specs
 
@@ -517,7 +519,21 @@ class MultimodalAgent(ABC):
                     self.save_checkpoint(context)
 
             except Exception as e:
-                logger.error(f"Error during game loop: {e}", exc_info=True)
+                trace = traceback.format_exc()
+                payload = errors.build_error_payload(
+                    e,
+                    context={
+                        "game_id": game_id,
+                        "config": self.config,
+                        "card_id": self.card_id,
+                        "checkpoint_id": context.checkpoint_id,
+                        "phase": "session_loop",
+                    },
+                    trace=trace,
+                )
+                setattr(e, "_friendly_logged", True)
+                logger.error(errors.format_user_message(payload))
+                logger.error("Traceback:\n%s", trace)
                 raise
 
         return {"score": current_score, "state": current_state, "actions_taken": play_action_counter, "action_history": play_action_history}

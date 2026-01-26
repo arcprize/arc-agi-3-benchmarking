@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
+import traceback
 from typing import Any, Dict, Iterable, Optional, Sequence
 
 from dotenv import load_dotenv
@@ -27,6 +29,7 @@ from arcagi3.utils.cli import (
     print_result,
     validate_args,
 )
+from arcagi3.utils import errors
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +207,15 @@ def _build_default_registry() -> AgentRunner:
 def main_cli(cli_args: Optional[list] = None) -> None:
     load_dotenv()
     runner = _build_default_registry()
-    runner.run(cli_args)
+    try:
+        runner.run(cli_args)
+    except Exception as e:
+        trace = traceback.format_exc()
+        payload = errors.build_error_payload(e, context={"phase": "cli"}, trace=trace)
+        print(errors.format_user_message(payload), file=sys.stderr)
+        if not getattr(e, "_friendly_logged", False):
+            traceback.print_exc()
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -139,6 +139,19 @@ class CheckpointManager:
             json.dump(action_history_data, f, indent=2)
 
         logger.info(f"Checkpoint saved successfully")
+
+    def write_error(self, payload: Dict[str, Any]) -> Path:
+        """
+        Persist a human-readable error payload alongside checkpoint data.
+        """
+        self.checkpoint_path.mkdir(parents=True, exist_ok=True)
+        error_path = self.checkpoint_path / "error.json"
+
+        json.dumps(payload)
+        with open(error_path, "w") as f:
+            json.dump(payload, f, indent=2)
+
+        return error_path
     
     def load_state(self) -> Dict[str, Any]:
         """

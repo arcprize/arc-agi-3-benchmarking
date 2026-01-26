@@ -1,4 +1,5 @@
 import logging
+import traceback
 from typing import Optional
 from arcagi3.utils import read_models_config
 from arcagi3.game_client import GameClient
@@ -8,6 +9,7 @@ from arcagi3.utils.context import SessionContext
 from arcagi3.checkpoint import CheckpointManager
 from arcagi3.schemas import GameResult, GameStep
 from arcagi3.utils import save_result
+from arcagi3.utils import errors
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -259,6 +261,28 @@ class ARC3Tester:
         except Exception as e:
             # Determine the actual checkpoint card_id for logging
             actual_checkpoint_id = checkpoint_card_id if checkpoint_card_id else card_id
-            logger.error(f"Error during game execution: {e}")
+            trace = traceback.format_exc()
+            payload = errors.build_error_payload(
+                e,
+                context={
+                    "game_id": game_id,
+                    "config": self.config,
+                    "card_id": card_id,
+                    "checkpoint_id": actual_checkpoint_id,
+                    "phase": "play_game",
+                },
+                trace=trace,
+            )
+            if not getattr(e, "_friendly_logged", False):
+                logger.error(errors.format_user_message(payload))
+                logger.error("Traceback:\n%s", trace)
+                setattr(e, "_friendly_logged", True)
+
+            if actual_checkpoint_id:
+                try:
+                    CheckpointManager(actual_checkpoint_id).write_error(payload)
+                except Exception as write_error:
+                    logger.warning(f"Failed to write error checkpoint: {write_error}")
+
             logger.info(f"Checkpoint may be available at: .checkpoint/{actual_checkpoint_id}")
             raise
