@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 
 from arcagi3.agent import MultimodalAgent, HUMAN_ACTIONS, HUMAN_ACTIONS_LIST
@@ -11,6 +12,12 @@ from arcagi3.utils.image import grid_to_image, image_to_base64, make_image_block
 from arcagi3.utils.parsing import extract_json_from_response
 
 from .breakpoints import get_adcr_breakpoint_spec, get_adcr_breakpoint_hooks
+
+logger = logging.getLogger(__name__)
+
+
+class MalformedJsonReset(RuntimeError):
+    pass
 
 
 class ADCRAgent(MultimodalAgent):
@@ -82,6 +89,55 @@ class ADCRAgent(MultimodalAgent):
             )
             context.datastore["want_vision"] = want_vision
         return want_vision
+
+    def _append_memory_note(self, context: SessionContext, note: str) -> None:
+        memory_prompt = context.datastore.get("memory_prompt", "")
+        if memory_prompt:
+            memory_prompt = f"{memory_prompt}\n\n{note}"
+        else:
+            memory_prompt = note
+        context.datastore["memory_prompt"] = memory_prompt
+
+    def _parse_json_with_retry(
+        self,
+        context: SessionContext,
+        messages: List[Dict[str, Any]],
+        step_name: str,
+    ) -> Dict[str, Any]:
+        last_error: Optional[Exception] = None
+        last_message = ""
+        for attempt in range(2):
+            response = self.provider.call_with_tracking(context, messages)
+            action_message = self.provider.extract_content(response)
+            last_message = action_message or ""
+            try:
+                return extract_json_from_response(action_message)
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "Malformed JSON in %s step (attempt %s/2): %s",
+                    step_name,
+                    attempt + 1,
+                    str(e),
+                )
+                if attempt == 0:
+                    logger.info(
+                        "Retrying %s step once due to malformed JSON.", step_name
+                    )
+                    continue
+
+        note = (
+            f"Note: produced malformed JSON twice in a row during {step_name}; resetting game."
+        )
+        self._append_memory_note(context, note)
+        logger.error(
+            "Two consecutive malformed JSON outputs during %s. Resetting game. "
+            "Last error: %s. Last response (truncated): %s",
+            step_name,
+            last_error,
+            last_message[:200],
+        )
+        raise MalformedJsonReset(note)
 
     def analyze_outcome_step(self, context: SessionContext) -> str:
         previous_action = context.datastore.get("previous_action")
@@ -243,9 +299,7 @@ class ADCRAgent(MultimodalAgent):
             {"role": "user", "content": content},
         ]
 
-        response = self.provider.call_with_tracking(context, messages)
-        action_message = self.provider.extract_content(response)
-        result = extract_json_from_response(action_message)
+        result = self._parse_json_with_retry(context, messages, "decide")
 
         if self.breakpoint_manager:
             payload = {
@@ -316,9 +370,7 @@ class ADCRAgent(MultimodalAgent):
             {"role": "user", "content": content},
         ]
 
-        response = self.provider.call_with_tracking(context, messages)
-        action_message = self.provider.extract_content(response)
-        result = extract_json_from_response(action_message)
+        result = self._parse_json_with_retry(context, messages, "convert")
 
         if self.breakpoint_manager:
             payload = {
@@ -358,34 +410,41 @@ class ADCRAgent(MultimodalAgent):
             return False
 
     def step(self, context: SessionContext) -> GameStep:
-        analysis = self.analyze_outcome_step(context)
+        try:
+            analysis = self.analyze_outcome_step(context)
 
-        human_action_dict = self.decide_human_action_step(context, analysis)
-        human_action = human_action_dict.get("human_action")
-        if not human_action:
-            raise ValueError("No human_action in response")
+            human_action_dict = self.decide_human_action_step(context, analysis)
+            human_action = human_action_dict.get("human_action")
+            if not human_action:
+                raise ValueError("No human_action in response")
 
-        game_action_dict = self.convert_human_to_game_action_step(
-            context, str(human_action)
-        )
-        action_name = game_action_dict.get("action")
-        if not action_name:
-            raise ValueError("No action in game action response")
-
-        if not self.validate_action(context, str(action_name)):
-            raise ValueError(
-                f"Invalid action '{action_name}' for available_actions={context.game.available_actions}"
+            game_action_dict = self.convert_human_to_game_action_step(
+                context, str(human_action)
             )
+            action_name = game_action_dict.get("action")
+            if not action_name:
+                raise ValueError("No action in game action response")
 
-        context.datastore["previous_action"] = human_action_dict
+            if not self.validate_action(context, str(action_name)):
+                raise ValueError(
+                    f"Invalid action '{action_name}' for available_actions={context.game.available_actions}"
+                )
 
-        reasoning = {
-            # Keep concise: ARC API has a ~16kb limit for reasoning/metadata.
-            "analysis": analysis[:1000],
-            "human_action": human_action_dict,
-        }
+            context.datastore["previous_action"] = human_action_dict
 
-        return GameStep(action=game_action_dict, reasoning=reasoning)
+            reasoning = {
+                # Keep concise: ARC API has a ~16kb limit for reasoning/metadata.
+                "analysis": analysis[:1000],
+                "human_action": human_action_dict,
+            }
+
+            return GameStep(action=game_action_dict, reasoning=reasoning)
+        except MalformedJsonReset as e:
+            logger.error("Forcing RESET action due to malformed JSON: %s", e)
+            return GameStep(
+                action={"action": "RESET"},
+                reasoning={"system": "malformed_json_reset"},
+            )
 
 
 __all__ = ["ADCRAgent"]

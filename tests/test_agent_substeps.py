@@ -42,6 +42,22 @@ class DummyProvider:
         return response["choices"][0]["message"]["content"]
 
 
+class SequenceProvider(DummyProvider):
+    """Provider stub that returns a sequence of raw content strings."""
+
+    def __init__(self, responses: List[str]):
+        super().__init__()
+        self._responses = list(responses)
+        self.call_count = 0
+
+    def call_provider(self, messages):
+        self.last_messages = messages
+        idx = min(self.call_count, len(self._responses) - 1)
+        self.call_count += 1
+        content = self._responses[idx]
+        return {"choices": [{"message": {"content": content}}]}
+
+
 class DummyGameClient:
     """Game client stub that never hits the network."""
 
@@ -65,12 +81,12 @@ class DummyGameClient:
         }
 
 
-def _make_agent(monkeypatch) -> ADCRAgent:
+def _make_agent(monkeypatch, provider: DummyProvider | None = None) -> ADCRAgent:
     import arcagi3.agent as agent_module
     import arcagi3.adapters as adapters_module
     from arcagi3.utils import task_utils
 
-    dummy_provider = DummyProvider()
+    dummy_provider = provider or DummyProvider()
     # Patch create_provider where it's actually referenced by agent.py
     monkeypatch.setattr(agent_module, "create_provider", lambda config: dummy_provider)
     # Also patch adapters module for completeness
@@ -159,5 +175,32 @@ def test_validate_action_matches_available_actions(monkeypatch):
     assert agent.validate_action(context, "ACTION1") is True
     assert agent.validate_action(context, "ACTION6") is True
     assert agent.validate_action(context, "ACTION3") is False
+
+
+def test_decide_retries_once_on_malformed_json(monkeypatch):
+    provider = SequenceProvider(["not-json", '{"human_action":"ACTION1"}'])
+    agent = _make_agent(monkeypatch, provider=provider)
+    context = SessionContext()
+    context.set_available_actions(["1"])
+    context.update(frame_grids=[[[0]]], current_score=0, current_state="IN_PROGRESS")
+
+    result = agent.decide_human_action_step(context, "analysis")
+
+    assert result["human_action"] == "ACTION1"
+    assert provider.call_count == 2
+
+
+def test_step_resets_after_two_malformed_json(monkeypatch):
+    provider = SequenceProvider(["not-json", "still not json"])
+    agent = _make_agent(monkeypatch, provider=provider)
+    context = SessionContext()
+    context.set_available_actions(["1"])
+    context.update(frame_grids=[[[0]]], current_score=0, current_state="IN_PROGRESS")
+
+    step = agent.step(context)
+
+    assert step.action["action"] == "RESET"
+    assert "malformed JSON twice in a row" in context.datastore.get("memory_prompt", "")
+    assert provider.call_count == 2
 
 
