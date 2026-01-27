@@ -5,7 +5,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Dict, Optional, Union
 
-from jinja2 import Environment, Template, UndefinedError
+from jinja2 import Environment, StrictUndefined, Template, UndefinedError
 
 
 PromptVars = Dict[str, Any]
@@ -38,6 +38,7 @@ class PromptManager:
             trim_blocks=True,
             lstrip_blocks=True,
             keep_trailing_newline=True,
+            undefined=StrictUndefined,
         )
 
     def load(self, name: str) -> str:
