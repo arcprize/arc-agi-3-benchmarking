@@ -1,6 +1,7 @@
 
 import logging
 import os
+import yaml
 from arcagi3.checkpoint import CheckpointManager
 from arcagi3.game_client import GameClient
 from typing import List, Dict, Any, Optional
@@ -355,6 +356,144 @@ def handle_close_scorecard(args):
             logger.info(f"To delete it, run: rm -rf .checkpoint/{card_id}")
     except Exception as e:
         logger.error(f"✗ Failed to close scorecard: {e}", exc_info=True)
+
+def handle_list_models():
+    """List all models for enabled providers."""
+    from arcagi3.utils.api_tests import (
+        test_anthropic,
+        test_deepseek,
+        test_fireworks,
+        test_gemini,
+        test_groq,
+        test_huggingface,
+        test_openai,
+        test_openrouter,
+        test_provider_api_key,
+        test_xai,
+    )
+    
+    # Provider mapping: maps provider_id to (display_name, env_var, test_func)
+    provider_mapping = {
+        "openai": ("OpenAI", "OPENAI_API_KEY", test_openai),
+        "anthropic": ("Anthropic", "ANTHROPIC_API_KEY", test_anthropic),
+        "gemini": ("Google Gemini", "GOOGLE_API_KEY", test_gemini),
+        "openrouter": ("OpenRouter", "OPENROUTER_API_KEY", test_openrouter),
+        "fireworks": ("Fireworks", "FIREWORKS_API_KEY", test_fireworks),
+        "groq": ("Groq", "GROQ_API_KEY", test_groq),
+        "deepseek": ("DeepSeek", "DEEPSEEK_API_KEY", test_deepseek),
+        "xai": ("xAI", "XAI_API_KEY", test_xai),
+        "grok": ("xAI", "XAI_API_KEY", test_xai),  # grok maps to xai
+        "huggingfacefireworks": ("Hugging Face", "HUGGING_FACE_API_KEY", test_huggingface),
+    }
+    
+    # Test providers and get enabled ones
+    enabled_providers = set()
+    provider_display_names = {}
+    
+    for provider_id, (provider_name, env_var, test_func) in provider_mapping.items():
+        status, _ = test_provider_api_key(provider_name, env_var, test_func)
+        if status is True:
+            enabled_providers.add(provider_id)
+            # Also add display name mapping
+            provider_display_names[provider_id] = provider_name
+            # If this is grok, also enable xai (they're the same)
+            if provider_id == "grok":
+                enabled_providers.add("xai")
+                provider_display_names["xai"] = provider_name
+    
+    if not enabled_providers:
+        print("\n" + "=" * 80)
+        print("No providers are enabled. Run --check to see provider status.")
+        print("=" * 80 + "\n")
+        return
+    
+    # Load models
+    base_dir = os.path.dirname(os.path.dirname(__file__))
+    models_file = os.path.join(base_dir, "models.yml")
+    models_private_file = os.path.join(base_dir, "models_private.yml")
+    
+    all_models = []
+    
+    # Load main models.yml
+    if os.path.exists(models_file):
+        with open(models_file, 'r') as f:
+            config_data = yaml.safe_load(f)
+            if config_data and 'models' in config_data:
+                all_models.extend(config_data['models'])
+    
+    # Load private models.yml if it exists
+    if os.path.exists(models_private_file):
+        with open(models_private_file, 'r') as f:
+            private_config_data = yaml.safe_load(f)
+            if private_config_data and 'models' in private_config_data:
+                all_models.extend(private_config_data['models'])
+    
+    # Filter models to only enabled providers
+    enabled_models = []
+    for model in all_models:
+        provider = model.get('provider', '').lower()
+        # Check if provider is enabled (handle grok -> xai mapping)
+        if provider in enabled_providers or (provider == "grok" and "xai" in enabled_providers):
+            enabled_models.append(model)
+    
+    if not enabled_models:
+        print("\n" + "=" * 80)
+        print("No models found for enabled providers.")
+        print("=" * 80 + "\n")
+        return
+    
+    # Group models by provider
+    models_by_provider: Dict[str, List[Dict[str, Any]]] = {}
+    for model in enabled_models:
+        provider = model.get('provider', '').lower()
+        # Normalize grok to xai for grouping
+        if provider == "grok":
+            provider = "xai"
+        if provider not in models_by_provider:
+            models_by_provider[provider] = []
+        models_by_provider[provider].append(model)
+    
+    # Display models
+    print("\n" + "=" * 80)
+    print("Available Models (for enabled providers)")
+    print("=" * 80)
+    
+    for provider_id in sorted(models_by_provider.keys()):
+        provider_name = provider_display_names.get(provider_id, provider_id.title())
+        models = models_by_provider[provider_id]
+        
+        print(f"\n{provider_name} ({len(models)} model{'s' if len(models) != 1 else ''}):")
+        print("-" * 80)
+        
+        # Sort models by name
+        models.sort(key=lambda m: m.get('name', ''))
+        
+        for model in models:
+            name = model.get('name', 'N/A')
+            model_name = model.get('model_name', 'N/A')
+            pricing = model.get('pricing', {})
+            input_price = pricing.get('input', 0)
+            output_price = pricing.get('output', 0)
+            is_multimodal = model.get('is_multimodal', False)
+            
+            # Build info string
+            info_parts = []
+            if is_multimodal:
+                info_parts.append("multimodal")
+            
+            # Check for reasoning/thinking features
+            if 'reasoning' in model or 'reasoning_effort' in model:
+                info_parts.append("reasoning")
+            if 'thinking' in model or 'thinking_config' in model:
+                info_parts.append("thinking")
+            
+            info_str = ", ".join(info_parts) if info_parts else "standard"
+            
+            print(f"  {name:<40} {info_str:<20} ${input_price:.2f}/${output_price:.2f} per 1M tokens")
+    
+    print("\n" + "=" * 80)
+    print(f"Total: {len(enabled_models)} model{'s' if len(enabled_models) != 1 else ''} available")
+    print("=" * 80 + "\n")
 
 def print_result(result):
     logger.info(f"\n{'='*60}")

@@ -1,6 +1,6 @@
 ## Instruct
 
-Given your action, including your expected outcome, and the provided results{% if use_vision %} via the associated images{% else %} via the associated text grids{% endif %} provide a complet analysis of the outcome, thinking though what happened.  When analizing {% if use_vision %}the images{% else %}the text grids{% endif %} think about the x,y location of objects{% if use_vision %}, their colors{$ endif %}, and how they relate to the game state.
+Given your action, including your expected outcome, and the provided results{% if use_vision %} via the associated images{% else %} via the associated text grids{% endif %} provide a complet analysis of the outcome, thinking though what happened.  When analizing {% if use_vision %}the images{% else %}the text grids{% endif %} think about the x,y location of objects{% if use_vision %}, their colors{% endif %}, and how they relate to the game state.
 {% if use_vision %}                              
 The images attached here are as follows (Zero Indexed):
 - 0: Final Frame before your Action

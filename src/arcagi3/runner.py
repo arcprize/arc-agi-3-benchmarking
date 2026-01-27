@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import traceback
 from typing import Any, Dict, Iterable, Optional, Sequence
@@ -26,6 +27,7 @@ from arcagi3.utils.cli import (
     handle_close_scorecard,
     handle_list_checkpoints,
     handle_list_games,
+    handle_list_models,
     print_result,
     validate_args,
 )
@@ -77,6 +79,11 @@ class AgentRunner:
             help="List available games from the ARC-AGI-3 API and exit",
         )
         parser.add_argument(
+            "--list-models",
+            action="store_true",
+            help="List available models for enabled providers and exit",
+        )
+        parser.add_argument(
             "--json",
             action="store_true",
             help="Output results in JSON format (use with --list-games)",
@@ -91,8 +98,8 @@ class AgentRunner:
 
         parser.add_argument(
             "--agent",
-            default="adcr",
-            help="Prepared agent name (use --list-agents to see options)",
+            default=os.getenv("AGENT", "adcr"),
+            help="Prepared agent name (use --list-agents to see options). Can be set via AGENT env var. Defaults to 'adcr' if not specified.",
         )
         for agent in self.list_agents():
             add_args = agent.get("add_args")
@@ -137,6 +144,10 @@ class AgentRunner:
                     print(json.dumps({"error": str(e)}, indent=2))
                 else:
                     logger.error(f"Failed to list games: {e}")
+            return
+
+        if args.list_models:
+            handle_list_models()
             return
 
         if args.list_checkpoints:

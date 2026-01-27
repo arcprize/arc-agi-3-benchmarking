@@ -228,21 +228,15 @@ class ARC3Tester:
             # Determine the actual checkpoint card_id for logging
             actual_checkpoint_id = checkpoint_card_id if checkpoint_card_id else card_id
 
-            # Determine whether we should close the scorecard. When no card_id
-            # existed initially and submit_scorecard is False, we never opened a
+            # Close the scorecard immediately when the game ends.
+            # When no card_id existed initially and submit_scorecard is False, we never opened a
             # scorecard, so there is nothing to close.
             if self.submit_scorecard or checkpoint_card_id or not card_id.startswith("local-"):
-                if result.final_state == "WIN" or self.close_on_exit:
-                    try:
-                        self.game_client.close_scorecard(card_id)
-                        logger.info(f"Closed scorecard {card_id}")
-                    except Exception as e:
-                        logger.debug(f"Could not close scorecard: {e}")
-                else:
-                    logger.info(
-                        f"Scorecard {card_id} left open for potential checkpoint resume"
-                    )
-                    logger.info(f"Checkpoint saved at: .checkpoint/{actual_checkpoint_id}")
+                try:
+                    self.game_client.close_scorecard(card_id)
+                    logger.info(f"Closed scorecard {card_id}")
+                except Exception as e:
+                    logger.debug(f"Could not close scorecard: {e}")
             else:
                 logger.info(
                     f"Local-only run completed; no scorecard was opened. "
