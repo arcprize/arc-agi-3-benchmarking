@@ -8,10 +8,16 @@ This is a developer harness for building and benchmarking agentic research workf
 
 - **Python**: `3.9+`
 - **uv**: recommended package manager. Install from [uv.pm](https://github.com/astral-sh/uv) or `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- **Node**: `22+` *optional* - only needed for building the breakpoint tool UI.
 - **ARC-AGI-3 API key**: required to talk to the ARC server. Sign up for a key [here](https://three.arcprize.org/).
 
 ## Install
+
+Clone the repository:
+
+```bash
+git clone git@github.com:arcprize/arc-agi-3-benchmarking.git
+cd arc-agi-3-benchmarking
+```
 
 From repo root:
 
