@@ -16,250 +16,157 @@ This is a developer harness for building and benchmarking agentic research workf
 From repo root:
 
 ```bash
+uv venv
 uv sync
 ```
 
 This will create a virtual environment (if needed) and install the project and all dependencies in editable mode.
 
-Alternatively, if you're not using `uv`:
+Alternatively, if you're not using `uv` (guide will continue assuming `uv`):
 
 ```bash
 pip install -e .
 ```
 
-## Set Environment Variables
+## Setting up your environment
 
-You can either set environment variables directly in your shell or utilize a `.env` file. `.env.example` demonstrates all expected environment variables.
+In order to communicate with the ARC server and utilize LLM providers, we need to set up environment variables. To get an API key for ARC AGI 3, you can sign up for a key [here](https://three.arcprize.org/). For your chosen provider(s), you can go to:
 
-### Check Your Configuration
+- [OpenAI](https://platform.openai.com/account/api-keys)
+- [Anthropic](https://console.anthropic.com/account/api-keys)
+- [Google Gemini](https://console.cloud.google.com/apis/credentials)
+- [OpenRouter](https://openrouter.ai/api-keys)
+- [Fireworks](https://app.fireworks.ai/account/api-keys)
+- [Groq](https://groq.com/account/api-keys)
+- [DeepSeek](https://console.deepseek.com/account/api-keys)
+- [Hugging Face](https://huggingface.co/settings/tokens)
 
-Before running agents, you can verify your environment variables and test your API keys:
+Once you have your API keys, you can safely place them in either a `.env` file in your project directory (feel free to copy our `.env.example` for a quicker start) or set them in your environment variables directly.
+
+To check to see if your environment variables are set correctly, you can run:
 
 ```bash
 uv run python -m arcagi3.runner --check
+
+================================================================================
+Service                   Environment Variable           Status                   
+================================================================================
+ARC-AGI-3 API             ARC_API_KEY                    ✓ Connected (found 6 games)
+OpenAI                    OPENAI_API_KEY                 ✓ Valid                  
+Anthropic                 ANTHROPIC_API_KEY              ✓ Valid           
+Google Gemini             GOOGLE_API_KEY                 Not configured           
+OpenRouter                OPENROUTER_API_KEY             ✓ Valid                  
+Fireworks                 FIREWORKS_API_KEY              Not configured           
+Groq                      GROQ_API_KEY                   Not configured           
+DeepSeek                  DEEPSEEK_API_KEY               ✓ Valid          
+xAI                       XAI_API_KEY                    Not configured           
+Hugging Face              HUGGING_FACE_API_KEY           Not configured           
+================================================================================
+
+================================================================================
+✓ READY TO BENCHMARK
+  - ARC-AGI-3 API: ✓ Connected
+  - Provider APIs: 4 configured and working
+================================================================================
 ```
 
-This will:
-- Test your ARC-AGI-3 API key by connecting to the server
-- Test all configured provider API keys (OpenAI, Anthropic, Google Gemini, etc.)
-- Display a table showing which services are configured and working
-- Indicate whether you're ready to benchmark (requires ARC API key + at least one working provider)
+## Select your game
 
-## Running an Agent
-
-### 1) List available prepared agents
+If your API keys are set up, you can see what games are available to you by running:
 
 ```bash
-uv run python -m arcagi3.runner --list-agents
+uv run python -m arcagi3.runner --list-games
+
+=========================================================
+Game ID               Title                         
+=========================================================
+am92                  AM92                          
+as66                  AS66                          
+bt11                  BT11                          
+dc22                  DC22                          
+is41                  IS41                          
+lp85                  LP85                          
+mk45                  MK45                          
+ne57                  NE57                          
+ra05                  RA05                          
+re86                  RE86                          
+sb26                  SB26                          
+sp80                  SP80                          
+tl01                  TL01                          
+wc25                  WC25                                               
+=========================================================
 ```
 
-As you create your own agents, you can register them with the runner for easier launching. More on that later.
+## Pick your model
 
-### 2) List available games
+We use game ids to identify models in our tooling. If you have your API keys set up, run the following to see all possible models for you:
 
 ```bash
-python -m arcagi3.runner --list-games
+uv run python -m arcagi3.runner --list-models
+
+================================================================================
+Available Models (for enabled providers)
+================================================================================
+
+OpenRouter (14 models):
+--------------------------------------------------------------------------------
+  claude-4-sonnet-20250522-thinking-8k-bedrock multimodal           $3.00/$15.00 per 1M tokens
+  claude-opus-4-5-openrouter               multimodal           $5.00/$25.00 per 1M tokens
+  claude-sonnet-4-5-openrouter             multimodal           $3.00/$15.00 per 1M tokens
+  deepseek_r1_0528-openrouter              standard             $0.50/$2.18 per 1M tokens
+  gemini-2-5-pro-preview-openrouter        multimodal           $1.25/$10.00 per 1M tokens
+  gemini-2-5-pro-preview-openrouter-thinking-1k multimodal           $1.25/$10.00 per 1M tokens
+  gemini-3-0-pro-preview-openrouter        multimodal           $2.00/$12.00 per 1M tokens
+  gpt-5-2-openrouter                       multimodal           $1.75/$14.00 per 1M tokens
+  magistral-medium-2506                    standard             $2.00/$5.00 per 1M tokens
+  magistral-medium-2506-thinking           standard             $2.00/$5.00 per 1M tokens
+  magistral-small-2506                     standard             $0.50/$1.50 per 1M tokens
+  qwen3-235b-a22b-07-25                    standard             $0.12/$0.59 per 1M tokens
+
+================================================================================
+Total: 12 models available
+================================================================================
 ```
 
-This displays a table of all available games from the ARC-AGI-3 API with their game IDs and titles. To get the output in JSON format (useful for scripting), use:
+## Benchmark!
+
+It's time to benchmark an agent! Let's say we want to benchmark OpenAI's `GPT-5` via openrouter the LS20 game. We can do that by running:
 
 ```bash
-python -m arcagi3.runner --list-games --json
-```
-
-### 3) Run a single game with a prepared agent
-
-```bash
-python -m arcagi3.runner \
-  --agent adcr \
+uv run python -m arcagi3.runner \
   --game_id ls20 \
-  --config gpt-4o-mini-2024-07-18 \
-  --max_actions 40
+  --config gpt-5-2-openrouter \
+  --max_actions 3
 ```
 
-- Results (if enabled) are written under `results/<config>/...json`
-- A scorecard URL is printed at the end
-- A checkpoint is continuously updated under `.checkpoint/<card_id>/` (unless disabled) which shows in progress actions and allows resume.
+## Scorecards
 
-### 4) Resume from a checkpoint
+When you run a benchmark, a scorecard is opened on the ARC server. You can list and view scorecards by running:
 
 ```bash
-python -m arcagi3.runner --list-checkpoints
-python -m arcagi3.runner --checkpoint <CARD_ID>
+uv run python -m arcagi3.runner --list-scorecards
+```
+
+You can also view a specific scorecard by running:
+
+```bash
+uv run python -m arcagi3.runner --scorecard <CARD_ID>
+```
+
+If you're logged in, scoredcards can be viewed at [three.arcprize.org/scorecards](https://three.arcprize.org/scorecards).
+
+# Checkpoints
+
+While you run a benchmarking game, its progress is saved as a checkpoint locally. You can list and resume from checkpoints by running:
+
+```bash
+uv run python -m arcagi3.runner --list-checkpoints
+uv run python -m arcagi3.runner --checkpoint <CARD_ID>
 ```
 
 When resuming, `--config` and `--game_id` can be omitted; they’re recovered from checkpoint metadata when possible. By default, checkpoints live under `.checkpoint/<card_id>/`.
-
-### 5) Run without creating scorecards (local-only mode)
-
-```bash
-python -m arcagi3.runner \
-  --agent adcr \
-  --game_id ls20 \
-  --config gpt-4o-mini-2024-07-18 \
-  --no-scorecard-submission
-```
-
-This avoids opening/closing scorecards, but still plays the game through the ARC API. A `local-<uuid>` `card_id` is used for checkpointing.
-
-## breakpointer (interactive debugging UI)
-
-The breakpointer tool is a UI to help you gain a better understanding of what your model is doing, as well as allow you to manually experiment with agents during a game play session. Breakpoints let you **pause** your agent at named breakpoints and optionally **override** payload fields (e.g., edit memory, adjust the chosen action, or manually patch reasoning of the model). It is designed to be flexible to whatever pattern your agent utilizes to play games.
-
-**Note:** Building the breakpoint UI requires Node.js (see Prerequisites).
-
-### 0) Build the UI (first time setup)
-
-Before using the breakpoint tool, you need to build the UI:
-
-```bash
-cd breakpointer
-npm install
-npm run build
-cd ..
-```
-
-This creates the `breakpointer/dist` directory that the server will serve. If you modify the UI source code later, re-run `npm run build` and restart the server.
-
-### 1) Start the breakpoint server
-
-```bash
-python scripts/run_breakpoint_server.py
-```
-
-The server will automatically serve `breakpointer/dist` if it exists, otherwise it will serve from the project root (which won't have the UI).
-
-### 2) Run an agent with breakpoints enabled
-
-```bash
-python -m arcagi3.runner \
-  --agent adcr \
-  --game_id ls20 \
-  --config gpt-4o-mini-2024-07-18 \
-  --breakpoints
-```
-
-Breakpoints pause only at points defined in the **active breakpoint spec**. That spec can come from an agent's runtime registration (see `src/arcagi3/adcr_agent/breakpoints.py`) and/or a JSON spec provided via `--breakpoint-schema`.
-
-We will dive deeper into making your own breakpoints when discussing creating your own agents.
-
-# Making your own Agent
-
-To create your own agent, implement an `MultimodalAgent` child class (`src/arcagi3/agent.py`). Then implement the `step(context) -> GameStep` function.
-
-- **State comes in via** `context: SessionContext`
-  - Current/previous frames (as grids and optionally images)
-  - Current score/state, available actions, counters
-  - `context.datastore`: JSON-serializable scratch space for your agent (memory, hypotheses, plans, etc.)
-  - `context.metrics`: aggregated usage/cost
-- **You return** a `GameStep` with:
-  - `action`: a dict with at least `"action": "ACTION1" | ... | "ACTION7"` (or `"RESET"`)
-  - optional `action["data"]` dict (passed through to ARC API)
-  - optional `reasoning` dict (sent to ARC API; keep it small—there’s a hard size limit)
-
-All history of the game is stored within `context`, allowing you to implement whatever transformations or history tracking that you wish.
-
-
-## Reference Agent
-
-The repository includes a reference implementation of the **ADCR agent** (Analyze → Decide → Convert → Review) in `src/arcagi3/adcr_agent/`. This serves as a baseline implementation demonstrating a common multi-step prompting pipeline. See `src/arcagi3/adcr_agent/README.md` for detailed documentation.
-
-Note that even with frontier models at the time of writing, this agent cannot solve ARC games. It serves as an excellent skeleton build to inspire your own approaches.
-
-
-## Making your own runner
-
-The easiest way to run your own agent from the CLI is to create a small entrypoint that:
-
-- registers your agent in an `AgentRunner` (via a `flags` dict)
-- delegates all CLI parsing/execution to `runner.run()`
-
-Example (`my_runner.py`):
-
-```python
-from dotenv import load_dotenv
-
-from arcagi3.runner import AgentRunner
-from my_agent import MyAgent  # your MultimodalAgent subclass
-
-
-flags = {
-    "name": "my-agent",
-    "description": "My experimental agent",
-    "agent_class": MyAgent,
-    # Optional:
-    # "add_args": lambda parser: parser.add_argument("--foo", default="bar"),
-    # "get_kwargs": lambda args: {"foo": args.foo},
-}
-
-
-def main() -> None:
-    load_dotenv()
-    runner = AgentRunner()
-    runner.add_flags(flags)
-    runner.run()
-
-
-if __name__ == "__main__":
-    main()
-```
-
-See the reference implementation for a minimal example:
-- `src/arcagi3/adcr_agent/flags.py`
-
-## `context.datastore`
-
-`context.datastore` is your agent’s **persistent**, **per-run** state store.
-
-- It’s a JSON-serializable dict that lives on the `SessionContext`.
-- It survives across steps/actions within a run and is saved/restored via **checkpoints** (so it persists across resume). If you run multiple plays in one run, it can also carry across plays of the same game.
-
-For instance - if we had an LLM modifiable memory, and wished to feed the prompt of the model with that memory, a record of its previous reasoning for its move, and a long running experiment to determine game mechanics, we could do that within `step()`:
-
-```python
-# Similar to `adcr`, keep a persistent scratchpad + the last prompt/action.
-memory = context.datastore.get("memory_prompt", "")
-previous_reasoning = context.datastore.get("previous_prompt", "")
-current_experiment = context.datastore.get("current_experiment", "")
-
-# Utilize the memory, prior reasoning, and current long running experiment
-# with current observations of the state
-...
-```
-
-# Model configs
-
-`--config` selects an entry from:
-
-- `src/arcagi3/models.yml`
-- optional `src/arcagi3/models_private.yml` (local/private; loaded automatically if it exists)
-
-Each model config includes:
-- provider (which adapter to use)
-- model name
-- pricing (used for cost calculation)
-- optional kwargs (streaming, reasoning effort, max tokens, etc.)
-
-When specifying a model, it is assumed the environment variables for that provider contains an appropriate key for service.
 
 # Docker
 
 There is a `Dockerfile` that installs the package and defaults to running `python main.py`.
 It also exposes a set of environment variables that map to common CLI flags (see the `Dockerfile`).
-
-# Troubleshooting
-
-## “ARC_API_KEY not found”
-
-- Set `ARC_API_KEY` in your shell or `.env`
-- Confirm you’re running from a directory where `.env` is picked up (entrypoints call `load_dotenv()`)
-
-## Provider auth errors
-
-- Your chosen `--config` implies a provider; ensure that provider’s API key env var is set.
-
-## Breakpoints never pause
-
-- Start the server: `python scripts/run_breakpoint_server.py`
-- Run with `--breakpoints`
-- If you changed ports, set `--breakpoint-ws-url`
