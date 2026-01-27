@@ -5,6 +5,7 @@ import yaml
 from arcagi3.checkpoint import CheckpointManager
 from arcagi3.game_client import GameClient
 from typing import List, Dict, Any, Optional
+from arcagi3.utils.scorecard_output import print_result
 from arcagi3.utils.api_tests import (
     test_anthropic,
     test_arc_api_key,
@@ -497,18 +498,6 @@ def handle_list_models():
     print(f"Total: {len(enabled_models)} model{'s' if len(enabled_models) != 1 else ''} available")
     print("=" * 80 + "\n")
 
-def print_result(result):
-    logger.info(f"\n{'='*60}")
-    logger.info(f"Game Result: {result.game_id}")
-    logger.info(f"{'='*60}")
-    logger.info(f"Final Score: {result.final_score}")
-    logger.info(f"Final State: {result.final_state}")
-    logger.info(f"Actions Taken: {result.actions_taken}")
-    logger.info(f"Duration: {result.duration_seconds:.2f}s")
-    logger.info(f"Total Cost: ${result.total_cost.total_cost:.4f}")
-    logger.info(f"Total Tokens: {result.usage.total_tokens}")
-    logger.info(f"\nView your scorecard online: {result.scorecard_url}")
-    logger.info(f"{'='*60}\n")
 
 def handle_check():
     """Check environment variables and test API keys."""
