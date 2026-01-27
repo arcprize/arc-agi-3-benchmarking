@@ -298,3 +298,62 @@ Different providers have different parameter conventions:
 
 There is a `Dockerfile` that installs the package and defaults to running `python main.py`.
 It also exposes a set of environment variables that map to common CLI flags (see the `Dockerfile`).
+
+## Build the image
+
+From the repo root:
+
+```bash
+docker build -t ARCAGI3-Benchmarker .
+```
+
+## Provide environment variables
+
+You can supply API keys and settings in three ways:
+
+1) **Pass variables directly**
+
+```bash
+docker run --rm \
+  -e ARC_API_KEY=... \
+  -e OPENROUTER_API_KEY=... \
+  ARCAGI3-Benchmarker \
+  python -m arcagi3.runner --game_id am92-80effacb --config gpt-5-2-openrouter --max_actions 1
+```
+
+2) **Load variables from your local `.env` file**
+
+```bash
+docker run --rm \
+  --env-file "$(pwd)/.env" \
+  ARCAGI3-Benchmarker \
+  python -m arcagi3.runner --game_id am92-80effacb --config gpt-5-2-openrouter --max_actions 1
+```
+
+3) **Use your current shell environment**
+
+```bash
+export ARC_API_KEY=...
+export OPENROUTER_API_KEY=...
+
+docker run --rm \
+  -e ARC_API_KEY \
+  -e OPENROUTER_API_KEY \
+  ARCAGI3-Benchmarker \
+  python -m arcagi3.runner --game_id am92-80effacb --config gpt-5-2-openrouter --max_actions 1
+```
+
+## Persist checkpoints and results
+
+By default, results are written to `results/` and checkpoints to `.checkpoint/` inside the container. To keep them on your host machine, mount volumes:
+
+```bash
+mkdir -p .checkpoint results
+
+docker run --rm \
+  --env-file "$(pwd)/.env" \
+  -v "$(pwd)/.checkpoint:/app/.checkpoint" \
+  -v "$(pwd)/results:/app/results" \
+  ARCAGI3-Benchmarker \
+  python -m arcagi3.runner --game_id am92-80effacb --config gpt-5-2-openrouter --max_actions 1
+```
