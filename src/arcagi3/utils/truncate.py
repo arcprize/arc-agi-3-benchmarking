@@ -48,7 +48,7 @@ def truncate_memory(
     ]
 
     if context is not None:
-        response = provider.call_with_tracking(context, messages)
+        response = provider.call_with_tracking(context, messages, step_name="truncate_memory")
     else:
         response = provider.call_provider(messages)
 

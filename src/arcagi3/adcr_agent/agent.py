@@ -107,7 +107,11 @@ class ADCRAgent(MultimodalAgent):
         last_error: Optional[Exception] = None
         last_message = ""
         for attempt in range(2):
-            response = self.provider.call_with_tracking(context, messages)
+            response = self.provider.call_with_tracking(
+                context,
+                messages,
+                step_name=f"{step_name}.attempt_{attempt + 1}",
+            )
             action_message = self.provider.extract_content(response)
             last_message = action_message or ""
             try:
@@ -194,7 +198,7 @@ class ADCRAgent(MultimodalAgent):
             {"role": "user", "content": msg_parts},
         ]
 
-        response = self.provider.call_with_tracking(context, messages)
+        response = self.provider.call_with_tracking(context, messages, step_name="analyze")
         analysis_message = self.provider.extract_content(response)
 
         before, _, after = analysis_message.partition("---")

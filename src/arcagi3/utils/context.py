@@ -9,7 +9,7 @@ from PIL import Image
 
 from threadsafe_datastore import Datastore
 from arcagi3.utils.image import grid_to_image
-from arcagi3.schemas import Cost, Usage, CompletionTokensDetails, GameActionRecord
+from arcagi3.schemas import Cost, Usage, CompletionTokensDetails, GameActionRecord, ModelCallRecord
 from arcagi3.checkpoint import CheckpointManager
 from arcagi3.types import FrameGrid, FrameGridSequence, FrameImageSequence
 
@@ -68,6 +68,7 @@ class MetricsState:
 @dataclass(frozen=True)
 class HistoryState:
     actions: Tuple[GameActionRecord, ...] = ()
+    model_calls: Tuple[ModelCallRecord, ...] = ()
 
 
 class SessionContext:
@@ -258,6 +259,7 @@ class SessionContext:
             },
             "history": {
                 "action_history": [action.model_dump() for action in history.actions],
+                "model_calls": [call.model_dump(mode="json") for call in history.model_calls],
             },
             "datastore": datastore_snapshot,
         }
@@ -355,7 +357,12 @@ class SessionContext:
             record if isinstance(record, GameActionRecord) else GameActionRecord(**record)
             for record in action_history_payload
         )
-        history = HistoryState(actions=actions)
+        model_calls_payload = history_dict.get("model_calls", [])
+        model_calls = tuple(
+            record if isinstance(record, ModelCallRecord) else ModelCallRecord(**record)
+            for record in model_calls_payload
+        )
+        history = HistoryState(actions=actions, model_calls=model_calls)
 
         return cls(
             checkpoint_id=checkpoint_id,
@@ -374,6 +381,17 @@ class SessionContext:
     def append_action_record(self, record: GameActionRecord) -> None:
         with self._lock:
             self._history = replace(self._history, actions=self._history.actions + (record,))
+
+    def append_model_call(self, record: ModelCallRecord) -> None:
+        with self._lock:
+            call_num = record.call_num
+            if call_num is None:
+                call_num = len(self._history.model_calls) + 1
+                record = record.model_copy(update={"call_num": call_num})
+            self._history = replace(
+                self._history,
+                model_calls=self._history.model_calls + (record,),
+            )
 
     def metrics_snapshot(self) -> Cost:
         with self._lock:

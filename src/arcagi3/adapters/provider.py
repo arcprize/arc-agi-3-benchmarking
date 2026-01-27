@@ -1,9 +1,15 @@
 import abc
+import json
+import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
-from arcagi3.schemas import Attempt, ModelConfig
+from arcagi3.schemas import Attempt, ModelCallRecord, ModelConfig
 from arcagi3.utils.task_utils import read_models_config
 from arcagi3.utils.context import SessionContext
+
+
+logger = logging.getLogger(__name__)
 
 
 class ProviderAdapter(abc.ABC):
@@ -94,7 +100,13 @@ class ProviderAdapter(abc.ABC):
          """
          pass
 
-    def call_with_tracking(self, context: SessionContext, messages: List[Dict[str, Any]]) -> Any:
+    def call_with_tracking(
+        self,
+        context: SessionContext,
+        messages: List[Dict[str, Any]],
+        *,
+        step_name: Optional[str] = None,
+    ) -> Any:
         """
         Call provider and append usage/cost into the invocation SessionContext.
 
@@ -109,4 +121,46 @@ class ProviderAdapter(abc.ABC):
             reasoning_tokens=reasoning_tokens,
             pricing=self.model_config.pricing,
         )
+        try:
+            serialized_messages = json.loads(json.dumps(messages, default=str))
+            response_text = self.extract_content(response)
+            usage = {
+                "prompt_tokens": int(prompt_tokens),
+                "completion_tokens": int(completion_tokens),
+                "reasoning_tokens": int(reasoning_tokens),
+            }
+            cost = None
+            if self.model_config.pricing is not None:
+                input_cost_per_token = float(getattr(self.model_config.pricing, "input")) / 1_000_000
+                output_cost_per_token = float(getattr(self.model_config.pricing, "output")) / 1_000_000
+                prompt_cost = usage["prompt_tokens"] * input_cost_per_token
+                completion_cost = usage["completion_tokens"] * output_cost_per_token
+                reasoning_cost = usage["reasoning_tokens"] * output_cost_per_token
+                cost = {
+                    "prompt_cost": prompt_cost,
+                    "completion_cost": completion_cost,
+                    "reasoning_cost": reasoning_cost if usage["reasoning_tokens"] > 0 else 0.0,
+                    "total_cost": prompt_cost + completion_cost + reasoning_cost,
+                }
+
+            action_num = None
+            try:
+                action_num = int(context.game.action_counter) + 1
+            except Exception:
+                action_num = None
+
+            record = ModelCallRecord(
+                step_name=step_name,
+                action_num=action_num,
+                provider=self.model_config.provider,
+                model=self.model_config.model_name,
+                messages=serialized_messages,
+                response=str(response_text) if response_text is not None else None,
+                usage=usage,
+                cost=cost,
+                timestamp=datetime.now(timezone.utc),
+            )
+            context.append_model_call(record)
+        except Exception:
+            logger.exception("Failed to capture provider call history for checkpointing.")
         return response

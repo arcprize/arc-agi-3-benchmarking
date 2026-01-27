@@ -161,6 +161,8 @@ uv run python -m arcagi3.runner --scorecard <CARD_ID>
 
 If you're logged in, scoredcards can be viewed at [three.arcprize.org/scorecards](https://three.arcprize.org/scorecards).
 
+You can also view what your model did by looking at your local checkpoint folder in `.checkpoint/<CARD_ID>`.
+
 # Checkpoints
 
 While you run a benchmarking game, its progress is saved as a checkpoint locally. You can list and resume from checkpoints by running:
@@ -171,6 +173,13 @@ uv run python -m arcagi3.runner --checkpoint <CARD_ID>
 ```
 
 When resuming, `--config` and `--game_id` can be omitted; they’re recovered from checkpoint metadata when possible. By default, checkpoints live under `.checkpoint/<card_id>/`.
+
+Each checkpoint folder contains JSON files intended for inspection:
+- `metadata.json`: game/config info, scores, counters, frame grids, datastore snapshot
+- `costs.json`: total usage and cost for the run
+- `action_history.json`: per-action results, reasoning, and per-action cost
+- `model_completion.json`: per-model-call prompts/messages and responses (with usage/cost)
+- `error.json`: error details if a run failed (only present on error)
 
 # Model Configs
 

@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 # ============================================================================
 # Static ARC Task Schemas (for adapter compatibility)
@@ -61,6 +61,33 @@ class GameActionRecord(BaseModel):
     result_score: int
     result_state: str
     cost: Optional["Cost"] = None
+
+
+class ModelCallRecord(BaseModel):
+    """Record of a single model/provider call during a game."""
+    call_num: Optional[int] = None
+    step_name: Optional[str] = None
+    action_num: Optional[int] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    messages: List[Dict[str, Any]] = Field(default_factory=list)
+    response: Optional[str] = None
+    usage: Optional[Dict[str, int]] = None
+    cost: Optional[Dict[str, float]] = None
+    timestamp: datetime = None
+
+    model_config = {
+        "json_encoders": {
+            datetime: lambda v: v.isoformat() if v else None,
+        }
+    }
+
+    @model_validator(mode="before")
+    @classmethod
+    def set_timestamp(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        if isinstance(values, dict) and values.get("timestamp") is None:
+            values["timestamp"] = datetime.utcnow()
+        return values
 
 
 class GameStep(BaseModel):

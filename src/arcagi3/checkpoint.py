@@ -94,6 +94,14 @@ class CheckpointManager:
                 raise TypeError(
                     f"history.action_history[{idx}] must be a dict; got {type(action)}"
                 )
+        model_calls = history_dict.get("model_calls", [])
+        if not isinstance(model_calls, list):
+            raise TypeError(f"history.model_calls must be a list; got {type(model_calls)}")
+        for idx, call in enumerate(model_calls):
+            if not isinstance(call, dict):
+                raise TypeError(
+                    f"history.model_calls[{idx}] must be a dict; got {type(call)}"
+                )
         
         # Save metadata
         metadata = {
@@ -134,9 +142,12 @@ class CheckpointManager:
             json.dump(costs, f, indent=2)
         
         # Save action history
-        action_history_data = action_history
         with open(self.checkpoint_path / "action_history.json", "w") as f:
-            json.dump(action_history_data, f, indent=2)
+            json.dump(action_history, f, indent=2)
+
+        # Save model completions separately for easier inspection
+        with open(self.checkpoint_path / "model_completion.json", "w") as f:
+            json.dump(model_calls, f, indent=2)
 
         logger.info(f"Checkpoint saved successfully")
 
@@ -190,11 +201,21 @@ class CheckpointManager:
         
         # Load action history (raw dicts)
         action_history = []
+        model_calls = []
         action_history_path = self.checkpoint_path / "action_history.json"
         if action_history_path.exists():
             with open(action_history_path) as f:
                 action_history_data = json.load(f)
-                action_history = action_history_data
+                if isinstance(action_history_data, dict):
+                    action_history = action_history_data.get("action_history", [])
+                    model_calls = action_history_data.get("model_calls", [])
+                else:
+                    action_history = action_history_data
+
+        model_completion_path = self.checkpoint_path / "model_completion.json"
+        if model_completion_path.exists():
+            with open(model_completion_path) as f:
+                model_calls = json.load(f)
         
         logger.info(f"Checkpoint loaded successfully")
 
@@ -226,6 +247,7 @@ class CheckpointManager:
             },
             "history": {
                 "action_history": action_history,
+                "model_calls": model_calls,
             },
             "datastore": metadata.get("datastore", {}),
         }
