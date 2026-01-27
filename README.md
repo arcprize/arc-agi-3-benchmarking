@@ -172,6 +172,129 @@ uv run python -m arcagi3.runner --checkpoint <CARD_ID>
 
 When resuming, `--config` and `--game_id` can be omitted; they’re recovered from checkpoint metadata when possible. By default, checkpoints live under `.checkpoint/<card_id>/`.
 
+# Model Configs
+
+Model configurations are `YAML` entries that define how to use a specific model with a provider and key metadata information. They specify the model name, provider, pricing information, API parameters, and any provider-specific settings needed to make API calls. When you run a benchmark with `--config <config_name>`, the system looks up that configuration and uses it to initialize the appropriate provider adapter.
+
+## Configuration Files
+
+Model configurations are stored in `YAML` files:
+
+- **`src/arcagi3/models.yml`**: The main configuration file containing all public model definitions
+- **`src/arcagi3/models_private.yml`** (optional): A private configuration file that can be used for models you don't want to commit to version control. If this file exists, its entries are merged with `models.yml` at runtime.
+
+Both files follow the same structure: a top-level `models:` key containing a list of model configuration dictionaries.
+
+## Configuration Structure
+
+Each model configuration entry must include the following **required fields**:
+
+- **`name`** (string): A unique identifier for this configuration. Must be globally unique within the runtime. This is what you pass to `--config` when running benchmarks. Examples: `"gpt-5-2-openrouter"`, `"claude-sonnet-4-5-20250929"`
+
+- **`model_name`** (string): The actual model identifier used by the provider's API. This may differ from the config name. For example:
+  - OpenAI: `"gpt-5-2025-08-07"`
+  - OpenRouter: `"openai/gpt-5.2"` (includes provider prefix)
+  - Anthropic: `"claude-sonnet-4-5-20250929"`
+
+- **`provider`** (string): The provider adapter to use. Must match one of the supported providers: `"openai"`, `"anthropic"`, `"gemini"`, `"openrouter"`, `"deepseek"`, `"fireworks"`, `"huggingfacefireworks"`, or `"groq"`
+
+- **`pricing`** (object): Pricing information for cost tracking:
+  - `date` (string): Date when pricing was last updated (e.g., `"2025-08-07"`)
+  - `input` (float): Cost per 1 million input tokens in USD
+  - `output` (float): Cost per 1 million output tokens in USD
+
+- **`is_multimodal`** (boolean, default: `false`): Whether the model supports image inputs. Set to `true` for vision-capable models.
+
+- **`api_type`** (string, default: `"chat_completions"`): The API type to use. Common values:
+  - `"chat_completions"`: Standard chat completion API (default)
+  - `"responses"`: OpenAI's Responses API format
+
+- **Provider-specific parameters**: Any additional fields beyond the known ones (`name`, `model_name`, `provider`, `pricing`, `kwargs`, `api_type`, `is_multimodal`) are automatically extracted into the `kwargs` dictionary and passed to the provider's API. Common examples:
+  - `max_tokens`, `max_output_tokens`, `max_completion_tokens`: Token limits
+  - `temperature`: Sampling temperature
+  - `stream`: Whether to use streaming responses
+  - `reasoning`: Reasoning configuration (for OpenAI models)
+  - `thinking`: Thinking configuration (for Anthropic models)
+  - `extra_body`: Additional request body parameters (for OpenRouter)
+
+## Adding a New Model Configuration
+
+To add a new model for a given provider, follow these steps:
+
+### Step 1: Choose Your Configuration File
+
+Decide whether to add the model to `models.yml` (public) or `models_private.yml` (private). If you're unsure, use `models.yml` for models that are generally available.
+
+### Step 2: Find an Existing Example
+
+Look for an existing model configuration from the same provider in `models.yml` to use as a template. Each provider has different parameter requirements.
+
+### Step 3: Add Your Configuration Entry
+
+Add a new entry to the `models` list in your chosen YAML file. Here are examples for different providers:
+
+#### Example: OpenAI Model
+
+```yaml
+  - name: "gpt-360"
+    model_name: "gpt-360"
+    provider: "openai"
+    is_multimodal: true
+    api_type: "responses"
+    reasoning:
+      effort: "high"
+      summary: "auto"
+    max_output_tokens: 200000
+    pricing:
+      date: "2067-10-08"
+      input: 13.25
+      output: 20.00
+```
+
+### Step 4: Verify Your Configuration
+
+After adding your configuration, verify it works:
+
+1. **Check that the configuration loads**:
+   ```bash
+   uv run python -m arcagi3.runner --list-models
+   ```
+   Your new model should appear in the list if the provider's API key is configured.
+
+2. **Test with a simple benchmark**:
+   ```bash
+   uv run python -m arcagi3.runner \
+     --game_id <game_id> \
+     --config <your-config-name> \
+     --max_actions 1
+   ```
+
+### Step 5: Provider-Specific Notes
+
+Different providers have different parameter conventions:
+
+- **OpenAI**: Uses `max_output_tokens` (not `max_tokens`), supports `reasoning` configuration for reasoning models, and may use `api_type: "responses"` for newer models.
+
+- **OpenRouter**: Uses `max_tokens`, requires provider prefix in `model_name` (e.g., `"openai/gpt-5.2"`), and uses `extra_body` for additional parameters like reasoning configuration.
+
+- **Anthropic**: Uses `max_tokens`, supports `thinking` configuration for thinking models with `budget_tokens`, and commonly uses `stream: true`.
+
+- **Gemini**: Uses `max_output_tokens`, supports `thinking_config` for thinking models, and may include `automatic_function_calling` settings.
+
+- **Other providers**: Check existing examples in `models.yml` for the specific provider's conventions.
+
+### Common Pitfalls
+
+1. **Provider name mismatch**: The `provider` field must exactly match the adapter name (lowercase, no spaces). Check `src/arcagi3/adapters/__init__.py` for valid provider names.
+
+2. **Model name format**: For OpenRouter, the `model_name` must include the provider prefix (e.g., `"openai/gpt-5.2"`), while direct provider APIs use just the model identifier.
+
+3. **Pricing accuracy**: Ensure pricing reflects current rates. Incorrect pricing will lead to inaccurate cost tracking in your benchmarks.
+
+4. **Parameter naming**: Different providers use different parameter names (e.g., `max_tokens` vs `max_output_tokens` vs `max_completion_tokens`). Always check existing examples for your provider.
+
+5. **YAML syntax**: Ensure proper indentation (2 spaces) and that list items start with `-`. YAML is sensitive to formatting.
+
 # Docker
 
 There is a `Dockerfile` that installs the package and defaults to running `python main.py`.
