@@ -129,9 +129,9 @@ def configure_args(parser):
         help="Close scorecard on exit even if game not won (prevents checkpoint resume). Can be set via CLOSE_ON_EXIT env var (true/1/yes)."
     )
     parser.add_argument(
-        "--no-scorecard-submission",
+        "--offline",
         action="store_true",
-        help="Do not open or close scorecards on the ARC server; run in local-only mode when no existing card_id is provided."
+        help="Run in offline mode: no scoredcards are created on the ARC server; run in local-only mode when no existing card_id is provided. Can be set via OFFLINE env var (true/1/yes)."
     )
 
     # Breakpoints
@@ -208,6 +208,8 @@ def apply_env_vars_to_args(args):
         args.use_vision = True
     if os.getenv("CLOSE_ON_EXIT"):
         args.close_on_exit = _bool_env("CLOSE_ON_EXIT")
+    if os.getenv("OFFLINE"):
+        args.offline = _bool_env("OFFLINE")
     if os.getenv("LIST_CHECKPOINTS"):
         args.list_checkpoints = _bool_env("LIST_CHECKPOINTS")
     if os.getenv("BREAKPOINTS_ENABLED"):

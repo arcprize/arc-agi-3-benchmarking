@@ -227,6 +227,17 @@ class MultimodalAgent(ABC):
                 if restored_context.game.game_id:
                     game_id = restored_context.game.game_id
                 logger.info(f"Resuming game {game_id} from checkpoint")
+                
+                # Enforce max_actions on checkpoint continuation
+                if self.max_actions > 0 and restored_context.game.action_counter >= self.max_actions:
+                    logger.warning(
+                        f"Cannot resume from checkpoint: action counter ({restored_context.game.action_counter}) "
+                        f"already exceeds or equals max_actions ({self.max_actions}). "
+                        f"Please increase --max-actions or start a new game."
+                    )
+                    raise RuntimeError(
+                        f"Checkpoint action counter ({restored_context.game.action_counter}) exceeds max_actions ({self.max_actions})"
+                    )
 
         # Create or reuse invocation context
         if resume_from_checkpoint and "restored_context" in locals():
@@ -243,7 +254,7 @@ class MultimodalAgent(ABC):
         context.checkpoint_id = checkpoint_id
         context.checkpoint_dir = self.checkpoint_dir
 
-        logger.info(f"Starting game {game_id} with config {self.config} ({self.num_plays} play(s))")
+        logger.info(f"Starting game {game_id} with config {self.config}")
         overall_start_time = time.time()
 
         best_result: Optional[GameResult] = None

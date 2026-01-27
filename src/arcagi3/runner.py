@@ -192,7 +192,7 @@ class AgentRunner:
             checkpoint_frequency=args.checkpoint_frequency,
             close_on_exit=args.close_on_exit,
             memory_word_limit=args.memory_limit,
-            submit_scorecard=not getattr(args, "no_scorecard_submission", False),
+            submit_scorecard=not getattr(args, "offline", False),
             agent_class=agent_class,
             agent_kwargs=agent_kwargs,
         )
