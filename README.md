@@ -147,25 +147,15 @@ uv run python -m arcagi3.runner \
 
 ## Scorecards
 
-When you run a benchmark, a scorecard is opened on the ARC server. You can list and view scorecards by running:
+When you run a benchmark, a scorecard is saved on the ARC server.
 
-```bash
-uv run python -m arcagi3.runner --list-scorecards
-```
-
-You can also view a specific scorecard by running:
-
-```bash
-uv run python -m arcagi3.runner --scorecard <CARD_ID>
-```
-
-If you're logged in, scoredcards can be viewed at [three.arcprize.org/scorecards](https://three.arcprize.org/scorecards).
+If you're logged in, scorecards can be viewed at [three.arcprize.org/scorecards](https://three.arcprize.org/scorecards).
 
 You can also view what your model did by looking at your local checkpoint folder in `.checkpoint/<CARD_ID>`.
 
 # Checkpoints
 
-While you run a benchmarking game, its progress is saved as a checkpoint locally. You can list and resume from checkpoints by running:
+While you run a benchmarking game, its progress is saved as a checkpoint locally (default folder is `.checkpoint/<CARD_ID>`). You can list and resume from checkpoints by running:
 
 ```bash
 uv run python -m arcagi3.runner --list-checkpoints
