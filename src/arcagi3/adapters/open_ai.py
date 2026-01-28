@@ -8,15 +8,14 @@ from typing import Optional
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from arcagi3.schemas import (Attempt, AttemptMetadata, Choice,
-                             Message)
-from arcagi3.utils.retry import retry_with_exponential_backoff
-
 from arcagi3.adapters.openai_base import OpenAIBaseAdapter
+from arcagi3.schemas import Attempt, AttemptMetadata, Choice, Message
+from arcagi3.utils.retry import retry_with_exponential_backoff
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
 
 def _convert_messages_to_responses_format(messages):
     converted = []
@@ -36,69 +35,78 @@ def _convert_messages_to_responses_format(messages):
 
             if c_type == "image_url":
                 url = c["image_url"]["url"]
-                parts.append({
-                    "type": "input_image",
-                    "image_url": url,
-                })
+                parts.append(
+                    {
+                        "type": "input_image",
+                        "image_url": url,
+                    }
+                )
                 continue
 
             if c_type in ["text", "input_text", "output_text"]:
-
                 if role in ["user", "system"]:
-                    parts.append({
-                        "type": "input_text",
-                        "text": c["text"],
-                    })
+                    parts.append(
+                        {
+                            "type": "input_text",
+                            "text": c["text"],
+                        }
+                    )
 
                 elif role == "assistant":
-                    parts.append({
-                        "type": "output_text",
-                        "text": c["text"],
-                    })
+                    parts.append(
+                        {
+                            "type": "output_text",
+                            "text": c["text"],
+                        }
+                    )
 
                 continue
 
             parts.append(c)
 
-        converted.append({
-            "role": role,
-            "content": parts,
-        })
+        converted.append(
+            {
+                "role": role,
+                "content": parts,
+            }
+        )
 
     return converted
 
 
 class OpenAIAdapter(OpenAIBaseAdapter):
-
-
     def init_client(self):
         """
         Initialize the OpenAI client
         """
         if not os.environ.get("OPENAI_API_KEY"):
             raise ValueError("OPENAI_API_KEY not found in environment variables")
-        
+
         client = OpenAI(
             max_retries=0,
             timeout=1800,
         )
         return client
 
-
-    def make_prediction(self, prompt: str, task_id: Optional[str] = None, test_id: Optional[str] = None, pair_index: int = None) -> Attempt:
+    def make_prediction(
+        self,
+        prompt: str,
+        task_id: Optional[str] = None,
+        test_id: Optional[str] = None,
+        pair_index: int = None,
+    ) -> Attempt:
         """
         Make a prediction with the OpenAI model and return an Attempt object
-        
+
         Args:
             prompt: The prompt to send to the model
             task_id: Optional task ID to include in metadata
             test_id: Optional test ID to include in metadata
         """
         start_time = datetime.now(timezone.utc)
-        
 
         response = self._call_ai_model(prompt)
-        
+
         end_time = datetime.now(timezone.utc)
 
         # Centralised usage & cost calculation (includes sanity-check)
@@ -111,24 +119,13 @@ class OpenAIAdapter(OpenAIBaseAdapter):
         reasoning_summary = self._get_reasoning_summary(response)
 
         # Convert input messages to choices
-        input_choices = [
-            Choice(
-                index=0,
-                message=Message(
-                    role="user",
-                    content=prompt
-                )
-            )
-        ]
+        input_choices = [Choice(index=0, message=Message(role="user", content=prompt))]
 
         # Convert OpenAI response to our schema
         response_choices = [
             Choice(
                 index=1,
-                message=Message(
-                    role=self._get_role(response),
-                    content=self._get_content(response)
-                )
+                message=Message(role=self._get_role(response), content=self._get_content(response)),
             )
         ]
 
@@ -148,13 +145,10 @@ class OpenAIAdapter(OpenAIBaseAdapter):
             cost=cost,
             task_id=task_id,
             pair_index=pair_index,
-            test_id=test_id
+            test_id=test_id,
         )
 
-        attempt = Attempt(
-            metadata=metadata,
-            answer=self._get_content(response)
-        )
+        attempt = Attempt(metadata=metadata, answer=self._get_content(response))
 
         return attempt
 
@@ -172,9 +166,7 @@ Example of expected output format:
 
 IMPORTANT: Return ONLY the array, with no additional text, quotes, or formatting.
 """
-        completion = self._call_ai_model(
-            prompt=prompt
-        )
+        completion = self._call_ai_model(prompt=prompt)
 
         assistant_content = self._get_content(completion)
 
@@ -187,10 +179,10 @@ IMPORTANT: Return ONLY the array, with no additional text, quotes, or formatting
                 if block.strip() and not block.strip().startswith("json"):
                     assistant_content = block.strip()
                     break
-        
+
         # Remove any leading/trailing text that's not part of the JSON
         assistant_content = assistant_content.strip()
-        
+
         # Try to find array start/end if there's surrounding text
         if assistant_content and not assistant_content.startswith("["):
             start_idx = assistant_content.find("[[")
@@ -202,41 +194,38 @@ IMPORTANT: Return ONLY the array, with no additional text, quotes, or formatting
         try:
             # Try direct parsing first
             json_result = json.loads(assistant_content)
-            if isinstance(json_result, list) and all(isinstance(item, list) for item in json_result):
+            if isinstance(json_result, list) and all(
+                isinstance(item, list) for item in json_result
+            ):
                 return json_result
-            
+
             # If we got a dict with a response key, use that
             if isinstance(json_result, dict) and "response" in json_result:
                 return json_result.get("response")
-                
+
             return None
         except json.JSONDecodeError:
             # If direct parsing fails, try to find and extract just the array part
             try:
                 # Look for array pattern and extract it
-                array_pattern = r'\[\s*\[\s*\d+(?:\s*,\s*\d+)*\s*\](?:\s*,\s*\[\s*\d+(?:\s*,\s*\d+)*\s*\])*\s*\]'
+                array_pattern = r"\[\s*\[\s*\d+(?:\s*,\s*\d+)*\s*\](?:\s*,\s*\[\s*\d+(?:\s*,\s*\d+)*\s*\])*\s*\]"
                 match = re.search(array_pattern, assistant_content)
                 if match:
                     return json.loads(match.group(0))
-            except:
+            except Exception:
                 pass
-            
+
             return None
-        
+
     @retry_with_exponential_backoff(max_retries=3)
     def call_provider(self, messages):
         api_kwargs = self._filter_api_kwargs(self.model_config.kwargs)
         if self.model_config.api_type == "responses":
             messages = _convert_messages_to_responses_format(messages)
             return self.client.responses.create(
-                model=self.model_config.model_name,
-                input=messages,
-                **api_kwargs
+                model=self.model_config.model_name, input=messages, **api_kwargs
             )
         else:
             return self.client.chat.completions.create(
-                model=self.model_config.model_name,
-                messages=messages,
-                **api_kwargs
+                model=self.model_config.model_name, messages=messages, **api_kwargs
             )
-        

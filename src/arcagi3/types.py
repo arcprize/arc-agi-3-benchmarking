@@ -17,5 +17,3 @@ FrameGridSequence = List[FrameGrid]
 
 # A sequence of PIL images corresponding to frames.
 FrameImageSequence = List[Image.Image]
-
-

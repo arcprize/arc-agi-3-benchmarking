@@ -1,6 +1,4 @@
 import json
-import os
-from pathlib import Path
 from typing import Any, Dict, List
 
 from arcagi3.arc3tester import ARC3Tester
@@ -9,7 +7,7 @@ from arcagi3.schemas import GameResult, ModelConfig, ModelPricing
 
 class FakeGameClient:
     ROOT_URL: str = "https://test.example.com"
-    
+
     def __init__(self):
         self.ROOT_URL = "https://test.example.com"
         self.open_calls: List[Dict[str, Any]] = []
@@ -18,9 +16,7 @@ class FakeGameClient:
         self.get_scorecard_calls: List[Dict[str, Any]] = []
 
     def open_scorecard(self, game_ids, card_id=None, tags=None):
-        self.open_calls.append(
-            {"game_ids": game_ids, "card_id": card_id, "tags": tags}
-        )
+        self.open_calls.append({"game_ids": game_ids, "card_id": card_id, "tags": tags})
         return {"card_id": card_id or "server-card-id"}
 
     def close_scorecard(self, card_id: str):
@@ -41,27 +37,30 @@ class FakeGameClient:
         }
 
 
-def _make_tester(fake_client: FakeGameClient, submit_scorecard: bool, monkeypatch=None) -> ARC3Tester:
+def _make_tester(
+    fake_client: FakeGameClient, submit_scorecard: bool, monkeypatch=None
+) -> ARC3Tester:
     # Mock read_models_config to avoid needing a real config
     if monkeypatch:
-        from arcagi3.utils import task_utils
+        import arcagi3.adapters.provider as provider_module
         import arcagi3.arc3tester as arc3tester_module
         import arcagi3.utils as utils_module
-        import arcagi3.adapters.provider as provider_module
+        from arcagi3.utils import task_utils
+
         dummy_config = ModelConfig(
             name="dummy-config",
             model_name="dummy-model",
             provider="openai",
             is_multimodal=False,
             pricing=ModelPricing(date="2024-01-01", input=0.0, output=0.0),
-            kwargs={"memory_word_limit": 100}
+            kwargs={"memory_word_limit": 100},
         )
         # Patch where it's defined and all places it might be imported
         monkeypatch.setattr(task_utils, "read_models_config", lambda config: dummy_config)
         monkeypatch.setattr(arc3tester_module, "read_models_config", lambda config: dummy_config)
         monkeypatch.setattr(utils_module, "read_models_config", lambda config: dummy_config)
         monkeypatch.setattr(provider_module, "read_models_config", lambda config: dummy_config)
-    
+
     tester = ARC3Tester(
         config="dummy-config",
         save_results_dir=None,
@@ -103,7 +102,7 @@ def test_submit_scorecard_disabled_skips_open_and_close_when_no_card_id(monkeypa
 def test_resume_from_existing_checkpoint_still_uses_scorecard_apis(monkeypatch, tmp_path):
     # Set dummy API key to avoid GameClient initialization error
     monkeypatch.setenv("ARC_API_KEY", "dummy-key-for-testing")
-    
+
     # Create a fake checkpoint directory and metadata file
     checkpoint_dir = tmp_path / ".checkpoint" / "existing-card"
     checkpoint_dir.mkdir(parents=True)
@@ -151,14 +150,12 @@ def test_resume_from_existing_checkpoint_still_uses_scorecard_apis(monkeypatch, 
 
     with open(checkpoint_dir / "action_history.json", "w") as f:
         json.dump([], f)
-    
+
     # Monkeypatch the checkpoint directory to use our temp directory
     from arcagi3.checkpoint import CheckpointManager
-    original_checkpoint_dir = CheckpointManager.DEFAULT_CHECKPOINT_DIR
-    monkeypatch.setattr(
-        CheckpointManager, "DEFAULT_CHECKPOINT_DIR", str(tmp_path / ".checkpoint")
-    )
-    
+
+    monkeypatch.setattr(CheckpointManager, "DEFAULT_CHECKPOINT_DIR", str(tmp_path / ".checkpoint"))
+
     fake_client = FakeGameClient()
     tester = _make_tester(fake_client, submit_scorecard=False, monkeypatch=monkeypatch)
 
@@ -172,5 +169,3 @@ def test_resume_from_existing_checkpoint_still_uses_scorecard_apis(monkeypatch, 
     assert fake_client.get_scorecard_calls[0]["card_id"] == "existing-card"
     # No new scorecard should be opened in this path.
     assert fake_client.open_calls == []
-
-

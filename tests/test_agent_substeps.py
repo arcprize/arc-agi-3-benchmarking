@@ -1,7 +1,5 @@
 from typing import Any, Dict, List
 
-from PIL import Image
-
 from arcagi3.adcr_agent import ADCRAgent
 from arcagi3.agent import HUMAN_ACTIONS
 from arcagi3.utils.context import SessionContext
@@ -32,7 +30,9 @@ class DummyProvider:
     def call_provider(self, messages):
         self.last_messages = messages
         # Minimal response body; content will be parsed as JSON by the agent.
-        return {"choices": [{"message": {"content": '{"human_action":"ACTION1","action":"ACTION1"}'}}]}
+        return {
+            "choices": [{"message": {"content": '{"human_action":"ACTION1","action":"ACTION1"}'}}]
+        }
 
     def extract_usage(self, response):
         # No cost accounting in tests.
@@ -82,8 +82,8 @@ class DummyGameClient:
 
 
 def _make_agent(monkeypatch, provider: DummyProvider | None = None) -> ADCRAgent:
-    import arcagi3.agent as agent_module
     import arcagi3.adapters as adapters_module
+    import arcagi3.agent as agent_module
     from arcagi3.utils import task_utils
 
     dummy_provider = provider or DummyProvider()
@@ -95,12 +95,16 @@ def _make_agent(monkeypatch, provider: DummyProvider | None = None) -> ADCRAgent
     monkeypatch.setattr(
         task_utils,
         "read_models_config",
-        lambda config: type('ModelConfig', (), {
-            'provider': 'dummy',
-            'pricing': type('Pricing', (), {'input': 0, 'output': 0})(),
-            'kwargs': {'memory_word_limit': 100},
-            'is_multimodal': False,
-        })()
+        lambda config: type(
+            "ModelConfig",
+            (),
+            {
+                "provider": "dummy",
+                "pricing": type("Pricing", (), {"input": 0, "output": 0})(),
+                "kwargs": {"memory_word_limit": 100},
+                "is_multimodal": False,
+            },
+        )(),
     )
 
     game_client = DummyGameClient()
@@ -202,5 +206,3 @@ def test_step_resets_after_two_malformed_json(monkeypatch):
     assert step.action["action"] == "RESET"
     assert "malformed JSON twice in a row" in context.datastore.get("memory_prompt", "")
     assert provider.call_count == 2
-
-

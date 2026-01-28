@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Sequence, Tuple
 import json
 import threading
 from dataclasses import dataclass, field, replace
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 from PIL import Image
-
 from threadsafe_datastore import Datastore
-from arcagi3.utils.image import grid_to_image
-from arcagi3.schemas import Cost, Usage, CompletionTokensDetails, GameActionRecord, ModelCallRecord
-from arcagi3.checkpoint import CheckpointManager
-from arcagi3.types import FrameGrid, FrameGridSequence, FrameImageSequence
 
+from arcagi3.checkpoint import CheckpointManager
+from arcagi3.schemas import CompletionTokensDetails, Cost, GameActionRecord, ModelCallRecord, Usage
+from arcagi3.types import FrameGrid, FrameGridSequence, FrameImageSequence
+from arcagi3.utils.image import grid_to_image
 
 Size = Tuple[int, int]
 Resize = int | Size | None
@@ -52,6 +51,7 @@ class MetricsState:
 
     Underlying Cost/Usage are mutable pydantic models; do not mutate them directly.
     """
+
     total_cost: Cost = field(
         default_factory=lambda: Cost(prompt_cost=0.0, completion_cost=0.0, total_cost=0.0)
     )
@@ -74,14 +74,14 @@ class HistoryState:
 class SessionContext:
     """
     Context object containing session state and datastore for agent steps.
-    
+
     This object is passed to each step() call and provides access to:
     - The thread-safe datastore for storing arbitrary state
     - Current game state (frames, score, etc.)
     - Metadata about the current play and action
     - Previous state for comparison
     """
-    
+
     def __init__(
         self,
         checkpoint_id: Optional[str] = None,
@@ -94,10 +94,10 @@ class SessionContext:
     ):
         """
         Initialize the session context with grouped state objects.
-        
+
         All parameters are optional with sensible defaults. State can be updated
         via properties and the update() method after creation.
-        
+
         Args:
             checkpoint_id: Checkpoint identifier for saving/loading state
             checkpoint_dir: Directory for checkpoint storage
@@ -132,7 +132,7 @@ class SessionContext:
         self._metrics = metrics
         self._history = replace(history, actions=tuple(history.actions))
         self._checkpoint_manager: Optional[CheckpointManager] = None
-    
+
     @property
     def datastore(self) -> Datastore:
         """Thread-safe datastore instance for this invocation."""
@@ -219,7 +219,9 @@ class SessionContext:
             if self._checkpoint_manager is None:
                 checkpoint_id = self._checkpoint.checkpoint_id
                 if not checkpoint_id:
-                    raise ValueError("SessionContext.checkpoint_id is required to save a checkpoint")
+                    raise ValueError(
+                        "SessionContext.checkpoint_id is required to save a checkpoint"
+                    )
                 self._checkpoint_manager = CheckpointManager(
                     checkpoint_id, checkpoint_dir=self._checkpoint.checkpoint_dir
                 )
@@ -228,7 +230,7 @@ class SessionContext:
     def get_state(self, extra_metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Get all context state in a single lock acquisition for efficient checkpointing.
-        
+
         Returns organized state structure matching the checkpoint format.
         """
         with self._lock:
@@ -310,7 +312,7 @@ class SessionContext:
             frame_grids=tuple(frames_dict.get("frame_grids", [])),
             previous_grids=(),
         )
-        
+
         game = GameProgress(
             game_id=game_dict.get("game_id", ""),
             guid=game_dict.get("guid"),
@@ -322,7 +324,7 @@ class SessionContext:
             action_counter=game_dict.get("action_counter", 0),
             available_actions=tuple(game_dict.get("available_actions", [])),
         )
-        
+
         total_cost_payload = metrics_dict.get("total_cost")
         if total_cost_payload is None:
             total_cost = Cost(prompt_cost=0.0, completion_cost=0.0, total_cost=0.0)
@@ -439,16 +441,23 @@ class SessionContext:
 
                 prompt_cost_delta = prompt_tokens * input_cost_per_token
                 completion_cost_delta = completion_tokens * output_cost_per_token
-                reasoning_cost_delta = reasoning_tokens * output_cost_per_token if reasoning_tokens > 0 else 0.0
+                reasoning_cost_delta = (
+                    reasoning_tokens * output_cost_per_token if reasoning_tokens > 0 else 0.0
+                )
 
                 new_reasoning_cost = (
-                    (cost.reasoning_cost or 0.0) + reasoning_cost_delta if reasoning_tokens > 0 else cost.reasoning_cost
+                    (cost.reasoning_cost or 0.0) + reasoning_cost_delta
+                    if reasoning_tokens > 0
+                    else cost.reasoning_cost
                 )
                 new_cost = Cost(
                     prompt_cost=cost.prompt_cost + prompt_cost_delta,
                     completion_cost=cost.completion_cost + completion_cost_delta,
                     reasoning_cost=new_reasoning_cost,
-                    total_cost=cost.total_cost + prompt_cost_delta + completion_cost_delta + reasoning_cost_delta,
+                    total_cost=cost.total_cost
+                    + prompt_cost_delta
+                    + completion_cost_delta
+                    + reasoning_cost_delta,
                 )
 
             self._metrics = replace(self._metrics, total_cost=new_cost, total_usage=new_usage)
@@ -591,4 +600,3 @@ class SessionContext:
     def last_frame_grid(self) -> Optional[FrameGrid]:
         with self._lock:
             return self._frames.frame_grids[-1] if self._frames.frame_grids else None
-

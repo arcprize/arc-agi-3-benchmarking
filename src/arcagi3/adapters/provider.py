@@ -5,9 +5,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
 from arcagi3.schemas import Attempt, ModelCallRecord, ModelConfig
-from arcagi3.utils.task_utils import read_models_config
 from arcagi3.utils.context import SessionContext
-
+from arcagi3.utils.task_utils import read_models_config
 
 logger = logging.getLogger(__name__)
 
@@ -15,27 +14,30 @@ logger = logging.getLogger(__name__)
 class ProviderAdapter(abc.ABC):
     """
     Base class for all provider adapters.
-    
+
     INTERNAL_API_PARAMS: Set of parameter names that are application-level configuration
     and should NOT be passed to provider APIs. These are filtered out before API calls.
     """
-    INTERNAL_API_PARAMS: Set[str] = {'memory_word_limit'}
-    
+
+    INTERNAL_API_PARAMS: Set[str] = {"memory_word_limit"}
+
     def __init__(self, config: str):
         """
         Initialize the provider adapter with model configuration.
-        
+
         Args:
             config: Configuration name that identifies the model and its settings
         """
         self.config = config
         self.model_config: ModelConfig = read_models_config(config)
-        
+
         # Verify the provider matches the adapter
-        adapter_provider = self.__class__.__name__.lower().replace('adapter', '')
+        adapter_provider = self.__class__.__name__.lower().replace("adapter", "")
         if adapter_provider != self.model_config.provider:
-            raise ValueError(f"Model provider mismatch. Config '{config}' is for provider '{self.model_config.provider}' but was passed to {self.__class__.__name__}")
-        
+            raise ValueError(
+                f"Model provider mismatch. Config '{config}' is for provider '{self.model_config.provider}' but was passed to {self.__class__.__name__}"
+            )
+
         # Initialize the client
         self.client = self.init_client()
 
@@ -46,12 +48,18 @@ class ProviderAdapter(abc.ABC):
         Should handle API key validation and client setup.
         """
         pass
-    
+
     @abc.abstractmethod
-    def make_prediction(self, prompt: str, task_id: Optional[str] = None, test_id: Optional[str] = None, pair_index: int = None) -> Attempt:
+    def make_prediction(
+        self,
+        prompt: str,
+        task_id: Optional[str] = None,
+        test_id: Optional[str] = None,
+        pair_index: int = None,
+    ) -> Attempt:
         """
         Make a prediction with the model and return an Attempt object's answer
-        
+
         Args:
             prompt: The prompt to send to the model
             task_id: Optional task ID to include in metadata
@@ -61,7 +69,9 @@ class ProviderAdapter(abc.ABC):
         """
         pass
 
-    def chat_completion(self, messages: List[Dict[str, str]], tools: List[Dict[str, Any]] = []) -> Any:
+    def chat_completion(
+        self, messages: List[Dict[str, str]], tools: List[Dict[str, Any]] = []
+    ) -> Any:
         """
         Make a raw API call to the provider and return the response
         """
@@ -80,7 +90,7 @@ class ProviderAdapter(abc.ABC):
     def extract_usage(self, response: Any) -> tuple[int, int, int]:
         """
         Extract token usage from provider response.
-        
+
         Returns:
             Tuple of (prompt_tokens, completion_tokens, reasoning_tokens)
         """
@@ -95,10 +105,10 @@ class ProviderAdapter(abc.ABC):
 
     @abc.abstractmethod
     def call_provider(self, messages: List[Dict[str, Any]]) -> Any:
-         """
-         Call provider with retry logic
-         """
-         pass
+        """
+        Call provider with retry logic
+        """
+        pass
 
     def call_with_tracking(
         self,
@@ -131,8 +141,12 @@ class ProviderAdapter(abc.ABC):
             }
             cost = None
             if self.model_config.pricing is not None:
-                input_cost_per_token = float(getattr(self.model_config.pricing, "input")) / 1_000_000
-                output_cost_per_token = float(getattr(self.model_config.pricing, "output")) / 1_000_000
+                input_cost_per_token = (
+                    float(getattr(self.model_config.pricing, "input")) / 1_000_000
+                )
+                output_cost_per_token = (
+                    float(getattr(self.model_config.pricing, "output")) / 1_000_000
+                )
                 prompt_cost = usage["prompt_tokens"] * input_cost_per_token
                 completion_cost = usage["completion_tokens"] * output_cost_per_token
                 reasoning_cost = usage["reasoning_tokens"] * output_cost_per_token

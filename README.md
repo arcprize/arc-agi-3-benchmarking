@@ -358,6 +358,27 @@ docker run --rm \
   python -m arcagi3.runner --game_id am92-80effacb --config gpt-5-2-openrouter --max_actions 1
 ```
 
+# Contributing
+
+Install the development tools:
+
+```bash
+pip install -e ".[dev]"
+pre-commit install
+```
+
+Run all formatting and lint checks locally:
+
+```bash
+pre-commit run --all-files
+```
+
+git pre-commit hooks run automatically before each commit so you don't accidentally commit unlinted code.
+
+Notes:
+- The hooks run `isort`, `black`, and `ruff` on staged Python files.
+- If you change formatting/lint configs, re-run the hooks to update files.
+
 # Citation
 
 ```bibtex

@@ -398,4 +398,3 @@ def test_checkpoint_rejects_non_list_history(tmp_path):
         assert False, "Expected save_state() to reject non-list action_history"
     except TypeError:
         pass
-

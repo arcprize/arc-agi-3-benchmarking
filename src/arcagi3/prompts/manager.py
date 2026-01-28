@@ -7,7 +7,6 @@ from typing import Any, Callable, Dict, Optional, Union
 
 from jinja2 import Environment, StrictUndefined, Template, UndefinedError
 
-
 PromptVars = Dict[str, Any]
 PromptCallable = Callable[[PromptVars], str]
 PromptSource = Union[str, PromptCallable]
@@ -24,14 +23,14 @@ class PromptManager:
     this will load, in order:
       - `/foo/bar/prompts/myprompt.prompt`
       - `/foo/bar/prompts/myprompt`
-    
+
     Templates support jinja2 syntax including conditionals, loops, and filters.
     """
 
     __lock = Lock()
     __cache: Dict[Path, str] = {}
     __template_cache: Dict[Path, Template] = {}
-    
+
     def __init__(self):
         """Initialize jinja2 environment."""
         self._jinja_env = Environment(
@@ -53,15 +52,18 @@ class PromptManager:
         for frame_info in stack[1:]:  # Skip current frame (load)
             frame = frame_info.frame
             # Check if this frame is not in PromptManager
-            module_name = frame.f_globals.get('__name__', '')
-            if module_name != 'arcagi3.prompts.manager' or frame_info.function not in ('load', 'render'):
+            module_name = frame.f_globals.get("__name__", "")
+            if module_name != "arcagi3.prompts.manager" or frame_info.function not in (
+                "load",
+                "render",
+            ):
                 caller_frame = frame_info
                 break
-        
+
         if caller_frame is None:
             # Fallback to stack[1] if we couldn't find a non-PromptManager frame
             caller_frame = stack[1]
-            
+
         caller_filepath = caller_frame.filename
         caller_directory = Path(caller_filepath).parent
 
@@ -97,24 +99,27 @@ class PromptManager:
         Extra variables that are not used in the template are allowed (useful for conditionals).
         """
         template_text = self.load(name)
-        
+
         # Get the file path for template caching
         stack = inspect.stack()
         caller_frame = None
         for frame_info in stack[1:]:  # Skip current frame (render)
             frame = frame_info.frame
-            module_name = frame.f_globals.get('__name__', '')
-            if module_name != 'arcagi3.prompts.manager' or frame_info.function not in ('load', 'render'):
+            module_name = frame.f_globals.get("__name__", "")
+            if module_name != "arcagi3.prompts.manager" or frame_info.function not in (
+                "load",
+                "render",
+            ):
                 caller_frame = frame_info
                 break
-        
+
         if caller_frame is None:
             caller_frame = stack[1]
-            
+
         caller_filepath = caller_frame.filename
         caller_directory = Path(caller_filepath).parent
         filepath = caller_directory / "prompts" / f"{name}"
-        
+
         # Find the actual file path (with or without .prompt extension)
         with self.__lock:
             candidates = [filepath.with_suffix(".prompt"), filepath]
@@ -123,16 +128,16 @@ class PromptManager:
                 if candidate.exists():
                     template_path = candidate
                     break
-            
+
             if template_path is None:
                 raise FileNotFoundError(
                     f"Prompt '{name}' not found. Tried: {[str(p) for p in candidates]}"
                 )
-            
+
             # Get or create jinja2 template
             if template_path not in self.__template_cache:
                 self.__template_cache[template_path] = self._jinja_env.from_string(template_text)
-            
+
             template = self.__template_cache[template_path]
 
         if not vars:

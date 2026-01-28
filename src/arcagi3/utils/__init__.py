@@ -1,5 +1,7 @@
 """Utility functions for ARC-AGI-3 benchmarking."""
 
+from arcagi3.utils import errors
+from arcagi3.utils.context import SessionContext
 from arcagi3.utils.rate_limiter import AsyncRequestRateLimiter
 from arcagi3.utils.retry import RetryConfig, retry_on_rate_limit, retry_with_exponential_backoff
 from arcagi3.utils.task_utils import (
@@ -14,8 +16,6 @@ from arcagi3.utils.task_utils import (
     save_result,
     save_result_in_timestamped_structure,
 )
-from arcagi3.utils.context import SessionContext
-from arcagi3.utils import errors
 
 __all__ = [
     "read_models_config",
@@ -37,10 +37,11 @@ __all__ = [
     "truncate_memory",
 ]
 
+
 # Lazy import to avoid circular dependency
 def __getattr__(name: str):
     if name == "truncate_memory":
         from arcagi3.utils.truncate import truncate_memory
+
         return truncate_memory
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-

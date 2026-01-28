@@ -88,4 +88,3 @@ class AgentHelloPayload:
     game_id: Optional[str]
     schema: Dict[str, Any]
     breakpoints: Dict[str, bool]
-

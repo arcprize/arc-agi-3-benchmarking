@@ -18,7 +18,9 @@ def test_merge_breakpoint_specs():
                     BreakpointPointSpec(
                         point_id="analyze.post",
                         label="Analyze (post)",
-                        fields=[BreakpointFieldSpec(key="analysis", label="Analysis", path="analysis")],
+                        fields=[
+                            BreakpointFieldSpec(key="analysis", label="Analysis", path="analysis")
+                        ],
                     )
                 ],
             )
@@ -33,7 +35,9 @@ def test_merge_breakpoint_specs():
                     BreakpointPointSpec(
                         point_id="analyze.post",
                         label="Analyze (override)",
-                        fields=[BreakpointFieldSpec(key="memory", label="Memory", path="memory_prompt")],
+                        fields=[
+                            BreakpointFieldSpec(key="memory", label="Memory", path="memory_prompt")
+                        ],
                     )
                 ],
             ),
@@ -71,4 +75,3 @@ def test_apply_breakpoint_overrides_with_hook():
     updated = apply_breakpoint_overrides(payload, overrides, hook, context)
     assert updated["value"] == 3
     assert context["touched"] is True
-

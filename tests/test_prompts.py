@@ -44,7 +44,6 @@ def test_prompt_manager_loads_prompts_relative_to_caller(tmp_path):
 
 def test_prompt_manager_validates_missing_variables(tmp_path):
     """Test that render() raises error for missing template variables."""
-    from arcagi3.prompts import PromptManager
 
     # Create a test module with prompts
     mod_dir = tmp_path / "test_mod"
@@ -82,7 +81,6 @@ def test_prompt_manager_validates_missing_variables(tmp_path):
 
 def test_prompt_manager_allows_extra_variables(tmp_path):
     """Test that render() allows extra variables (useful for conditionals)."""
-    from arcagi3.prompts import PromptManager
 
     mod_dir = tmp_path / "test_extra"
     prompts_dir = mod_dir / "prompts"
@@ -114,7 +112,6 @@ def test_prompt_manager_allows_extra_variables(tmp_path):
 
 def test_prompt_manager_supports_jinja2_conditionals(tmp_path):
     """Test that render() supports jinja2 style conditionals."""
-    from arcagi3.prompts import PromptManager
 
     # Create a test module with prompts
     mod_dir = tmp_path / "test_jinja"
@@ -128,7 +125,7 @@ You will see images of the game state.
 You will see text grids representing the game state.
 {% endif %}
 Good luck!"""
-    
+
     (prompts_dir / "test.prompt").write_text(template, encoding="utf-8")
 
     module_path = mod_dir / "test.py"
@@ -160,7 +157,6 @@ Good luck!"""
 
 def test_prompt_manager_jinja2_loops(tmp_path):
     """Test jinja2 for loops in templates."""
-    from arcagi3.prompts import PromptManager
 
     mod_dir = tmp_path / "test_loops"
     prompts_dir = mod_dir / "prompts"
@@ -171,7 +167,7 @@ def test_prompt_manager_jinja2_loops(tmp_path):
 - {{ item }}
 {% endfor %}
 Done."""
-    
+
     (prompts_dir / "test.prompt").write_text(template, encoding="utf-8")
 
     module_path = mod_dir / "test.py"
@@ -200,7 +196,6 @@ Done."""
 
 def test_prompt_manager_jinja2_filters(tmp_path):
     """Test jinja2 filters in templates."""
-    from arcagi3.prompts import PromptManager
 
     mod_dir = tmp_path / "test_filters"
     prompts_dir = mod_dir / "prompts"
@@ -209,7 +204,7 @@ def test_prompt_manager_jinja2_filters(tmp_path):
     template = """Name: {{ name|upper }}
 Count: {{ count|default(0) }}
 Length: {{ items|length }}"""
-    
+
     (prompts_dir / "test.prompt").write_text(template, encoding="utf-8")
 
     module_path = mod_dir / "test.py"
@@ -237,7 +232,6 @@ Length: {{ items|length }}"""
 
 def test_prompt_manager_jinja2_nested_conditionals(tmp_path):
     """Test nested jinja2 conditionals."""
-    from arcagi3.prompts import PromptManager
 
     mod_dir = tmp_path / "test_nested"
     prompts_dir = mod_dir / "prompts"
@@ -253,7 +247,7 @@ Debug mode is off.
 {% else %}
 Disabled!
 {% endif %}"""
-    
+
     (prompts_dir / "test.prompt").write_text(template, encoding="utf-8")
 
     module_path = mod_dir / "test.py"
@@ -285,7 +279,6 @@ Disabled!
 
 def test_prompt_manager_elif_conditional(tmp_path):
     """Test jinja2 elif conditionals."""
-    from arcagi3.prompts import PromptManager
 
     mod_dir = tmp_path / "test_elif"
     prompts_dir = mod_dir / "prompts"
@@ -298,7 +291,7 @@ Status is inactive
 {% else %}
 Status is unknown
 {% endif %}"""
-    
+
     (prompts_dir / "test.prompt").write_text(template, encoding="utf-8")
 
     module_path = mod_dir / "test.py"
@@ -328,7 +321,6 @@ Status is unknown
 
 def test_prompt_manager_template_caching(tmp_path):
     """Test that templates are cached and reused."""
-    from arcagi3.prompts import PromptManager
 
     mod_dir = tmp_path / "test_cache"
     prompts_dir = mod_dir / "prompts"
@@ -363,7 +355,6 @@ def test_prompt_manager_template_caching(tmp_path):
 
 def test_prompt_manager_empty_template(tmp_path):
     """Test rendering empty or minimal templates."""
-    from arcagi3.prompts import PromptManager
 
     mod_dir = tmp_path / "test_empty"
     prompts_dir = mod_dir / "prompts"
@@ -397,7 +388,6 @@ def test_prompt_manager_empty_template(tmp_path):
 
 def test_prompt_manager_no_variables(tmp_path):
     """Test rendering template with no variables passed."""
-    from arcagi3.prompts import PromptManager
 
     mod_dir = tmp_path / "test_no_vars"
     prompts_dir = mod_dir / "prompts"
@@ -428,7 +418,6 @@ def test_prompt_manager_no_variables(tmp_path):
 
 def test_prompt_manager_whitespace_trimming(tmp_path):
     """Test that jinja2 trim_blocks and lstrip_blocks work correctly."""
-    from arcagi3.prompts import PromptManager
 
     mod_dir = tmp_path / "test_whitespace"
     prompts_dir = mod_dir / "prompts"
@@ -440,7 +429,7 @@ def test_prompt_manager_whitespace_trimming(tmp_path):
 Conditional text
 {% endif %}
 End"""
-    
+
     (prompts_dir / "test.prompt").write_text(template, encoding="utf-8")
 
     module_path = mod_dir / "test.py"
@@ -462,7 +451,7 @@ End"""
     mod = _load_module_from_path(module_path)
     result = mod.run()
     # Should not have extra blank lines from the {% if %} block
-    lines = [line for line in result.split('\n') if line.strip()]
+    lines = [line for line in result.split("\n") if line.strip()]
     assert "Start" in lines
     assert "Conditional text" in lines
     assert "End" in lines
@@ -470,7 +459,6 @@ End"""
 
 def test_prompt_manager_complex_template(tmp_path):
     """Test a complex template with multiple jinja2 features."""
-    from arcagi3.prompts import PromptManager
 
     mod_dir = tmp_path / "test_complex"
     prompts_dir = mod_dir / "prompts"
@@ -490,7 +478,7 @@ You have no items.
 {% if admin %}
 You are an administrator.
 {% endif %}"""
-    
+
     (prompts_dir / "test.prompt").write_text(template, encoding="utf-8")
 
     module_path = mod_dir / "test.py"
@@ -524,7 +512,6 @@ You are an administrator.
 
 def test_prompt_manager_file_not_found(tmp_path):
     """Test error handling when prompt file doesn't exist."""
-    from arcagi3.prompts import PromptManager
 
     mod_dir = tmp_path / "test_notfound"
     prompts_dir = mod_dir / "prompts"
@@ -558,7 +545,6 @@ def test_prompt_manager_file_not_found(tmp_path):
 
 def test_prompt_manager_file_extension_preference(tmp_path):
     """Test that .prompt extension is preferred over no extension."""
-    from arcagi3.prompts import PromptManager
 
     mod_dir = tmp_path / "test_ext"
     prompts_dir = mod_dir / "prompts"
@@ -591,7 +577,6 @@ def test_prompt_manager_file_extension_preference(tmp_path):
 
 def test_prompt_manager_numeric_and_boolean_values(tmp_path):
     """Test rendering with numeric and boolean values."""
-    from arcagi3.prompts import PromptManager
 
     mod_dir = tmp_path / "test_types"
     prompts_dir = mod_dir / "prompts"
@@ -600,7 +585,7 @@ def test_prompt_manager_numeric_and_boolean_values(tmp_path):
     template = """Number: {{ num }}
 Boolean: {{ flag }}
 Float: {{ fval }}"""
-    
+
     (prompts_dir / "test.prompt").write_text(template, encoding="utf-8")
 
     module_path = mod_dir / "test.py"
@@ -628,7 +613,6 @@ Float: {{ fval }}"""
 
 def test_prompt_manager_list_and_dict_access(tmp_path):
     """Test accessing list and dict elements in templates."""
-    from arcagi3.prompts import PromptManager
 
     mod_dir = tmp_path / "test_structures"
     prompts_dir = mod_dir / "prompts"
@@ -637,7 +621,7 @@ def test_prompt_manager_list_and_dict_access(tmp_path):
     template = """First item: {{ items[0] }}
 Name: {{ user.name }}
 Age: {{ user.age }}"""
-    
+
     (prompts_dir / "test.prompt").write_text(template, encoding="utf-8")
 
     module_path = mod_dir / "test.py"
@@ -668,14 +652,15 @@ Age: {{ user.age }}"""
 
 def test_prompt_manager_backward_compatibility_simple_vars(tmp_path):
     """Test backward compatibility with simple {{ var }} syntax."""
-    from arcagi3.prompts import PromptManager
 
     mod_dir = tmp_path / "test_backward"
     prompts_dir = mod_dir / "prompts"
     prompts_dir.mkdir(parents=True)
 
     # Simple template without jinja2 features
-    (prompts_dir / "test.prompt").write_text("Hello {{name}}, you have {{count}} items.", encoding="utf-8")
+    (prompts_dir / "test.prompt").write_text(
+        "Hello {{name}}, you have {{count}} items.", encoding="utf-8"
+    )
 
     module_path = mod_dir / "test.py"
     module_path.write_text(
@@ -700,7 +685,6 @@ def test_prompt_manager_backward_compatibility_simple_vars(tmp_path):
 
 def test_prompt_manager_multiple_renders_different_vars(tmp_path):
     """Test multiple renders of same template with different variables."""
-    from arcagi3.prompts import PromptManager
 
     mod_dir = tmp_path / "test_multi"
     prompts_dir = mod_dir / "prompts"
@@ -735,7 +719,6 @@ def test_prompt_manager_multiple_renders_different_vars(tmp_path):
 
 def test_prompt_manager_conditional_with_extra_vars(tmp_path):
     """Test that conditionals work correctly with extra unused variables."""
-    from arcagi3.prompts import PromptManager
 
     mod_dir = tmp_path / "test_conditional_extra"
     prompts_dir = mod_dir / "prompts"
@@ -746,7 +729,7 @@ Vision enabled
 {% else %}
 Vision disabled
 {% endif %}"""
-    
+
     (prompts_dir / "test.prompt").write_text(template, encoding="utf-8")
 
     module_path = mod_dir / "test.py"
@@ -775,5 +758,3 @@ Vision disabled
     assert "Vision enabled" in result
     assert "ignored" not in result
     assert "999" not in result
-
-

@@ -27,7 +27,7 @@ from arcagi3.runner import AgentRunner
 def main_cli(cli_args: list | None = None) -> None:
     """
     Main entry point demonstrating how to set up and run the ARC-AGI-3 runner.
-    
+
     This is a minimal example that:
     - Loads environment variables (for API keys)
     - Creates a runner instance
@@ -36,14 +36,14 @@ def main_cli(cli_args: list | None = None) -> None:
     """
     # Load environment variables (API keys, etc.)
     load_dotenv()
-    
+
     # Create a runner instance - this manages the agent registry
     runner = AgentRunner()
-    
+
     # Register the ADCR agent by adding its flags
     # Each agent has a flags.py file that defines its CLI args and agent class
     runner.add_flags(adcr_flags)
-    
+
     # Run the CLI - this handles argument parsing, agent instantiation,
     # game execution, checkpointing, and result printing
     runner.run(cli_args)
@@ -51,4 +51,3 @@ def main_cli(cli_args: list | None = None) -> None:
 
 if __name__ == "__main__":
     main_cli()
-

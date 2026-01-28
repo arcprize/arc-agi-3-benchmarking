@@ -1,9 +1,6 @@
 from typing import Any, Dict, List
 
-from PIL import Image
-
 import arcagi3.agent as agent_module
-
 from arcagi3.agent import MultimodalAgent
 from arcagi3.schemas import GameResult, GameStep
 from arcagi3.utils.context import SessionContext
@@ -42,7 +39,7 @@ class DummyProvider:
 
 class DummyGameClient:
     ROOT_URL: str = "https://test.example.com"
-    
+
     def __init__(self):
         self.ROOT_URL = "https://test.example.com"
         self.reset_calls = 0

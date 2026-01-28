@@ -15,9 +15,10 @@ from typing import Any, Dict, Iterable, Optional, Sequence
 
 from dotenv import load_dotenv
 
-from arcagi3.arc3tester import ARC3Tester
 from arcagi3.adcr_agent.flags import flags as adcr_flags
+from arcagi3.arc3tester import ARC3Tester
 from arcagi3.game_client import GameClient
+from arcagi3.utils import errors
 from arcagi3.utils.cli import (
     apply_env_vars_to_args,
     configure_args,
@@ -31,7 +32,6 @@ from arcagi3.utils.cli import (
     print_result,
     validate_args,
 )
-from arcagi3.utils import errors
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ class AgentRunner:
             description="Run ARC-AGI-3 benchmark on a single game with a prepared agent"
         )
         configure_args(parser)
-        
+
         # Add list commands before configure_main_args to avoid conflicts
         parser.add_argument(
             "--list-agents",
@@ -93,7 +93,7 @@ class AgentRunner:
             action="store_true",
             help="Check environment variables and test API keys",
         )
-        
+
         configure_main_args(parser)
 
         parser.add_argument(
@@ -137,10 +137,11 @@ class AgentRunner:
         if args.list_games:
             try:
                 game_client = GameClient()
-                handle_list_games(game_client, json_output=getattr(args, 'json', False))
+                handle_list_games(game_client, json_output=getattr(args, "json", False))
             except Exception as e:
-                if getattr(args, 'json', False):
+                if getattr(args, "json", False):
                     import json
+
                     print(json.dumps({"error": str(e)}, indent=2))
                 else:
                     logger.error(f"Failed to list games: {e}")
@@ -231,4 +232,3 @@ def main_cli(cli_args: Optional[list] = None) -> None:
 
 if __name__ == "__main__":
     main_cli()
-

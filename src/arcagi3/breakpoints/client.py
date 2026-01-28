@@ -11,7 +11,6 @@ import websockets
 
 from arcagi3.breakpoints.spec import BreakpointSpec
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -128,9 +127,7 @@ class BreakpointClient:
                 )
                 await asyncio.sleep(2.0)
 
-    async def _heartbeat_loop(
-        self, ws: websockets.WebSocketClientProtocol
-    ) -> None:
+    async def _heartbeat_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         try:
             while True:
                 await asyncio.sleep(5.0)
@@ -216,4 +213,3 @@ class BreakpointClient:
             self.await_breakpoint_async(point_id, payload), self._ws_loop
         )
         return future.result()
-

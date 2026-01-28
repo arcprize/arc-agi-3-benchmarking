@@ -1,16 +1,14 @@
 import logging
 import traceback
-from typing import Optional
-from arcagi3.utils import read_models_config
-from arcagi3.game_client import GameClient
-from arcagi3.utils import generate_scorecard_tags
-from arcagi3.agent import MultimodalAgent
-from arcagi3.utils.context import SessionContext
-from arcagi3.checkpoint import CheckpointManager
-from arcagi3.schemas import GameResult, GameStep
-from arcagi3.utils import save_result
-from arcagi3.utils import errors
 import uuid
+from typing import Optional
+
+from arcagi3.agent import MultimodalAgent
+from arcagi3.checkpoint import CheckpointManager
+from arcagi3.game_client import GameClient
+from arcagi3.schemas import GameResult, GameStep
+from arcagi3.utils import errors, generate_scorecard_tags, read_models_config, save_result
+from arcagi3.utils.context import SessionContext
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +28,7 @@ class DefaultTesterAgent(MultimodalAgent):
 
 class ARC3Tester:
     """Main tester class for running ARC-AGI-3 games"""
-    
+
     def __init__(
         self,
         config: str,
@@ -84,21 +82,25 @@ class ARC3Tester:
         self.checkpoint_frequency = checkpoint_frequency
         self.close_on_exit = close_on_exit
         self.submit_scorecard = submit_scorecard
-        
+
         # Determine memory limit: CLI > Config > Default (500)
         if memory_word_limit is not None:
             self.memory_word_limit = memory_word_limit
         else:
             # Check if defined in model config kwargs
             self.memory_word_limit = self.model_config.kwargs.get("memory_word_limit", 500)
-            
+
         # Initialize game client
         self.game_client = GameClient(max_retries=api_retries)
-        
+
         logger.info(f"Initialized ARC3Tester with config: {config}")
-        logger.info(f"Model: {self.model_config.model_name}, Provider: {self.model_config.provider}")
-    
-    def play_game(self, game_id: str, card_id: Optional[str] = None, resume_from_checkpoint: bool = False) -> GameResult:
+        logger.info(
+            f"Model: {self.model_config.model_name}, Provider: {self.model_config.provider}"
+        )
+
+    def play_game(
+        self, game_id: str, card_id: Optional[str] = None, resume_from_checkpoint: bool = False
+    ) -> GameResult:
         """
         Play a single game.
 
@@ -174,22 +176,21 @@ class ARC3Tester:
                     [game_id], card_id=card_id, tags=tags
                 )
                 card_id = scorecard_response.get("card_id", card_id)
-        
-        
+
         try:
-            from arcagi3.utils import load_hints, find_hints_file
-            
+            from arcagi3.utils import find_hints_file, load_hints
+
             hints_file = find_hints_file()
             hint_found = False
             if hints_file:
                 hints = load_hints(hints_file, game_id=game_id)
                 hint_found = game_id in hints
-            
+
             if hint_found:
                 logger.info(f"✓ Hint found for game {game_id}")
             else:
                 logger.debug(f"⊘ No hint found for game {game_id}")
-            
+
             # Create agent
             # Use checkpoint_card_id for checkpoint management if resuming, otherwise use card_id
             agent_kwargs = {
@@ -203,11 +204,13 @@ class ARC3Tester:
             }
             # Add agent-specific kwargs if using ADCRAgent or similar
             if self.agent_class != DefaultTesterAgent:
-                agent_kwargs.update({
-                    "use_vision": self.use_vision,
-                    "show_images": self.show_images,
-                    "memory_word_limit": self.memory_word_limit,
-                })
+                agent_kwargs.update(
+                    {
+                        "use_vision": self.use_vision,
+                        "show_images": self.show_images,
+                        "memory_word_limit": self.memory_word_limit,
+                    }
+                )
             if self.agent_kwargs:
                 agent_kwargs.update(self.agent_kwargs)
             agent = self.agent_class(**agent_kwargs)
@@ -219,12 +222,12 @@ class ARC3Tester:
                 resume_from_checkpoint=resume_from_checkpoint,
                 checkpoint_id=checkpoint_id,
             )
-            
+
             # Save result if directory provided
             if self.save_results_dir:
                 result_file = save_result(self.save_results_dir, result)
                 logger.info(f"Saved result to {result_file}")
-            
+
             # Determine the actual checkpoint card_id for logging
             actual_checkpoint_id = checkpoint_card_id if checkpoint_card_id else card_id
 

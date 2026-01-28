@@ -10,18 +10,54 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-src_dir = os.path.join(project_root, 'src')
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-if src_dir not in sys.path:
-    sys.path.insert(0, src_dir)
+ARC3Tester = None
+AsyncRequestRateLimiter = None
+generate_execution_map = None
+generate_summary = None
+read_models_config = None
+read_provider_rate_limits = None
+save_result_in_timestamped_structure = None
 
-from arcagi3.utils import (AsyncRequestRateLimiter, generate_execution_map,
-                           generate_summary, read_models_config,
-                           read_provider_rate_limits,
-                           save_result_in_timestamped_structure)
-from arcagi3.arc3tester import ARC3Tester
+
+def _ensure_project_paths() -> None:
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    src_dir = os.path.join(project_root, "src")
+    for path in (project_root, src_dir):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+
+def _load_arcagi3() -> None:
+    global ARC3Tester
+    global AsyncRequestRateLimiter
+    global generate_execution_map
+    global generate_summary
+    global read_models_config
+    global read_provider_rate_limits
+    global save_result_in_timestamped_structure
+
+    if ARC3Tester is not None:
+        return
+
+    _ensure_project_paths()
+    from arcagi3.arc3tester import ARC3Tester as _ARC3Tester
+    from arcagi3.utils import AsyncRequestRateLimiter as _AsyncRequestRateLimiter
+    from arcagi3.utils import generate_execution_map as _generate_execution_map
+    from arcagi3.utils import generate_summary as _generate_summary
+    from arcagi3.utils import read_models_config as _read_models_config
+    from arcagi3.utils import read_provider_rate_limits as _read_provider_rate_limits
+    from arcagi3.utils import (
+        save_result_in_timestamped_structure as _save_result_in_timestamped_structure,
+    )
+
+    ARC3Tester = _ARC3Tester
+    AsyncRequestRateLimiter = _AsyncRequestRateLimiter
+    generate_execution_map = _generate_execution_map
+    generate_summary = _generate_summary
+    read_models_config = _read_models_config
+    read_provider_rate_limits = _read_provider_rate_limits
+    save_result_in_timestamped_structure = _save_result_in_timestamped_structure
+
 
 logger = logging.getLogger(__name__)
 
@@ -29,30 +65,34 @@ DEFAULT_RATE_LIMIT_RATE = 400
 DEFAULT_RATE_LIMIT_PERIOD = 60
 DEFAULT_MODEL_CONFIGS_TO_TEST: List[str] = ["gpt-4o-mini-2024-07-18"]
 
-PROVIDER_RATE_LIMITERS: Dict[str, AsyncRequestRateLimiter] = {}
+PROVIDER_RATE_LIMITERS: Dict[str, Any] = {}
 MODEL_CONFIG_CACHE: Dict[str, Any] = {}
 
 
 def get_model_config(config_name: str):
+    _load_arcagi3()
     if config_name not in MODEL_CONFIG_CACHE:
         MODEL_CONFIG_CACHE[config_name] = read_models_config(config_name)
     return MODEL_CONFIG_CACHE[config_name]
 
 
-def get_or_create_rate_limiter(provider_name: str, all_provider_limits: Dict) -> AsyncRequestRateLimiter:
+def get_or_create_rate_limiter(provider_name: str, all_provider_limits: Dict) -> Any:
+    _load_arcagi3()
     if provider_name not in PROVIDER_RATE_LIMITERS:
         if provider_name not in all_provider_limits:
             rate = DEFAULT_RATE_LIMIT_RATE / DEFAULT_RATE_LIMIT_PERIOD
             capacity = max(1.0, rate)
         else:
             limits = all_provider_limits[provider_name]
-            if limits['period'] <= 0:
-                rate = float('inf')
-                capacity = float('inf')
+            if limits["period"] <= 0:
+                rate = float("inf")
+                capacity = float("inf")
             else:
-                rate = limits['rate'] / limits['period']
+                rate = limits["rate"] / limits["period"]
                 capacity = max(1.0, rate)
-        PROVIDER_RATE_LIMITERS[provider_name] = AsyncRequestRateLimiter(rate=rate, capacity=capacity)
+        PROVIDER_RATE_LIMITERS[provider_name] = AsyncRequestRateLimiter(
+            rate=rate, capacity=capacity
+        )
     return PROVIDER_RATE_LIMITERS[provider_name]
 
 
@@ -69,6 +109,8 @@ async def run_single_game_wrapper(
     max_episode_actions: int,
     use_vision: bool,
 ) -> bool:
+    _load_arcagi3()
+
     def _synchronous_game_execution():
         tester = ARC3Tester(
             config=config_name,
@@ -109,13 +151,14 @@ async def main(
     max_episode_actions: int,
     use_vision: bool,
 ) -> int:
+    _load_arcagi3()
     start_time = time.perf_counter()
     timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     timestamp_dir = os.path.join(results_root, timestamp_str)
     os.makedirs(timestamp_dir, exist_ok=True)
 
     try:
-        with open(game_list_file, 'r') as f:
+        with open(game_list_file, "r") as f:
             game_ids = [line.strip() for line in f if line.strip()]
         if not game_ids:
             logger.error(f"No game IDs found in {game_list_file}")
@@ -127,7 +170,9 @@ async def main(
         logger.error(f"Error loading games: {e}")
         return 1
 
-    all_jobs_to_run = [(config_name, game_id) for config_name in model_configs_to_test for game_id in game_ids]
+    all_jobs_to_run = [
+        (config_name, game_id) for config_name in model_configs_to_test for game_id in game_ids
+    ]
     if not all_jobs_to_run:
         logger.warning("No jobs to run")
         return 1
@@ -144,8 +189,17 @@ async def main(
             limiter = get_or_create_rate_limiter(model_config_obj.provider, all_provider_limits)
             async_tasks_to_execute.append(
                 run_single_game_wrapper(
-                    config_name, game_id, limiter, timestamp_dir,
-                    overwrite_results, max_actions, retry_attempts, api_retries, num_plays, max_episode_actions, use_vision
+                    config_name,
+                    game_id,
+                    limiter,
+                    timestamp_dir,
+                    overwrite_results,
+                    max_actions,
+                    retry_attempts,
+                    api_retries,
+                    num_plays,
+                    max_episode_actions,
+                    use_vision,
                 )
             )
         except Exception as e:
@@ -164,42 +218,46 @@ async def main(
     summary = None
     try:
         execution_map = generate_execution_map(timestamp_dir)
-        with open(os.path.join(timestamp_dir, "execution_map.json"), 'w') as f:
+        with open(os.path.join(timestamp_dir, "execution_map.json"), "w") as f:
             json.dump(execution_map, f, indent=2)
         summary = generate_summary(timestamp_dir)
-        with open(os.path.join(timestamp_dir, "summary.json"), 'w') as f:
+        with open(os.path.join(timestamp_dir, "summary.json"), "w") as f:
             json.dump(summary, f, indent=2)
     except Exception as e:
         logger.error(f"Error generating summary: {e}")
 
     total_duration = time.perf_counter() - start_time
 
-    logger.info("\n" + "="*80)
+    logger.info("\n" + "=" * 80)
     logger.info("EXECUTION SUMMARY".center(80))
-    logger.info("="*80)
-    logger.info(f"\nExecution Info:")
+    logger.info("=" * 80)
+    logger.info("\nExecution Info:")
     logger.info(f"   • Started: {summary.get('execution_start', 'N/A') if summary else 'N/A'}")
     logger.info(f"   • Duration: {total_duration:.2f}s")
     logger.info(f"   • Models tested: {', '.join(model_configs_to_test)}")
     logger.info(f"   • Games: {summary.get('total_games', 0) if summary else 0}")
     logger.info(f"   • Total executions: {successful_runs}/{len(results)}")
-    
-    if summary and summary.get('stats_by_model'):
-        logger.info(f"\nResults by Model:")
-        for model, stats in summary['stats_by_model'].items():
+
+    if summary and summary.get("stats_by_model"):
+        logger.info("\nResults by Model:")
+        for model, stats in summary["stats_by_model"].items():
             logger.info(f"\n   {model}:")
-            logger.info(f"      Games: {stats.get('total_games', 0)}  |  Wins: {stats.get('wins', 0)}  |  Win Rate: {stats.get('win_rate', 0) * 100:.1f}%")
-            logger.info(f"      Avg Score: {stats.get('avg_score', 0):.0f}  |  Cost: ${stats.get('total_cost', 0):.4f}")
-    
-    if summary and summary.get('overall_stats'):
-        overall = summary['overall_stats']
-        logger.info(f"\nOverall Stats:")
+            logger.info(
+                f"      Games: {stats.get('total_games', 0)}  |  Wins: {stats.get('wins', 0)}  |  Win Rate: {stats.get('win_rate', 0) * 100:.1f}%"
+            )
+            logger.info(
+                f"      Avg Score: {stats.get('avg_score', 0):.0f}  |  Cost: ${stats.get('total_cost', 0):.4f}"
+            )
+
+    if summary and summary.get("overall_stats"):
+        overall = summary["overall_stats"]
+        logger.info("\nOverall Stats:")
         logger.info(f"   • Total Cost: ${overall.get('total_cost', 0):.4f}")
         logger.info(f"   • Total Tokens: {overall.get('total_tokens', 0):,}")
         logger.info(f"   • Wins: {overall.get('wins', 0)}")
         logger.info(f"   • Game Overs: {overall.get('game_overs', 0)}")
         logger.info(f"   • Avg Score: {overall.get('avg_score', 0):.0f}")
-    
+
     exit_code = 0
     if orchestrator_level_failures > 0:
         logger.warning(f"\nFailures: {orchestrator_level_failures}")
@@ -210,10 +268,10 @@ async def main(
                 logger.error(f"   • {config}/{game_id}: {error_type}")
         exit_code = 1
     else:
-        logger.info(f"\nAll executions completed successfully!")
-    
+        logger.info("\nAll executions completed successfully!")
+
     logger.info(f"\nResults saved to: {timestamp_dir}")
-    logger.info("="*80 + "\n")
+    logger.info("=" * 80 + "\n")
 
     return exit_code
 
@@ -307,35 +365,50 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.log_level == "NONE":
-        logging.basicConfig(level=logging.CRITICAL + 1, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        logging.basicConfig(
+            level=logging.CRITICAL + 1,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        )
     elif args.verbose:
-        logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        for lib_logger in ['openai', 'httpx', 'httpcore', 'urllib3', 'requests', 'anthropic', 'google', 'pydantic', 'transformers']:
+        logging.basicConfig(
+            level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        for lib_logger in [
+            "openai",
+            "httpx",
+            "httpcore",
+            "urllib3",
+            "requests",
+            "anthropic",
+            "google",
+            "pydantic",
+            "transformers",
+        ]:
             logging.getLogger(lib_logger).setLevel(logging.WARNING)
-        logging.getLogger('arcagi3').setLevel(logging.DEBUG)
-        logging.getLogger('__main__').setLevel(logging.DEBUG)
+        logging.getLogger("arcagi3").setLevel(logging.DEBUG)
+        logging.getLogger("__main__").setLevel(logging.DEBUG)
     else:
         logging.basicConfig(
             level=getattr(logging, args.log_level.upper()),
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         )
 
     game_ids_list = []
     if args.game_ids:
-        game_ids_list = [g.strip() for g in args.game_ids.split(',') if g.strip()]
+        game_ids_list = [g.strip() for g in args.game_ids.split(",") if g.strip()]
     elif not args.game_list_file:
         logger.error("Either --game_list_file or --game_ids must be provided.")
         sys.exit(1)
 
-    model_configs_list = [m.strip() for m in args.model_configs.split(',') if m.strip()]
+    model_configs_list = [m.strip() for m in args.model_configs.split(",") if m.strip()]
     if not model_configs_list:
         model_configs_list = DEFAULT_MODEL_CONFIGS_TO_TEST
 
     game_list_file = args.game_list_file
     temp_file = None
     if game_ids_list and not game_list_file:
-        temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
-        temp_file.write('\n'.join(game_ids_list))
+        temp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False)
+        temp_file.write("\n".join(game_ids_list))
         temp_file.close()
         game_list_file = temp_file.name
 
@@ -358,4 +431,3 @@ if __name__ == "__main__":
     finally:
         if temp_file and os.path.exists(temp_file.name):
             os.unlink(temp_file.name)
-

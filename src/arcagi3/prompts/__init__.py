@@ -4,4 +4,3 @@ __all__ = [
     "PromptManager",
     "PromptVars",
 ]
-

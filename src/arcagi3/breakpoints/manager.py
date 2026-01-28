@@ -7,7 +7,6 @@ from typing import Any, Callable, Dict, Optional
 from arcagi3.breakpoints.client import BreakpointClient
 from arcagi3.breakpoints.spec import BreakpointSpec
 
-
 logger = logging.getLogger(__name__)
 
 ApplyOverridesFn = Callable[[Dict[str, Any], Dict[str, Any], Any], Dict[str, Any]]
@@ -126,7 +125,8 @@ def apply_breakpoint_overrides(
         try:
             return hook.apply_overrides(payload, overrides, context)
         except Exception:
-            logger.debug("Failed to apply breakpoint overrides for %s", hook.point_id, exc_info=True)
+            logger.debug(
+                "Failed to apply breakpoint overrides for %s", hook.point_id, exc_info=True
+            )
             return payload
     return overrides
-

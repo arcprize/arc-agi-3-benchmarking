@@ -7,14 +7,13 @@ from typing import Optional
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from arcagi3.schemas import (Attempt, AttemptMetadata, Choice,
-                             Message)
-
 # Import the base class
 from arcagi3.adapters.openai_base import OpenAIBaseAdapter
+from arcagi3.schemas import Attempt, AttemptMetadata, Choice, Message
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
 
 class GrokAdapter(OpenAIBaseAdapter):
     """Adapter specific to Grok API endpoints and response structures."""
@@ -26,49 +25,47 @@ class GrokAdapter(OpenAIBaseAdapter):
         api_key = os.environ.get("XAI_API_KEY")
         if not api_key:
             raise ValueError("XAI_API_KEY not found in environment variables")
-        
+
         client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
         return client
 
-    def make_prediction(self, prompt: str, task_id: Optional[str] = None, test_id: Optional[str] = None, pair_index: int = None) -> Attempt:
+    def make_prediction(
+        self,
+        prompt: str,
+        task_id: Optional[str] = None,
+        test_id: Optional[str] = None,
+        pair_index: int = None,
+    ) -> Attempt:
         """
         Make a prediction using the Grok model.
         Relies on OpenAIBaseAdapter for API calls and standard parsing.
         Specific reasoning token handling might require overriding _get_usage later.
         """
         start_time = datetime.now(timezone.utc)
-        
+
         # Use the inherited call_ai_model
         # Assumes Grok uses CHAT_COMPLETIONS or RESPONSES API type defined in config
         response = self._call_ai_model(prompt)
-        
+
         end_time = datetime.now(timezone.utc)
 
         # Centralised cost calculation (includes sanity-check & calls _get_usage internally)
         cost = self._calculate_cost(response)
-        
+
         # Retrieve usage *after* cost calculation, as cost calc might infer/update reasoning tokens
         usage = self._get_usage(response)
-        
-        prompt_cost = usage.prompt_tokens * self.model_config.pricing.input / 1_000_000
-        completion_cost = usage.completion_tokens * self.model_config.pricing.output / 1_000_000
 
         # Convert input messages to choices
-        input_choices = [
-            Choice(
-                index=0,
-                message=Message(role="user", content=prompt)
-            )
-        ]
+        input_choices = [Choice(index=0, message=Message(role="user", content=prompt))]
 
         # Convert Grok response (assumed OpenAI-compatible) using inherited helpers
         response_choices = [
             Choice(
                 index=1,
                 message=Message(
-                    role=self._get_role(response),       # Inherited
-                    content=self._get_content(response)  # Inherited
-                )
+                    role=self._get_role(response),  # Inherited
+                    content=self._get_content(response),  # Inherited
+                ),
             )
         ]
 
@@ -85,13 +82,10 @@ class GrokAdapter(OpenAIBaseAdapter):
             cost=cost,
             task_id=task_id,
             pair_index=pair_index,
-            test_id=test_id
+            test_id=test_id,
         )
 
-        attempt = Attempt(
-            metadata=metadata,
-            answer=self._get_content(response) # Inherited
-        )
+        attempt = Attempt(metadata=metadata, answer=self._get_content(response))  # Inherited
 
         return attempt
 
@@ -118,7 +112,7 @@ The JSON should be in this format:
             completion = self._chat_completion(
                 messages=[{"role": "user", "content": prompt}],
             )
-            assistant_content = self._get_content(completion) # Inherited
+            assistant_content = self._get_content(completion)  # Inherited
         except Exception as e:
             logger.error(f"Error during AI-based JSON extraction via Grok: {e}")
             assistant_content = input_response
@@ -134,9 +128,11 @@ The JSON should be in this format:
         try:
             json_entities = json.loads(assistant_content)
             potential_list = json_entities.get("response")
-            if isinstance(potential_list, list) and all(isinstance(item, list) for item in potential_list):
-                 if all(isinstance(num, int) for sublist in potential_list for num in sublist):
-                     return potential_list
+            if isinstance(potential_list, list) and all(
+                isinstance(item, list) for item in potential_list
+            ):
+                if all(isinstance(num, int) for sublist in potential_list for num in sublist):
+                    return potential_list
             return None
         except (json.JSONDecodeError, AttributeError):
             return None

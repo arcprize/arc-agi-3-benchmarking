@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -24,13 +23,13 @@ def _require_dict(value: Any, name: str) -> Dict[str, Any]:
 
 class CheckpointManager:
     """Manages checkpointing of agent state"""
-    
+
     DEFAULT_CHECKPOINT_DIR = ".checkpoint"
-    
+
     def __init__(self, card_id: str, checkpoint_dir: Optional[str] = None):
         """
         Initialize checkpoint manager.
-        
+
         Args:
             card_id: Scorecard ID to use as checkpoint directory name
             checkpoint_dir: Base directory for checkpoints (defaults to CHECKPOINT_DIR)
@@ -38,7 +37,7 @@ class CheckpointManager:
         self.card_id = card_id
         base_dir = checkpoint_dir or self.DEFAULT_CHECKPOINT_DIR
         self.checkpoint_path = Path(base_dir) / card_id
-        
+
     def save_state(self, state: Dict[str, Any]):
         """
         Save the current agent state to a checkpoint file.
@@ -47,10 +46,10 @@ class CheckpointManager:
             state: Dictionary containing organized state (metadata, frames, game, metrics, history, datastore).
         """
         logger.info(f"Saving checkpoint to {self.checkpoint_path}")
-        
+
         # Create checkpoint directory
         self.checkpoint_path.mkdir(parents=True, exist_ok=True)
-        
+
         # Extract from organized structure
         metadata_dict = state.get("metadata", {})
         frames_dict = state.get("frames", {})
@@ -58,7 +57,7 @@ class CheckpointManager:
         metrics_dict = state.get("metrics", {})
         history_dict = state.get("history", {})
         datastore = state.get("datastore", {})
-        
+
         # Extract metadata fields
         config = metadata_dict.get("config")
         checkpoint_id = metadata_dict.get("checkpoint_id")
@@ -66,10 +65,10 @@ class CheckpointManager:
         retry_attempts = metadata_dict.get("retry_attempts")  # Legacy field
         num_plays = metadata_dict.get("num_plays")
         max_episode_actions = metadata_dict.get("max_episode_actions", 0)
-        
+
         # Extract frame fields
         frame_grids = frames_dict.get("frame_grids", [])
-        
+
         # Extract game fields
         game_id = game_dict.get("game_id", "")
         guid = game_dict.get("guid")
@@ -80,29 +79,25 @@ class CheckpointManager:
         current_state = game_dict.get("current_state", "IN_PROGRESS")
         previous_score = game_dict.get("previous_score", 0)
         available_actions = game_dict.get("available_actions", [])
-        
+
         # Extract metrics fields
         total_cost = _require_dict(metrics_dict.get("total_cost"), "metrics.total_cost")
         total_usage = _require_dict(metrics_dict.get("total_usage"), "metrics.total_usage")
-        
+
         # Extract history fields
         action_history = history_dict.get("action_history", [])
         if not isinstance(action_history, list):
             raise TypeError(f"history.action_history must be a list; got {type(action_history)}")
         for idx, action in enumerate(action_history):
             if not isinstance(action, dict):
-                raise TypeError(
-                    f"history.action_history[{idx}] must be a dict; got {type(action)}"
-                )
+                raise TypeError(f"history.action_history[{idx}] must be a dict; got {type(action)}")
         model_calls = history_dict.get("model_calls", [])
         if not isinstance(model_calls, list):
             raise TypeError(f"history.model_calls must be a list; got {type(model_calls)}")
         for idx, call in enumerate(model_calls):
             if not isinstance(call, dict):
-                raise TypeError(
-                    f"history.model_calls[{idx}] must be a dict; got {type(call)}"
-                )
-        
+                raise TypeError(f"history.model_calls[{idx}] must be a dict; got {type(call)}")
+
         # Save metadata
         metadata = {
             "card_id": self.card_id,
@@ -128,19 +123,19 @@ class CheckpointManager:
 
         # Validate JSON-serializability eagerly (fail-fast before writing partial checkpoints)
         json.dumps(metadata)
-        
+
         with open(self.checkpoint_path / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
-        
+
         # Save costs and usage
         costs = {
             "total_cost": total_cost,
             "total_usage": total_usage,
         }
-        
+
         with open(self.checkpoint_path / "costs.json", "w") as f:
             json.dump(costs, f, indent=2)
-        
+
         # Save action history
         with open(self.checkpoint_path / "action_history.json", "w") as f:
             json.dump(action_history, f, indent=2)
@@ -149,7 +144,7 @@ class CheckpointManager:
         with open(self.checkpoint_path / "model_completion.json", "w") as f:
             json.dump(model_calls, f, indent=2)
 
-        logger.info(f"Checkpoint saved successfully")
+        logger.info("Checkpoint saved successfully")
 
     def write_error(self, payload: Dict[str, Any]) -> Path:
         """
@@ -163,31 +158,31 @@ class CheckpointManager:
             json.dump(payload, f, indent=2)
 
         return error_path
-    
+
     def load_state(self) -> Dict[str, Any]:
         """
         Load agent state from checkpoint.
-        
+
         Returns:
             Dictionary containing all saved state
-            
+
         Raises:
             FileNotFoundError: If checkpoint doesn't exist
             ValueError: If checkpoint is invalid or incomplete
         """
         logger.info(f"Loading checkpoint from {self.checkpoint_path}")
-        
+
         if not self.checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {self.checkpoint_path}")
-        
+
         # Load metadata
         metadata_path = self.checkpoint_path / "metadata.json"
         if not metadata_path.exists():
             raise ValueError("Checkpoint missing metadata.json")
-        
+
         with open(metadata_path) as f:
             metadata = json.load(f)
-        
+
         # Load costs (raw dicts)
         costs_path = self.checkpoint_path / "costs.json"
         if costs_path.exists():
@@ -198,7 +193,7 @@ class CheckpointManager:
         else:
             total_cost = {}
             total_usage = {}
-        
+
         # Load action history (raw dicts)
         action_history = []
         model_calls = []
@@ -216,8 +211,8 @@ class CheckpointManager:
         if model_completion_path.exists():
             with open(model_completion_path) as f:
                 model_calls = json.load(f)
-        
-        logger.info(f"Checkpoint loaded successfully")
+
+        logger.info("Checkpoint loaded successfully")
 
         return {
             "metadata": {
@@ -251,40 +246,39 @@ class CheckpointManager:
             },
             "datastore": metadata.get("datastore", {}),
         }
-    
+
     def checkpoint_exists(self) -> bool:
         """Check if checkpoint exists for this card_id"""
         return self.checkpoint_path.exists() and (self.checkpoint_path / "metadata.json").exists()
-    
+
     def delete_checkpoint(self):
         """Delete the checkpoint directory"""
         if self.checkpoint_path.exists():
             shutil.rmtree(self.checkpoint_path)
             logger.info(f"Deleted checkpoint: {self.checkpoint_path}")
-    
+
     @staticmethod
     def list_checkpoints() -> List[str]:
         """List all available checkpoint card_ids"""
         checkpoint_dir = Path(CheckpointManager.DEFAULT_CHECKPOINT_DIR)
         if not checkpoint_dir.exists():
             return []
-        
+
         checkpoints = []
         for card_dir in checkpoint_dir.iterdir():
             if card_dir.is_dir() and (card_dir / "metadata.json").exists():
                 checkpoints.append(card_dir.name)
-        
+
         return sorted(checkpoints)
-    
+
     @staticmethod
     def get_checkpoint_info(card_id: str) -> Optional[Dict[str, Any]]:
         """Get metadata about a checkpoint"""
         checkpoint_path = Path(CheckpointManager.DEFAULT_CHECKPOINT_DIR) / card_id
         metadata_path = checkpoint_path / "metadata.json"
-        
+
         if not metadata_path.exists():
             return None
-        
+
         with open(metadata_path) as f:
             return json.load(f)
-

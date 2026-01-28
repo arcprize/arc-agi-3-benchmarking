@@ -11,13 +11,12 @@ from typing import Any, Dict, List, Optional
 from threadsafe_datastore import Datastore
 
 from arcagi3.adapters import create_provider
-from arcagi3.checkpoint import CheckpointManager
-from arcagi3.game_client import GameClient
-from arcagi3.schemas import ActionData, Cost, GameActionRecord, GameResult, GameStep
-from arcagi3.utils.context import SessionContext, GameProgress
-from arcagi3.utils import errors
 from arcagi3.breakpoints.manager import BreakpointHook, BreakpointManager
 from arcagi3.breakpoints.spec import BreakpointSpec, load_breakpoint_spec, merge_breakpoint_specs
+from arcagi3.game_client import GameClient
+from arcagi3.schemas import ActionData, Cost, GameActionRecord, GameResult, GameStep
+from arcagi3.utils import errors
+from arcagi3.utils.context import GameProgress, SessionContext
 
 logger = logging.getLogger(__name__)
 
@@ -227,9 +226,12 @@ class MultimodalAgent(ABC):
                 if restored_context.game.game_id:
                     game_id = restored_context.game.game_id
                 logger.info(f"Resuming game {game_id} from checkpoint")
-                
+
                 # Enforce max_actions on checkpoint continuation
-                if self.max_actions > 0 and restored_context.game.action_counter >= self.max_actions:
+                if (
+                    self.max_actions > 0
+                    and restored_context.game.action_counter >= self.max_actions
+                ):
                     logger.warning(
                         f"Cannot resume from checkpoint: action counter ({restored_context.game.action_counter}) "
                         f"already exceeds or equals max_actions ({self.max_actions}). "
@@ -284,8 +286,14 @@ class MultimodalAgent(ABC):
             state: Dict[str, Any] = {}
 
             # Skip reset if resuming from checkpoint in the middle of a play
-            if resume_from_checkpoint and play_num == start_play and context.game.play_action_counter > 0:
-                logger.info(f"Resuming play {play_num} at action {context.game.play_action_counter}")
+            if (
+                resume_from_checkpoint
+                and play_num == start_play
+                and context.game.play_action_counter > 0
+            ):
+                logger.info(
+                    f"Resuming play {play_num} at action {context.game.play_action_counter}"
+                )
 
                 if context.game.guid:
                     guid = context.game.guid
@@ -321,7 +329,12 @@ class MultimodalAgent(ABC):
                             reasoning={"system": "reset_game (checkpoint recovery)"},
                             result_score=current_score,
                             result_state=current_state,
-                            cost=Cost(prompt_cost=0.0, completion_cost=0.0, reasoning_cost=0.0, total_cost=0.0),
+                            cost=Cost(
+                                prompt_cost=0.0,
+                                completion_cost=0.0,
+                                reasoning_cost=0.0,
+                                total_cost=0.0,
+                            ),
                         )
                     )
 
@@ -352,7 +365,12 @@ class MultimodalAgent(ABC):
                             reasoning={"system": f"reset_game (start play {play_num})"},
                             result_score=current_score,
                             result_state=current_state,
-                            cost=Cost(prompt_cost=0.0, completion_cost=0.0, reasoning_cost=0.0, total_cost=0.0),
+                            cost=Cost(
+                                prompt_cost=0.0,
+                                completion_cost=0.0,
+                                reasoning_cost=0.0,
+                                total_cost=0.0,
+                            ),
                         )
                     )
                     play_action_counter = 1
@@ -362,7 +380,9 @@ class MultimodalAgent(ABC):
             context.set_game_identity(guid=guid)
             context.set_counters(play_action_counter=play_action_counter)
 
-            session_result = self._run_session_loop(game_id=game_id, initial_state=state, context=context)
+            session_result = self._run_session_loop(
+                game_id=game_id, initial_state=state, context=context
+            )
 
             current_score = session_result["score"]
             current_state = session_result["state"]
@@ -426,7 +446,9 @@ class MultimodalAgent(ABC):
 
         return best_result
 
-    def _run_session_loop(self, game_id: str, initial_state: Dict[str, Any], context: SessionContext) -> Dict[str, Any]:
+    def _run_session_loop(
+        self, game_id: str, initial_state: Dict[str, Any], context: SessionContext
+    ) -> Dict[str, Any]:
         state = initial_state
         guid = state.get("guid")
         current_score = state.get("levels_completed", 0)
@@ -459,7 +481,12 @@ class MultimodalAgent(ABC):
                     break
 
                 # Update context with current state before step
-                context.update(frame_grids=frames, current_score=current_score, current_state=current_state, guid=guid)
+                context.update(
+                    frame_grids=frames,
+                    current_score=current_score,
+                    current_state=current_state,
+                    guid=guid,
+                )
 
                 cost_before = context.metrics_snapshot()
 
@@ -476,11 +503,16 @@ class MultimodalAgent(ABC):
                 elif action_name == "ACTION6":
                     x = game_action_dict.get("x", 0)
                     y = game_action_dict.get("y", 0)
-                    action_data_dict = {"x": max(0, min(int(x), 127)) // 2, "y": max(0, min(int(y), 127)) // 2}
+                    action_data_dict = {
+                        "x": max(0, min(int(x), 127)) // 2,
+                        "y": max(0, min(int(y), 127)) // 2,
+                    }
 
                 reasoning_for_api = copy.deepcopy(step.reasoning or {})
 
-                state = self._execute_game_action(action_name, action_data_dict, game_id, guid, reasoning_for_api, context=context)
+                state = self._execute_game_action(
+                    action_name, action_data_dict, game_id, guid, reasoning_for_api, context=context
+                )
                 guid = state.get("guid", guid)
                 new_score = state.get("levels_completed", current_score)
                 current_state = state.get("state", "IN_PROGRESS")
@@ -496,7 +528,8 @@ class MultimodalAgent(ABC):
                 action_cost = Cost(
                     prompt_cost=current_cost.prompt_cost - cost_before.prompt_cost,
                     completion_cost=current_cost.completion_cost - cost_before.completion_cost,
-                    reasoning_cost=(current_cost.reasoning_cost or 0) - (cost_before.reasoning_cost or 0),
+                    reasoning_cost=(current_cost.reasoning_cost or 0)
+                    - (cost_before.reasoning_cost or 0),
                     total_cost=current_cost.total_cost - cost_before.total_cost,
                 )
 
@@ -520,13 +553,20 @@ class MultimodalAgent(ABC):
                 context.set_game_identity(guid=guid)
 
                 if self.max_actions > 0 and context.game.action_counter >= self.max_actions:
-                    logger.info(f"Global max_actions ({self.max_actions}) reached. Stopping session.")
+                    logger.info(
+                        f"Global max_actions ({self.max_actions}) reached. Stopping session."
+                    )
                     break
                 if self.max_episode_actions > 0 and play_action_counter >= self.max_episode_actions:
-                    logger.info(f"Episode max_episode_actions ({self.max_episode_actions}) reached. Stopping session.")
+                    logger.info(
+                        f"Episode max_episode_actions ({self.max_episode_actions}) reached. Stopping session."
+                    )
                     break
 
-                if self.checkpoint_frequency > 0 and play_action_counter % self.checkpoint_frequency == 0:
+                if (
+                    self.checkpoint_frequency > 0
+                    and play_action_counter % self.checkpoint_frequency == 0
+                ):
                     self.save_checkpoint(context)
 
             except Exception as e:
@@ -547,6 +587,9 @@ class MultimodalAgent(ABC):
                 logger.error("Traceback:\n%s", trace)
                 raise
 
-        return {"score": current_score, "state": current_state, "actions_taken": play_action_counter, "action_history": play_action_history}
-
-
+        return {
+            "score": current_score,
+            "state": current_state,
+            "actions_taken": play_action_counter,
+            "action_history": play_action_history,
+        }

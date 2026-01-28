@@ -15,9 +15,6 @@ from typing import Any, Dict, List, Optional
 import websockets
 from websockets.server import WebSocketServerProtocol
 
-from arcagi3.breakpoints.spec import BreakpointSpec
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -38,7 +35,7 @@ def start_http_server(port: int, static_dir: str) -> ThreadingTCPServer:
     # Create a handler class with the directory bound
     class Handler(StaticFileHandler):
         directory = static_dir
-    
+
     httpd = ThreadingTCPServer(("0.0.0.0", port), Handler)
     thread = threading.Thread(
         target=httpd.serve_forever,
@@ -196,29 +193,36 @@ class BreakpointWebSocketServer:
             agent_id = data.get("agent_id")
             bp = data.get("breakpoints", {})
             if agent_id and agent_id in self._state.agents:
-                self._state.agents[agent_id].breakpoints.update(
-                    {k: bool(v) for k, v in bp.items()}
-                )
+                self._state.agents[agent_id].breakpoints.update({k: bool(v) for k, v in bp.items()})
                 await self._broadcast(
-                    {"type": "agent_updated", "agent": self._agent_to_dict(self._state.agents[agent_id])}
+                    {
+                        "type": "agent_updated",
+                        "agent": self._agent_to_dict(self._state.agents[agent_id]),
+                    }
                 )
         elif msg_type == "continue_request":
             agent_id = data.get("agent_id")
             request_id = data.get("request_id")
             payload = data.get("payload") if "payload" in data else None
             if agent_id and request_id:
-                await self._resolve_pending(agent_id=agent_id, request_id=request_id, payload=payload)
+                await self._resolve_pending(
+                    agent_id=agent_id, request_id=request_id, payload=payload
+                )
         elif msg_type == "continue_all":
             for agent in list(self._state.agents.values()):
                 if agent.current_breakpoint and agent.status == "PAUSED":
                     req_id = agent.current_breakpoint.get("request_id")
                     if req_id:
-                        await self._resolve_pending(agent_id=agent.agent_id, request_id=req_id, payload=None)
+                        await self._resolve_pending(
+                            agent_id=agent.agent_id, request_id=req_id, payload=None
+                        )
         elif msg_type == "remove_agent":
             agent_id = data.get("agent_id")
             if agent_id and agent_id in self._state.agents:
                 task_keys_to_remove = [
-                    key for key in list(self._pending_tasks.keys()) if key.startswith(f"{agent_id}:")
+                    key
+                    for key in list(self._pending_tasks.keys())
+                    if key.startswith(f"{agent_id}:")
                 ]
                 for key in task_keys_to_remove:
                     task = self._pending_tasks.pop(key, None)
@@ -278,7 +282,13 @@ class BreakpointWebSocketServer:
             for req_id, payload in list(queued.items()):
                 try:
                     await ws.send(
-                        json.dumps({"type": "breakpoint_continue", "request_id": req_id, "payload": payload})
+                        json.dumps(
+                            {
+                                "type": "breakpoint_continue",
+                                "request_id": req_id,
+                                "payload": payload,
+                            }
+                        )
                     )
                     queued.pop(req_id, None)
                 except Exception:
@@ -286,7 +296,9 @@ class BreakpointWebSocketServer:
             if not queued:
                 self._state.pending_continues.pop(agent_id, None)
 
-    async def _handle_agent_message(self, ws: WebSocketServerProtocol, data: Dict[str, Any]) -> None:
+    async def _handle_agent_message(
+        self, ws: WebSocketServerProtocol, data: Dict[str, Any]
+    ) -> None:
         msg_type = data.get("type")
         agent_id = data.get("agent_id")
         if not agent_id:
@@ -333,9 +345,11 @@ class BreakpointWebSocketServer:
             state.ws = ws
             state.last_heartbeat = time.time()
 
-            should_pause = self._state.global_paused or bool(
-                self._state.global_breakpoints.get(point_id, False)
-            ) or bool(state.breakpoints.get(point_id, False))
+            should_pause = (
+                self._state.global_paused
+                or bool(self._state.global_breakpoints.get(point_id, False))
+                or bool(state.breakpoints.get(point_id, False))
+            )
 
             if not should_pause:
                 try:
@@ -398,7 +412,9 @@ class BreakpointWebSocketServer:
                 state.last_heartbeat = time.time()
                 if state.status == "DISCONNECTED":
                     state.status = "CONNECTED"
-                    await self._broadcast({"type": "agent_updated", "agent": self._agent_to_dict(state)})
+                    await self._broadcast(
+                        {"type": "agent_updated", "agent": self._agent_to_dict(state)}
+                    )
 
     async def _handle_agent_disconnected(self, agent_id: str) -> None:
         state = self._state.agents.get(agent_id)
@@ -433,7 +449,9 @@ class BreakpointWebSocketServer:
             if state:
                 state.status = "RUNNING"
                 state.current_breakpoint = None
-                await self._broadcast({"type": "agent_updated", "agent": self._agent_to_dict(state)})
+                await self._broadcast(
+                    {"type": "agent_updated", "agent": self._agent_to_dict(state)}
+                )
 
             await self._broadcast(
                 {
@@ -579,4 +597,3 @@ async def run_breakpoint_server(
         pass
     httpd.shutdown()
     logger.info("Breakpoint server stopped")
-

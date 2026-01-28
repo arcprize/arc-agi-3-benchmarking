@@ -159,11 +159,14 @@ def get_adcr_breakpoint_spec() -> BreakpointSpec:
 
 def get_adcr_breakpoint_hooks(agent) -> Dict[str, BreakpointHook]:
     """Get the breakpoint hooks for the ADCR agent.
-    
+
     Args:
         agent: The ADCRAgent instance (needed to access memory_word_limit)
     """
-    def _apply_memory(payload: Dict[str, Any], overrides: Dict[str, Any], context: SessionContext) -> Dict[str, Any]:
+
+    def _apply_memory(
+        payload: Dict[str, Any], overrides: Dict[str, Any], context: SessionContext
+    ) -> Dict[str, Any]:
         if not isinstance(context, SessionContext):
             return payload
         if "memory_prompt" in overrides and isinstance(overrides.get("memory_prompt"), str):
@@ -180,4 +183,3 @@ def get_adcr_breakpoint_hooks(agent) -> Dict[str, BreakpointHook]:
         "decide.post": BreakpointHook(point_id="decide.post", apply_overrides=_apply_memory),
         "convert.post": BreakpointHook(point_id="convert.post", apply_overrides=_apply_memory),
     }
-

@@ -3,8 +3,8 @@ from .manager import BreakpointHook, BreakpointManager
 from .messages import (
     AgentBreakpoint,
     AgentStateSnapshot,
-    BreakpointResolvedMessage,
     BreakpointPendingMessage,
+    BreakpointResolvedMessage,
     GlobalStateSnapshot,
     ServerMessage,
 )
@@ -34,4 +34,3 @@ __all__ = [
     "BreakpointHook",
     "BreakpointManager",
 ]
-

@@ -213,4 +213,3 @@ def load_breakpoint_spec(path: Optional[str]) -> Optional[BreakpointSpec]:
             )
         )
     return BreakpointSpec(sections=sections)
-

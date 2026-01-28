@@ -3,15 +3,15 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from arcagi3.agent import MultimodalAgent, HUMAN_ACTIONS, HUMAN_ACTIONS_LIST
+from arcagi3.agent import HUMAN_ACTIONS, HUMAN_ACTIONS_LIST, MultimodalAgent
 from arcagi3.prompts import PromptManager
 from arcagi3.schemas import GameStep
 from arcagi3.utils.context import SessionContext
 from arcagi3.utils.formatting import grid_to_text_matrix
-from arcagi3.utils.image import grid_to_image, image_to_base64, make_image_block, image_diff
+from arcagi3.utils.image import grid_to_image, image_diff, image_to_base64, make_image_block
 from arcagi3.utils.parsing import extract_json_from_response
 
-from .breakpoints import get_adcr_breakpoint_spec, get_adcr_breakpoint_hooks
+from .breakpoints import get_adcr_breakpoint_hooks, get_adcr_breakpoint_spec
 
 logger = logging.getLogger(__name__)
 
@@ -57,9 +57,7 @@ class ADCRAgent(MultimodalAgent):
         else:
             try:
                 self.memory_word_limit = int(
-                    getattr(self.provider.model_config, "kwargs", {}).get(
-                        "memory_word_limit", 500
-                    )
+                    getattr(self.provider.model_config, "kwargs", {}).get("memory_word_limit", 500)
                 )
             except Exception:
                 self.memory_word_limit = 500
@@ -73,10 +71,10 @@ class ADCRAgent(MultimodalAgent):
         """
         Get want_vision from context datastore, or calculate and store it if not
         present.
-        
+
         This value is cached in the datastore since it depends on agent instance
         properties that don't change during a session.
-        
+
         Uses .get() with a sentinel to avoid race conditions in the
         check-then-set pattern.
         """
@@ -125,14 +123,10 @@ class ADCRAgent(MultimodalAgent):
                     str(e),
                 )
                 if attempt == 0:
-                    logger.info(
-                        "Retrying %s step once due to malformed JSON.", step_name
-                    )
+                    logger.info("Retrying %s step once due to malformed JSON.", step_name)
                     continue
 
-        note = (
-            f"Note: produced malformed JSON twice in a row during {step_name}; resetting game."
-        )
+        note = f"Note: produced malformed JSON twice in a row during {step_name}; resetting game."
         self._append_memory_note(context, note)
         logger.error(
             "Two consecutive malformed JSON outputs during %s. Resetting game. "
@@ -154,8 +148,7 @@ class ADCRAgent(MultimodalAgent):
 
         want_vision = self._get_want_vision(context)
         analyze_instruct = self.prompt_manager.render(
-            "analyze_instruct",
-            {"memory_limit": self.memory_word_limit, "use_vision": want_vision}
+            "analyze_instruct", {"memory_limit": self.memory_word_limit, "use_vision": want_vision}
         )
         memory_prompt = context.datastore.get("memory_prompt", "")
         analyze_prompt = f"{level_complete}\n\n{analyze_instruct}\n\n{memory_prompt}"
@@ -186,13 +179,19 @@ class ADCRAgent(MultimodalAgent):
                 )
             for i, grid in enumerate(context.frames.frame_grids):
                 msg_parts.append(
-                    {"type": "text", "text": f"Frame {i+1} (after action):\n{grid_to_text_matrix(grid)}"}
+                    {
+                        "type": "text",
+                        "text": f"Frame {i+1} (after action):\n{grid_to_text_matrix(grid)}",
+                    }
                 )
             msg_parts.append({"type": "text", "text": analyze_prompt})
 
         previous_prompt = context.datastore.get("previous_prompt", "")
         messages = [
-            {"role": "system", "content": self.prompt_manager.render("system", {"use_vision": want_vision})},
+            {
+                "role": "system",
+                "content": self.prompt_manager.render("system", {"use_vision": want_vision}),
+            },
             {"role": "user", "content": [{"type": "text", "text": previous_prompt}]},
             {"role": "assistant", "content": [{"type": "text", "text": str(previous_action)}]},
             {"role": "user", "content": msg_parts},
@@ -266,9 +265,7 @@ class ADCRAgent(MultimodalAgent):
             if action_descriptions
             else '"Move Up"'
         )
-        json_example_action = (
-            f'"{action_descriptions[0]}"' if action_descriptions else '"Move Up"'
-        )
+        json_example_action = f'"{action_descriptions[0]}"' if action_descriptions else '"Move Up"'
 
         want_vision = self._get_want_vision(context)
         action_instruct = self.prompt_manager.render(
@@ -290,16 +287,17 @@ class ADCRAgent(MultimodalAgent):
 
         content: List[Dict[str, Any]] = []
         if want_vision:
-            content.extend(
-                [make_image_block(image_to_base64(img)) for img in context.frame_images]
-            )
+            content.extend([make_image_block(image_to_base64(img)) for img in context.frame_images])
         else:
             for i, grid in enumerate(context.frames.frame_grids):
                 content.append({"type": "text", "text": f"Frame {i}:\n{grid_to_text_matrix(grid)}"})
         content.append({"type": "text", "text": prompt_text})
 
         messages = [
-            {"role": "system", "content": self.prompt_manager.render("system", {"use_vision": want_vision})},
+            {
+                "role": "system",
+                "content": self.prompt_manager.render("system", {"use_vision": want_vision}),
+            },
             {"role": "user", "content": content},
         ]
 
@@ -330,7 +328,9 @@ class ADCRAgent(MultimodalAgent):
 
         return result
 
-    def convert_human_to_game_action_step(self, context: SessionContext, human_action: str) -> Dict[str, Any]:
+    def convert_human_to_game_action_step(
+        self, context: SessionContext, human_action: str
+    ) -> Dict[str, Any]:
         if context.game.available_actions:
             indices = [int(str(a)) for a in context.game.available_actions]
             available_actions_text = "\n".join(
@@ -339,9 +339,7 @@ class ADCRAgent(MultimodalAgent):
                 if 1 <= i <= len(HUMAN_ACTIONS_LIST)
             )
             valid_actions = ", ".join(
-                HUMAN_ACTIONS_LIST[i - 1]
-                for i in indices
-                if 1 <= i <= len(HUMAN_ACTIONS_LIST)
+                HUMAN_ACTIONS_LIST[i - 1] for i in indices if 1 <= i <= len(HUMAN_ACTIONS_LIST)
             )
         else:
             available_actions_text = "\n".join(
@@ -352,7 +350,11 @@ class ADCRAgent(MultimodalAgent):
         want_vision = self._get_want_vision(context)
         find_action_instruct = self.prompt_manager.render(
             "find_action_instruct",
-            {"action_list": available_actions_text, "valid_actions": valid_actions, "use_vision": want_vision},
+            {
+                "action_list": available_actions_text,
+                "valid_actions": valid_actions,
+                "use_vision": want_vision,
+            },
         )
 
         content: List[Dict[str, Any]] = []
@@ -363,14 +365,18 @@ class ADCRAgent(MultimodalAgent):
         else:
             if context.last_frame_grid is not None:
                 content.append(
-                    {"type": "text", "text": f"Current frame:\n{grid_to_text_matrix(context.last_frame_grid)}"}
+                    {
+                        "type": "text",
+                        "text": f"Current frame:\n{grid_to_text_matrix(context.last_frame_grid)}",
+                    }
                 )
-        content.append(
-            {"type": "text", "text": human_action + "\n\n" + find_action_instruct}
-        )
+        content.append({"type": "text", "text": human_action + "\n\n" + find_action_instruct})
 
         messages = [
-            {"role": "system", "content": self.prompt_manager.render("system", {"use_vision": want_vision})},
+            {
+                "role": "system",
+                "content": self.prompt_manager.render("system", {"use_vision": want_vision}),
+            },
             {"role": "user", "content": content},
         ]
 
@@ -422,9 +428,7 @@ class ADCRAgent(MultimodalAgent):
             if not human_action:
                 raise ValueError("No human_action in response")
 
-            game_action_dict = self.convert_human_to_game_action_step(
-                context, str(human_action)
-            )
+            game_action_dict = self.convert_human_to_game_action_step(context, str(human_action))
             action_name = game_action_dict.get("action")
             if not action_name:
                 raise ValueError("No action in game action response")
@@ -452,4 +456,3 @@ class ADCRAgent(MultimodalAgent):
 
 
 __all__ = ["ADCRAgent"]
-

@@ -30,8 +30,8 @@ class DummyTrackingProvider(ProviderAdapter):
 
 
 def test_call_with_tracking_updates_session_context(monkeypatch):
-    from arcagi3.utils import task_utils
     from arcagi3.adapters import provider as provider_module
+    from arcagi3.utils import task_utils
 
     # Avoid config lookup / provider mismatch validation
     monkeypatch.setattr(
@@ -68,5 +68,3 @@ def test_call_with_tracking_updates_session_context(monkeypatch):
     assert ctx.metrics.total_cost.completion_cost == 10.0
     assert (ctx.metrics.total_cost.reasoning_cost or 0.0) == 4.0
     assert ctx.metrics.total_cost.total_cost == 24.0
-
-

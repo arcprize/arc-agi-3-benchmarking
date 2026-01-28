@@ -17,7 +17,10 @@ def _classify_exception(exc: Exception) -> Tuple[str, str, str, List[str]]:
             "MissingFile",
             "Required file not found.",
             "A file or path referenced by the run could not be located.",
-            ["Verify the path exists and is readable.", "Check for typos in file names or arguments."],
+            [
+                "Verify the path exists and is readable.",
+                "Check for typos in file names or arguments.",
+            ],
         )
 
     if isinstance(exc, TimeoutError):
@@ -33,7 +36,10 @@ def _classify_exception(exc: Exception) -> Tuple[str, str, str, List[str]]:
             "NetworkError",
             "Network connection failed.",
             "The runner could not reach a required service.",
-            ["Check network access and firewall settings.", "Retry after confirming the service is reachable."],
+            [
+                "Check network access and firewall settings.",
+                "Retry after confirming the service is reachable.",
+            ],
         )
 
     if ("api key" in message_lower or "api_key" in message_lower) and (
@@ -49,7 +55,11 @@ def _classify_exception(exc: Exception) -> Tuple[str, str, str, List[str]]:
             ],
         )
 
-    if "unauthorized" in message_lower or "401" in message_lower or "invalid api key" in message_lower:
+    if (
+        "unauthorized" in message_lower
+        or "401" in message_lower
+        or "invalid api key" in message_lower
+    ):
         return (
             "InvalidApiKey",
             "API key appears invalid.",
@@ -57,12 +67,17 @@ def _classify_exception(exc: Exception) -> Tuple[str, str, str, List[str]]:
             ["Verify the key value and permissions.", "Re-run `--check` after updating the key."],
         )
 
-    if "checkpoint" in message_lower and ("not found" in message_lower or "missing" in message_lower):
+    if "checkpoint" in message_lower and (
+        "not found" in message_lower or "missing" in message_lower
+    ):
         return (
             "CheckpointMissing",
             "Checkpoint not found.",
             "The requested checkpoint could not be located on disk.",
-            ["Use `--list-checkpoints` to see available IDs.", "Confirm the checkpoint directory exists."],
+            [
+                "Use `--list-checkpoints` to see available IDs.",
+                "Confirm the checkpoint directory exists.",
+            ],
         )
 
     if isinstance(exc, ValueError):
@@ -70,7 +85,10 @@ def _classify_exception(exc: Exception) -> Tuple[str, str, str, List[str]]:
             "InvalidInput",
             "Invalid input or configuration.",
             "A provided argument or configuration value is not valid for this run.",
-            ["Double-check CLI args and config names.", "Use `--list-games` or `--list-agents` if unsure."],
+            [
+                "Double-check CLI args and config names.",
+                "Use `--list-games` or `--list-agents` if unsure.",
+            ],
         )
 
     return (
@@ -112,4 +130,3 @@ def format_user_message(payload: Dict[str, Any]) -> str:
         lines.append("Suggested fixes:")
         lines.extend([f"- {fix}" for fix in fixes])
     return "\n".join(line for line in lines if line)
-
