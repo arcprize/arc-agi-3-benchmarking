@@ -3,10 +3,18 @@
 from arcagi3.agent import MultimodalAgent
 from arcagi3.game_client import GameClient
 from arcagi3.schemas import (  # ARC-AGI-3 Game Schemas; Provider Schemas; Adapter compatibility schemas
-    ARCPair, ARCTaskOutput, Attempt, Cost, GameAction, GameResult, GameState,
-    ModelConfig, Usage)
+    ARCPair,
+    ARCTaskOutput,
+    Attempt,
+    Cost,
+    GameAction,
+    GameResult,
+    GameState,
+    ModelConfig,
+    Usage,
+)
 
-__version__ = "0.1.0"
+__version__ = "0.9.0"
 
 __all__ = [
     # Game components
@@ -14,7 +22,7 @@ __all__ = [
     "GameClient",
     # Schemas
     "GameAction",
-    "GameState", 
+    "GameState",
     "GameResult",
     "Cost",
     "Usage",
@@ -23,4 +31,3 @@ __all__ = [
     "ARCTaskOutput",
     "ARCPair",
 ]
-
