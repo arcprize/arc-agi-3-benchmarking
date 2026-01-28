@@ -29,9 +29,9 @@ from arcagi3.utils.cli import (
     handle_list_checkpoints,
     handle_list_games,
     handle_list_models,
-    print_result,
     validate_args,
 )
+from arcagi3.utils.scorecard_output import print_result
 
 logger = logging.getLogger(__name__)
 
