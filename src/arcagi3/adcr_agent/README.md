@@ -1,4 +1,4 @@
-# ADCR (`adcr`) prepared agent
+# ADCR (`adcr`) agent
 
 ## Goal
 

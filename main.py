@@ -1,9 +1,9 @@
 """
-Example CLI demonstrating how to use the ARC-AGI-3 runner with prepared agents.
+Example CLI demonstrating how to use the ARC-AGI-3 runner with agents.
 
 This file shows the minimal setup needed to run the project:
 1. Create an AgentRunner instance
-2. Register one or more prepared agents via their flags
+2. Register one or more agents
 3. Run the CLI with standard ARC-AGI-3 arguments
 
 Usage:
@@ -11,7 +11,7 @@ Usage:
 
 To use a different agent, create your own agent class and register it:
     from my_agent import MyAgent
-    runner.add_flags({"name": "my-agent", "agent_class": MyAgent})
+    runner.register({"name": "my-agent", "agent_class": MyAgent})
 
 Or use the full runner with the ADCR agent pre-registered:
     python -m arcagi3.runner --agent adcr --game_id ... --config ...
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dotenv import load_dotenv
 
-from arcagi3.adcr_agent.flags import flags as adcr_flags
+from arcagi3.adcr_agent.definition import agents as adcr_definition
 from arcagi3.runner import AgentRunner
 
 
@@ -40,9 +40,8 @@ def main_cli(cli_args: list | None = None) -> None:
     # Create a runner instance - this manages the agent registry
     runner = AgentRunner()
 
-    # Register the ADCR agent by adding its flags
-    # Each agent has a flags.py file that defines its CLI args and agent class
-    runner.add_flags(adcr_flags)
+    # Register the ADCR agent
+    runner.register(adcr_definition)
 
     # Run the CLI - this handles argument parsing, agent instantiation,
     # game execution, checkpointing, and result printing

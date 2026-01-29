@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 import yaml
@@ -21,6 +22,8 @@ from arcagi3.utils.api_tests import (
 )
 
 logger = logging.getLogger(__name__)
+
+_GAME_ID_WITH_HASH_RE = re.compile(r"^(?P<base>[a-zA-Z]{2}\d{2})-[0-9a-fA-F]{7,40}$")
 
 # ============================================================================
 # CLI Arguments
@@ -297,11 +300,36 @@ def list_available_games(game_client: GameClient) -> List[dict]:
         return []
 
 
+def _strip_game_hash(game_id: str) -> str:
+    if not isinstance(game_id, str):
+        return game_id
+    match = _GAME_ID_WITH_HASH_RE.match(game_id)
+    return match.group("base") if match else game_id
+
+
+def _normalize_game_ids(games: List[dict]) -> List[dict]:
+    normalized = []
+    for game in games:
+        if not isinstance(game, dict):
+            normalized.append(game)
+            continue
+        game_id = game.get("game_id")
+        if not game_id:
+            normalized.append(game)
+            continue
+        stripped_id = _strip_game_hash(game_id)
+        if stripped_id != game_id:
+            game = dict(game)
+            game["game_id"] = stripped_id
+        normalized.append(game)
+    return normalized
+
+
 def handle_list_games(game_client: GameClient, json_output: bool = False):
     """List available games, optionally in JSON format."""
     import json
 
-    games = list_available_games(game_client)
+    games = _normalize_game_ids(list_available_games(game_client))
     if not games:
         if json_output:
             print(json.dumps([], indent=2))

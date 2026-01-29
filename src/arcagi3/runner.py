@@ -1,5 +1,5 @@
 """
-Unified runner for ARC-AGI-3 agents with a simple prepared-agent registry.
+Unified runner for ARC-AGI-3 agents with a simple agent registry.
 
 Usage:
     python -m arcagi3.runner --agent adcr --game_id ls20-016295f7601e --config gpt-4o-2024-11-20
@@ -15,7 +15,7 @@ from typing import Any, Dict, Iterable, Optional, Sequence
 
 from dotenv import load_dotenv
 
-from arcagi3.adcr_agent.flags import flags as adcr_flags
+from arcagi3.adcr_agent.definition import agents as adcr_definition
 from arcagi3.arc3tester import ARC3Tester
 from arcagi3.game_client import GameClient
 from arcagi3.utils import errors
@@ -38,32 +38,29 @@ logger = logging.getLogger(__name__)
 
 class AgentRunner:
     """
-    Runner that wires CLI args into a prepared-agent registry.
+    Runner that wires CLI args into an agent registry.
     """
 
     def __init__(self, agents: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
         self._agents: Dict[str, Dict[str, Any]] = agents or {}
 
-    def add_flags(self, flags: Dict[str, Any] | Sequence[Dict[str, Any]]) -> None:
-        if isinstance(flags, dict):
-            flags_list = [flags]
-        else:
-            flags_list = list(flags)
-        for entry in flags_list:
-            self.register(entry)
-
-    def register(self, prepared: Dict[str, Any]) -> None:
-        name = prepared["name"]
-        if name in self._agents:
-            raise ValueError(f"Agent '{name}' is already registered")
-        self._agents[name] = prepared
+    def register(self, prepared: Dict[str, Any] | Sequence[Dict[str, Any]]) -> None:
+        """
+        Register one agent definition, or a sequence of them.
+        """
+        prepared_list = [prepared] if isinstance(prepared, dict) else list(prepared)
+        for entry in prepared_list:
+            name = entry["name"]
+            if name in self._agents:
+                raise ValueError(f"Agent '{name}' is already registered")
+            self._agents[name] = entry
 
     def list_agents(self) -> Iterable[Dict[str, Any]]:
         return [self._agents[name] for name in sorted(self._agents)]
 
     def build_parser(self) -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(
-            description="Run ARC-AGI-3 benchmark on a single game with a prepared agent"
+            description="Run ARC-AGI-3 benchmark on a single game with a registered agent"
         )
         configure_args(parser)
 
@@ -71,7 +68,7 @@ class AgentRunner:
         parser.add_argument(
             "--list-agents",
             action="store_true",
-            help="List available prepared agents and exit",
+            help="List available agents and exit",
         )
         parser.add_argument(
             "--list-games",
@@ -99,7 +96,7 @@ class AgentRunner:
         parser.add_argument(
             "--agent",
             default=os.getenv("AGENT", "adcr"),
-            help="Prepared agent name (use --list-agents to see options). Can be set via AGENT env var. Defaults to 'adcr' if not specified.",
+            help="Agent name (use --list-agents to see options). Can be set via AGENT env var. Defaults to 'adcr' if not specified.",
         )
         for agent in self.list_agents():
             add_args = agent.get("add_args")
@@ -115,7 +112,7 @@ class AgentRunner:
         return self._agents[agent_name]
 
     def _print_agents(self) -> None:
-        print("Available prepared agents:")
+        print("Available agents:")
         for agent in self.list_agents():
             print(f"  - {agent['name']}: {agent.get('description', '')}")
 
@@ -212,7 +209,7 @@ class AgentRunner:
 
 def _build_default_registry() -> AgentRunner:
     runner = AgentRunner()
-    runner.add_flags(adcr_flags)
+    runner.register(adcr_definition)
     return runner
 
 

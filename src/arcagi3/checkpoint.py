@@ -127,6 +127,29 @@ class CheckpointManager:
         with open(self.checkpoint_path / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
 
+        # Save per-action datastore snapshots as JSONL so you can inspect how the
+        # agent state evolves over time (similar to action_history/model_completion),
+        # without rewriting a growing JSON array.
+        #
+        # Append-only file:
+        #   .checkpoint/<CARD_ID>/datastore_history.jsonl
+        #
+        # This is not used for resume; resume uses the latest snapshot in
+        # metadata.json.
+        try:
+            action_num = int(action_counter)
+        except Exception:
+            action_num = 0
+        if action_num > 0:
+            record = {
+                "action_num": action_num,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "datastore": datastore,
+            }
+            json.dumps(record)
+            with open(self.checkpoint_path / "datastore_history.jsonl", "a") as f:
+                f.write(json.dumps(record) + "\n")
+
         # Save costs and usage
         costs = {
             "total_cost": total_cost,
@@ -182,6 +205,9 @@ class CheckpointManager:
 
         with open(metadata_path) as f:
             metadata = json.load(f)
+
+        # Load datastore snapshot (prefer datastore.json; fall back to metadata.json for older checkpoints)
+        datastore = metadata.get("datastore", {})
 
         # Load costs (raw dicts)
         costs_path = self.checkpoint_path / "costs.json"
@@ -244,7 +270,7 @@ class CheckpointManager:
                 "action_history": action_history,
                 "model_calls": model_calls,
             },
-            "datastore": metadata.get("datastore", {}),
+            "datastore": datastore,
         }
 
     def checkpoint_exists(self) -> bool:
