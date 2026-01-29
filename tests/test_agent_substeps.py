@@ -23,7 +23,7 @@ class DummyProvider:
     def __init__(self):
         self.last_messages: List[Dict[str, Any]] = []
 
-    def call_with_tracking(self, context: SessionContext, messages):
+    def call_with_tracking(self, context: SessionContext, messages, **kwargs):
         # Tests don't charge cost; just record messages.
         return self.call_provider(messages)
 
