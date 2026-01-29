@@ -358,6 +358,10 @@ docker run --rm \
   python -m arcagi3.runner --game_id am92-80effacb --config gpt-5-2-openrouter --max_actions 1
 ```
 
+# Creating your own agent
+
+Want to create your own agent? Check out the [docs/create_agent.md](docs/create_agent.md) file a walkthrough on how it's easily done.
+
 # Contributing
 
 Install the development tools:
