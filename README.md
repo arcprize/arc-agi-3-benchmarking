@@ -86,20 +86,10 @@ uv run python -m arcagi3.runner --list-games
 =========================================================
 Game ID               Title                         
 =========================================================
-am92                  AM92                          
-as66                  AS66                          
-bt11                  BT11                          
-dc22                  DC22                          
-is41                  IS41                          
-lp85                  LP85                          
-mk45                  MK45                          
-ne57                  NE57                          
-ra05                  RA05                          
-re86                  RE86                          
-sb26                  SB26                          
-sp80                  SP80                          
-tl01                  TL01                          
-wc25                  WC25                                               
+ls20                  LS20                          
+ft09                  FT09                          
+vc33                  VC33                          
+                                           
 =========================================================
 ```
 
@@ -114,12 +104,12 @@ uv run python -m arcagi3.runner --list-models
 Available Models (for enabled providers)
 ================================================================================
 
-OpenRouter (14 models):
+OpenRouter (12 models):
 --------------------------------------------------------------------------------
   claude-4-sonnet-20250522-thinking-8k-bedrock multimodal           $3.00/$15.00 per 1M tokens
   claude-opus-4-5-openrouter               multimodal           $5.00/$25.00 per 1M tokens
   claude-sonnet-4-5-openrouter             multimodal           $3.00/$15.00 per 1M tokens
-  deepseek_r1_0528-openrouter              standard             $0.50/$2.18 per 1M tokens
+  deepseek_r1_0528-openrouter              standard             $0.40/$1.75 per 1M tokens
   gemini-2-5-pro-preview-openrouter        multimodal           $1.25/$10.00 per 1M tokens
   gemini-2-5-pro-preview-openrouter-thinking-1k multimodal           $1.25/$10.00 per 1M tokens
   gemini-3-0-pro-preview-openrouter        multimodal           $2.00/$12.00 per 1M tokens
@@ -127,7 +117,7 @@ OpenRouter (14 models):
   magistral-medium-2506                    standard             $2.00/$5.00 per 1M tokens
   magistral-medium-2506-thinking           standard             $2.00/$5.00 per 1M tokens
   magistral-small-2506                     standard             $0.50/$1.50 per 1M tokens
-  qwen3-235b-a22b-07-25                    standard             $0.12/$0.59 per 1M tokens
+  qwen3-235b-a22b-07-25                    standard             $0.20/$0.60 per 1M tokens
 
 ================================================================================
 Total: 12 models available

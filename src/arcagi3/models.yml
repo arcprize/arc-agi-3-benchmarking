@@ -502,9 +502,9 @@ models:
     api_type: "responses"
     max_output_tokens: 10000
     pricing:
-      date: "2025-02-23"
-      input: 15.00
-      output: 60.00
+      date: "2026-01-28"
+      input: 0.15
+      output: 0.60
 
 
 ###################
@@ -772,9 +772,9 @@ models:
     automatic_function_calling:
       disable: true
     pricing:
-      date: "2025-05-20"
-      input: 0.15
-      output: 0.60
+      date: "2026-01-28"
+      input: 0.30
+      output: 2.50
 
   - name: "gemini-2-5-flash-preview-05-20-thinking-1k"
     model_name: "gemini-2.5-flash-preview-05-20"
@@ -786,9 +786,9 @@ models:
     automatic_function_calling:
       disable: true
     pricing:
-      date: "2025-05-20"
-      input: 0.15
-      output: 3.50
+      date: "2026-01-28"
+      input: 0.30
+      output: 2.50
 
   - name: "gemini-2-5-flash-preview-05-20-thinking-8k"
     model_name: "gemini-2.5-flash-preview-05-20"
@@ -800,9 +800,9 @@ models:
     automatic_function_calling:
       disable: true
     pricing:
-      date: "2025-05-20"
-      input: 0.15
-      output: 3.50
+      date: "2026-01-28"
+      input: 0.30
+      output: 2.50
 
   - name: "gemini-2-5-flash-preview-05-20-thinking-16k"
     model_name: "gemini-2.5-flash-preview-05-20"
@@ -814,9 +814,9 @@ models:
     automatic_function_calling:
       disable: true
     pricing:
-      date: "2025-05-20"
-      input: 0.15
-      output: 3.50
+      date: "2026-01-28"
+      input: 0.30
+      output: 2.50
 
   - name: "gemini-2-5-flash-preview-05-20-thinking-24k"
     model_name: "gemini-2.5-flash-preview-05-20"
@@ -828,9 +828,9 @@ models:
     automatic_function_calling:
       disable: true
     pricing:
-      date: "2025-05-20"
-      input: 0.15
-      output: 3.50
+      date: "2026-01-28"
+      input: 0.30
+      output: 2.50
 
   - name: "gemini-2-0-flash-001"
     model_name: "gemini-2.0-flash-001"
@@ -931,8 +931,8 @@ models:
     provider: "deepseek"
     max_completion_tokens: 8000
     pricing:
-      date: "2025-02-23"
-      input: 0.55  # Cache-hit input price per 1M tokens; note: cache-miss price is 0.55.
+      date: "2026-01-28"
+      input: 0.14  # Cache-hit input price per 1M tokens; note: cache-miss price is 0.55.
       output: 2.19  # Output price per 1M tokens.
 
   - name: "deepseek_r1_0528-openrouter"
@@ -940,9 +940,9 @@ models:
     provider: "openrouter"
     max_tokens: 130000 # Max is 163,840, leaving lots of room for prompt
     pricing:
-      date: "2025-05-28"
-      input: 0.50  # Cache-hit input price per 1M tokens; note: cache-miss price is 0.55.
-      output: 2.18  # Output price per 1M tokens.
+      date: "2026-01-28"
+      input: 0.40
+      output: 1.75
 
 
 ########################
@@ -984,6 +984,6 @@ models:
     provider: "openrouter"
     max_tokens: 100000
     pricing:
-      date: "2025-07-21"
-      input: 0.12
-      output: 0.59
+      date: "2026-01-28"
+      input: 0.20
+      output: 0.60
