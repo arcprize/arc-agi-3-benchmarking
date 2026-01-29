@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -7,6 +8,48 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from arcagi3.schemas import GameResult, ModelConfig
+
+
+def sanitize_filename(name: str) -> str:
+    """
+    Sanitize a string to be safe for use in filenames and directory names.
+    
+    Replaces invalid characters (/, \\, :, *, ?, ", <, >, |, \\0) with underscores.
+    Also removes leading/trailing spaces and dots, and collapses multiple
+    consecutive invalid characters into a single underscore.
+    
+    Args:
+        name: The string to sanitize
+        
+    Returns:
+        A sanitized string safe for use in filenames
+        
+    Examples:
+        >>> sanitize_filename("openai/gpt-5.2")
+        'openai_gpt-5.2'
+        >>> sanitize_filename("model:name")
+        'model_name'
+        >>> sanitize_filename("  test  ")
+        'test'
+    """
+    # Characters invalid in filenames (cross-platform safe)
+    # / \ : * ? " < > | and null byte
+    invalid_chars = r'[/\\:*?"<>|\x00]'
+    
+    # Replace invalid characters with underscore
+    sanitized = re.sub(invalid_chars, '_', name)
+    
+    # Remove leading/trailing spaces and dots (Windows doesn't allow trailing dots/spaces)
+    sanitized = sanitized.strip(' .')
+    
+    # Collapse multiple consecutive underscores into one
+    sanitized = re.sub(r'_+', '_', sanitized)
+    
+    # If the result is empty (e.g., all invalid chars), use a default
+    if not sanitized:
+        sanitized = 'unknown'
+    
+    return sanitized
 
 
 def find_hints_file() -> Optional[str]:
@@ -146,8 +189,9 @@ def read_models_config(config: str) -> ModelConfig:
 def result_exists(save_results_dir: str, game_id: str) -> bool:
     if not save_results_dir or not os.path.exists(save_results_dir):
         return False
+    sanitized_game_id = sanitize_filename(game_id)
     return any(
-        filename.startswith(f"{game_id}_") and filename.endswith(".json")
+        filename.startswith(f"{sanitized_game_id}_") and filename.endswith(".json")
         for filename in os.listdir(save_results_dir)
     )
 
@@ -157,8 +201,10 @@ def save_result(save_results_dir: str, game_result: GameResult) -> str:
     timestamp_str = (
         game_result.timestamp.strftime("%Y%m%d_%H%M%S") if game_result.timestamp else "unknown"
     )
+    sanitized_game_id = sanitize_filename(game_result.game_id)
+    sanitized_config = sanitize_filename(game_result.config)
     result_file = os.path.join(
-        save_results_dir, f"{game_result.game_id}_{game_result.config}_{timestamp_str}.json"
+        save_results_dir, f"{sanitized_game_id}_{sanitized_config}_{timestamp_str}.json"
     )
     with open(result_file, "w") as f:
         json.dump(game_result.model_dump(mode="json"), f, indent=2, default=str)
@@ -166,13 +212,15 @@ def save_result(save_results_dir: str, game_result: GameResult) -> str:
 
 
 def save_result_in_timestamped_structure(timestamp_dir: str, game_result: GameResult) -> str:
-    game_dir = os.path.join(timestamp_dir, game_result.game_id)
+    sanitized_game_id = sanitize_filename(game_result.game_id)
+    game_dir = os.path.join(timestamp_dir, sanitized_game_id)
     os.makedirs(game_dir, exist_ok=True)
     timestamp_str = (
         game_result.timestamp.strftime("%Y%m%d_%H%M%S") if game_result.timestamp else "unknown"
     )
+    sanitized_config = sanitize_filename(game_result.config)
     result_file = os.path.join(
-        game_dir, f"{game_result.game_id}_{game_result.config}_{timestamp_str}.json"
+        game_dir, f"{sanitized_game_id}_{sanitized_config}_{timestamp_str}.json"
     )
     with open(result_file, "w") as f:
         json.dump(game_result.model_dump(mode="json"), f, indent=2, default=str)

@@ -32,6 +32,7 @@ from arcagi3.utils.cli import (
     validate_args,
 )
 from arcagi3.utils.scorecard_output import print_result
+from arcagi3.utils.task_utils import sanitize_filename
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +160,8 @@ class AgentRunner:
         validate_args(args, parser)
 
         if not args.save_results_dir:
-            args.save_results_dir = f"results/{args.config}"
+            sanitized_config = sanitize_filename(args.config)
+            args.save_results_dir = f"results/{sanitized_config}"
 
         prepared = self._resolve_agent(args)
         agent_class = prepared["agent_class"]
