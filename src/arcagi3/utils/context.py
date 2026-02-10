@@ -520,9 +520,15 @@ class SessionContext:
         with self._lock:
             frames = self._frames
             game = self._game
+            # If the server returns the same frame payload again (common at the
+            # top of the next loop iteration), keep the prior "before action"
+            # snapshot instead of overwriting it with an identical "after action"
+            # frame. This preserves meaningful before/after comparisons for
+            # analyze-step diffs.
+            previous_grids = frames.previous_grids if new_grids == frames.frame_grids else frames.frame_grids
             self._frames = replace(
                 frames,
-                previous_grids=frames.frame_grids,
+                previous_grids=previous_grids,
                 frame_grids=new_grids,
             )
             self._game = replace(

@@ -136,6 +136,40 @@ def test_context_update_preserves_previous_state():
     assert len(context.frames.previous_grids) == len(prev_grids)
 
 
+def test_context_update_same_frames_preserves_meaningful_previous_grids():
+    context = SessionContext()
+
+    # First server state for this loop (before action)
+    first_grids = [create_64x64_grid(1)]
+    context.update(
+        frame_grids=first_grids,
+        current_score=0,
+        current_state="IN_PROGRESS",
+    )
+    assert context.frames.previous_grids == ()
+    assert context.frames.frame_grids == tuple(first_grids)
+
+    # State after executing an action: this becomes current, and previous gets first_grids
+    second_grids = [create_64x64_grid(2)]
+    context.update(
+        frame_grids=second_grids,
+        current_score=0,
+        current_state="IN_PROGRESS",
+    )
+    assert context.frames.previous_grids == tuple(first_grids)
+    assert context.frames.frame_grids == tuple(second_grids)
+
+    # Next loop pre-step refresh often repeats the same second_grids payload.
+    # Ensure this does not clobber previous_grids.
+    context.update(
+        frame_grids=second_grids,
+        current_score=0,
+        current_state="IN_PROGRESS",
+    )
+    assert context.frames.previous_grids == tuple(first_grids)
+    assert context.frames.frame_grids == tuple(second_grids)
+
+
 def test_context_properties():
     context = SessionContext()
 
