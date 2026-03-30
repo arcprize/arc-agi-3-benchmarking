@@ -23,16 +23,12 @@ from agents.tracing import initialize as init_agentops
 
 logger = logging.getLogger()
 
-DEFAULT_REMOTE_URL = "https://arcprize.org"
+DEFAULT_URL = "https://arcprize.org"
 SCHEME = os.environ.get("SCHEME", "http")
 HOST = os.environ.get("HOST", "localhost")
 PORT = os.environ.get("PORT", 8001)
 ARC_BASE_URL = os.environ.get("ARC_BASE_URL")
-ARC_API_KEY = os.getenv("ARC_API_KEY", "") or os.getenv("ARC_AGI_API_KEY", "")
-
-# Keep the rest of the stack happy if the user exported the older variable name.
-if ARC_API_KEY and not os.getenv("ARC_API_KEY"):
-    os.environ["ARC_API_KEY"] = ARC_API_KEY
+ARC_API_KEY = os.getenv("ARC_API_KEY", "")
 
 def build_root_url() -> str:
     """Prefer ARC_BASE_URL, otherwise use explicit local host settings, else hosted ARC."""
@@ -50,7 +46,7 @@ def build_root_url() -> str:
             return f"{SCHEME}://{HOST}"
         return f"{SCHEME}://{HOST}:{PORT}"
 
-    return DEFAULT_REMOTE_URL
+    return DEFAULT_URL
 
 
 ROOT_URL = build_root_url()
