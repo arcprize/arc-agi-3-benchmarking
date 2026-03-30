@@ -1,6 +1,5 @@
 import logging
 import traceback
-import uuid
 from typing import Optional
 
 from arcagi3.agent import MultimodalAgent
@@ -158,24 +157,19 @@ class ARC3Tester:
                         "scorecard on the server."
                     )
         else:
-            # Decide whether to open a real scorecard or run in local-only mode.
-            local_only = not self.submit_scorecard and not card_id
+            if not self.submit_scorecard and not card_id:
+                raise ValueError(
+                    "Fresh offline runs are not supported by the ARC API. "
+                    "The server requires an opened scorecard before RESET can start a game "
+                    "session. Remove `--offline`, or resume with `--checkpoint <CARD_ID>`."
+                )
 
-            if local_only:
-                # Generate a local-only card_id used purely for checkpointing and
-                # game commands. No scorecard is explicitly opened or closed.
-                if not card_id:
-                    card_id = f"local-{uuid.uuid4()}"
-                logger.info(
-                    f"Running in local-only mode without opening a scorecard (card_id={card_id})"
-                )
-            else:
-                # Generate tags from model config for scorecard tracking
-                tags = generate_scorecard_tags(self.model_config)
-                scorecard_response = self.game_client.open_scorecard(
-                    [game_id], card_id=card_id, tags=tags
-                )
-                card_id = scorecard_response.get("card_id", card_id)
+            # Generate tags from model config for scorecard tracking
+            tags = generate_scorecard_tags(self.model_config)
+            scorecard_response = self.game_client.open_scorecard(
+                [game_id], card_id=card_id, tags=tags
+            )
+            card_id = scorecard_response.get("card_id", card_id)
 
         try:
             from arcagi3.utils import find_hints_file, load_hints
@@ -191,8 +185,10 @@ class ARC3Tester:
             else:
                 logger.debug(f"⊘ No hint found for game {game_id}")
 
-            # Create agent
-            # Use checkpoint_card_id for checkpoint management if resuming, otherwise use card_id
+            # Create agent.
+            # Use checkpoint_card_id for checkpoint management if resuming, otherwise use card_id.
+            # Agent-specific kwargs come from the runner/registry so this harness stays decoupled
+            # from individual agent constructor contracts.
             agent_kwargs = {
                 "config": self.config,
                 "game_client": self.game_client,
@@ -202,15 +198,6 @@ class ARC3Tester:
                 "max_episode_actions": self.max_episode_actions,
                 "checkpoint_frequency": self.checkpoint_frequency,
             }
-            # Add agent-specific kwargs if using ADCRAgent or similar
-            if self.agent_class != DefaultTesterAgent:
-                agent_kwargs.update(
-                    {
-                        "use_vision": self.use_vision,
-                        "show_images": self.show_images,
-                        "memory_word_limit": self.memory_word_limit,
-                    }
-                )
             if self.agent_kwargs:
                 agent_kwargs.update(self.agent_kwargs)
             agent = self.agent_class(**agent_kwargs)

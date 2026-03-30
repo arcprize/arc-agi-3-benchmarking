@@ -33,6 +33,7 @@ from arcagi3.utils.cli import (
     handle_list_checkpoints,
     handle_list_games,
     handle_list_models,
+    resolve_game_selector,
     validate_args,
 )
 from arcagi3.utils.scorecard_output import print_result
@@ -162,6 +163,12 @@ class AgentRunner:
             return
 
         validate_args(args, parser)
+
+        if args.game_id:
+            resolved_game_id = resolve_game_selector(GameClient(), args.game_id)
+            if resolved_game_id != args.game_id:
+                logger.info("Resolved game selector '%s' to game_id '%s'", args.game_id, resolved_game_id)
+            args.game_id = resolved_game_id
 
         if not args.save_results_dir:
             sanitized_config = sanitize_filename(args.config)

@@ -33,7 +33,7 @@ RUN if [ -f uv.lock ]; then \
 # Create directories for results, checkpoints, and logs
 RUN mkdir -p results logs .checkpoint
 
-ENV ARC_URL_BASE="https://three.arcprize.org"
+ENV ARC_URL_BASE="https://arcprize.org"
 
 # CLI argument environment variables (all can be set via env vars)
 ENV GAME_ID=""

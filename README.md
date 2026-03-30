@@ -8,7 +8,7 @@ This is a developer harness for building and benchmarking agentic research workf
 
 - **Python**: `3.9+`
 - **uv**: recommended package manager. Install from [uv.pm](https://github.com/astral-sh/uv) or `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- **ARC-AGI-3 API key**: required to talk to the ARC server. Sign up for a key [here](https://three.arcprize.org/).
+- **ARC-AGI-3 API key**: required to talk to the ARC server. Sign up for a key [here](https://arcprize.org/).
 
 ## Install
 
@@ -36,7 +36,7 @@ pip install -e .
 
 ## Setting up your environment
 
-In order to communicate with the ARC server and utilize LLM providers, we need to set up environment variables. To get an API key for ARC AGI 3, you can sign up for a key [here](https://three.arcprize.org/). For your chosen provider(s), you can go to:
+In order to communicate with the ARC server and utilize LLM providers, we need to set up environment variables. To get an API key for ARC AGI 3, you can log in and create a key [here](https://arcprize.org/platform/user). For your chosen provider(s), you can go to:
 
 - [OpenAI](https://platform.openai.com/account/api-keys)
 - [Anthropic](https://console.anthropic.com/account/api-keys)
@@ -139,7 +139,7 @@ uv run python -m arcagi3.runner \
 
 When you run a benchmark, a scorecard is saved on the ARC server.
 
-If you're logged in, scorecards can be viewed at [three.arcprize.org/scorecards](https://three.arcprize.org/scorecards).
+If you're logged in, scorecards can be viewed at [arcprize.org/scorecards](https://arcprize.org/scorecards).
 
 You can also view what your model did by looking at your local checkpoint folder in `.checkpoint/<CARD_ID>`.
 

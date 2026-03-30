@@ -1,0 +1,22 @@
+{
+  "run_id": "e8480f48-b295-4b70-96db-230c054802bf",
+  "game_id": "",
+  "agent_name": "conversation_rolling_window.gpt-5-mini-2025-08-07-medium.anim7",
+  "model": "gpt-5-mini-2025-08-07",
+  "started_at": "2026-03-30T20:38:37.430518Z",
+  "ended_at": null,
+  "duration_seconds": null,
+  "total_steps": 0,
+  "total_usage": {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+    "reasoning_tokens": 0,
+    "cached_tokens": 0,
+    "cache_write_tokens": 0,
+    "cost": 0.0,
+    "cost_details": {}
+  },
+  "outcome": null,
+  "run_dir": "recordings/conversation_rolling_window.gpt-5-mini-2025-08-07-medium.anim7.e8480f48-b295-4b70-96db-230c054802bf"
+}

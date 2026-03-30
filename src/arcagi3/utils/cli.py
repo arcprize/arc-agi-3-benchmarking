@@ -325,11 +325,89 @@ def _normalize_game_ids(games: List[dict]) -> List[dict]:
     return normalized
 
 
+def _build_game_display_rows(games: List[dict]) -> List[dict]:
+    rows = []
+    for game in games:
+        if not isinstance(game, dict):
+            continue
+        raw_id = game.get("game_id")
+        if not raw_id:
+            continue
+        selector = normalize_game_selector(raw_id) or str(raw_id)
+        row = dict(game)
+        row["selector"] = selector
+        rows.append(row)
+    return rows
+
+
+def normalize_game_selector(game_id: Optional[str]) -> Optional[str]:
+    """
+    Normalize a user-provided game selector without requiring API access.
+
+    This handles common shorthand such as:
+    - surrounding whitespace
+    - hashed legacy IDs like ``ls20-016295f7601e`` -> ``ls20``
+    - four-character IDs/titles like ``LS20`` -> ``ls20``
+    """
+    if game_id is None:
+        return None
+
+    normalized = game_id.strip()
+    if not normalized:
+        return normalized
+
+    normalized = _strip_game_hash(normalized)
+    if re.fullmatch(r"[A-Za-z0-9]{4}", normalized):
+        return normalized.lower()
+    return normalized
+
+
+def resolve_game_selector(game_client: GameClient, game_id: Optional[str]) -> Optional[str]:
+    """
+    Resolve a user-provided game selector to a canonical API game_id.
+
+    The selector may already be a valid game ID, a hashed variant, or a game
+    title such as ``LS20``. If the lookup fails, fall back to lightweight local
+    normalization so existing behavior is preserved.
+    """
+    normalized = normalize_game_selector(game_id)
+    if not normalized:
+        return normalized
+
+    try:
+        games = list_available_games(game_client)
+    except Exception:
+        return normalized
+
+    alias_map: Dict[str, str] = {}
+    for game in games:
+        if not isinstance(game, dict):
+            continue
+        raw_id = game.get("game_id")
+        if not raw_id:
+            continue
+
+        selector = normalize_game_selector(raw_id) or raw_id
+        aliases = {
+            str(raw_id).strip().lower(),
+            str(selector).lower(),
+        }
+
+        title = game.get("title")
+        if title:
+            aliases.add(str(title).strip().lower())
+
+        for alias in aliases:
+            alias_map.setdefault(alias, str(raw_id).strip())
+
+    return alias_map.get(normalized.lower(), normalized)
+
+
 def handle_list_games(game_client: GameClient, json_output: bool = False):
     """List available games, optionally in JSON format."""
     import json
 
-    games = _normalize_game_ids(list_available_games(game_client))
+    games = list_available_games(game_client)
     if not games:
         if json_output:
             print(json.dumps([], indent=2))
@@ -341,32 +419,42 @@ def handle_list_games(game_client: GameClient, json_output: bool = False):
         print(json.dumps(games, indent=2))
         return
 
+    display_rows = _build_game_display_rows(games)
+    if not display_rows:
+        print("No games available or failed to fetch games.")
+        return
+
     # Create a nice table format
     # Calculate column widths
-    max_id_len = max(len(game["game_id"]) for game in games)
-    max_title_len = max(len(game.get("title", "")) for game in games)
+    max_id_len = max(len(str(game["game_id"])) for game in display_rows)
+    max_selector_len = max(len(str(game.get("selector", ""))) for game in display_rows)
+    max_title_len = max(len(str(game.get("title", ""))) for game in display_rows)
 
     # Set minimum widths
     id_width = max(max_id_len, 20)
+    selector_width = max(max_selector_len, 8)
     title_width = max(max_title_len, 30)
 
     # Calculate total width
-    total_width = id_width + title_width + 7
+    total_width = id_width + selector_width + title_width + 9
 
     # Print header
     print("\n" + "=" * total_width)
-    print(f"{'Game ID':<{id_width}}  {'Title':<{title_width}}")
+    print(
+        f"{'Game ID':<{id_width}}  {'Selector':<{selector_width}}  {'Title':<{title_width}}"
+    )
     print("=" * total_width)
 
-    # Print games (sorted by game_id)
-    for game in sorted(games, key=lambda x: x["game_id"]):
-        game_id = game["game_id"]
-        title = game.get("title", "N/A")
-        print(f"{game_id:<{id_width}}  {title:<{title_width}}")
+    # Print games sorted by easy-to-type selector, then raw API id.
+    for game in sorted(display_rows, key=lambda x: (x.get("selector", ""), x["game_id"])):
+        game_id = str(game["game_id"])
+        selector = str(game.get("selector", ""))
+        title = str(game.get("title", "N/A"))
+        print(f"{game_id:<{id_width}}  {selector:<{selector_width}}  {title:<{title_width}}")
 
     # Print footer
     print("=" * total_width)
-    print(f"\nTotal: {len(games)} game{'s' if len(games) != 1 else ''}\n")
+    print(f"\nTotal: {len(display_rows)} game{'s' if len(display_rows) != 1 else ''}\n")
 
 
 def handle_list_checkpoints():

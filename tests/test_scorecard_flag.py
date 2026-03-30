@@ -1,8 +1,13 @@
 import json
+from argparse import Namespace
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
+import pytest
+
+from arcagi3.adcr_agent.definition import definition as adcr_definition
 from arcagi3.arc3tester import ARC3Tester
-from arcagi3.schemas import GameResult, ModelConfig, ModelPricing
+from arcagi3.schemas import Cost, GameResult, ModelConfig, ModelPricing, Usage
 
 
 class FakeGameClient:
@@ -42,6 +47,7 @@ def _make_tester(
 ) -> ARC3Tester:
     # Mock read_models_config to avoid needing a real config
     if monkeypatch:
+        monkeypatch.setenv("OPENAI_API_KEY", "dummy-openai-key-for-testing")
         import arcagi3.adapters.provider as provider_module
         import arcagi3.arc3tester as arc3tester_module
         import arcagi3.utils as utils_module
@@ -82,21 +88,18 @@ def _make_tester(
     return tester
 
 
-def test_submit_scorecard_disabled_skips_open_and_close_when_no_card_id(monkeypatch):
+def test_submit_scorecard_disabled_requires_existing_server_card_id(monkeypatch):
     # Set dummy API key to avoid GameClient initialization error
     monkeypatch.setenv("ARC_API_KEY", "dummy-key-for-testing")
     fake_client = FakeGameClient()
     tester = _make_tester(fake_client, submit_scorecard=False, monkeypatch=monkeypatch)
 
-    result: GameResult = tester.play_game("dummy-game", card_id=None, resume_from_checkpoint=False)
-    assert result.game_id == "dummy-game"
+    with pytest.raises(ValueError, match="Fresh offline runs are not supported"):
+        tester.play_game("dummy-game", card_id=None, resume_from_checkpoint=False)
 
-    # No explicit scorecard open/close calls should have been made.
     assert fake_client.open_calls == []
     assert fake_client.close_calls == []
-    # But reset_game should still have been called with some local card_id.
-    assert len(fake_client.reset_calls) == 1
-    assert fake_client.reset_calls[0]["card_id"].startswith("local-")
+    assert fake_client.reset_calls == []
 
 
 def test_resume_from_existing_checkpoint_still_uses_scorecard_apis(monkeypatch, tmp_path):
@@ -169,3 +172,82 @@ def test_resume_from_existing_checkpoint_still_uses_scorecard_apis(monkeypatch, 
     assert fake_client.get_scorecard_calls[0]["card_id"] == "existing-card"
     # No new scorecard should be opened in this path.
     assert fake_client.open_calls == []
+
+
+def test_custom_agent_without_adcr_kwargs_still_instantiates(monkeypatch):
+    monkeypatch.setenv("ARC_API_KEY", "dummy-key-for-testing")
+    fake_client = FakeGameClient()
+    tester = _make_tester(fake_client, submit_scorecard=True, monkeypatch=monkeypatch)
+
+    received: Dict[str, Any] = {}
+
+    class ConstructorStrictAgent:
+        def __init__(
+            self,
+            config: str,
+            game_client: FakeGameClient,
+            card_id: str,
+            max_actions: int,
+            num_plays: int,
+            max_episode_actions: int,
+            checkpoint_frequency: int,
+        ) -> None:
+            received.update(
+                {
+                    "config": config,
+                    "game_client": game_client,
+                    "card_id": card_id,
+                    "max_actions": max_actions,
+                    "num_plays": num_plays,
+                    "max_episode_actions": max_episode_actions,
+                    "checkpoint_frequency": checkpoint_frequency,
+                }
+            )
+
+        def play_game(
+            self,
+            game_id: str,
+            resume_from_checkpoint: bool = False,
+            checkpoint_id: str | None = None,
+        ) -> GameResult:
+            return GameResult(
+                game_id=game_id,
+                config="dummy-config",
+                final_score=0,
+                final_state="GAME_OVER",
+                actions_taken=0,
+                duration_seconds=0.0,
+                total_cost=Cost(
+                    prompt_cost=0.0,
+                    completion_cost=0.0,
+                    reasoning_cost=0.0,
+                    total_cost=0.0,
+                ),
+                usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+                actions=[],
+                timestamp=datetime.now(timezone.utc),
+                card_id=received["card_id"],
+            )
+
+    tester.agent_class = ConstructorStrictAgent
+
+    result = tester.play_game("dummy-game", card_id=None, resume_from_checkpoint=False)
+
+    assert result.game_id == "dummy-game"
+    assert received["game_client"] is fake_client
+    assert received["checkpoint_frequency"] == 0
+    assert received["card_id"] == "server-card-id"
+    assert len(fake_client.open_calls) == 1
+    assert len(fake_client.close_calls) == 1
+
+
+def test_adcr_definition_maps_runtime_kwargs_from_cli_args():
+    kwargs = adcr_definition["get_kwargs"](
+        Namespace(use_vision=False, show_images=True, memory_limit=321)
+    )
+
+    assert kwargs == {
+        "use_vision": False,
+        "show_images": True,
+        "memory_word_limit": 321,
+    }

@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class GameClient:
     """Client for interacting with the ARC-AGI-3 API"""
 
-    ROOT_URL: str = "https://three.arcprize.org"
+    ROOT_URL: str = "https://arcprize.org"
 
     def __init__(self, api_key: Optional[str] = None, max_retries: int = 3):
         """
