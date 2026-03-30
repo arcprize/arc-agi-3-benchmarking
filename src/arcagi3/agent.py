@@ -68,7 +68,7 @@ class MultimodalAgent(ABC):
         self.num_plays = num_plays
         self.max_episode_actions = max_episode_actions
 
-        self._provider = None
+        self.provider = create_provider(config)
 
         self.checkpoint_frequency = checkpoint_frequency
         self.checkpoint_dir = checkpoint_dir
@@ -88,20 +88,6 @@ class MultimodalAgent(ABC):
                 hooks={},
             )
             self.breakpoint_manager.update_identity(config=self.config, card_id=self.card_id)
-
-    @property
-    def provider(self):
-        """
-        Lazily create the provider so simple agents can exist without touching
-        model credentials unless they actually make model calls.
-        """
-        if self._provider is None:
-            self._provider = create_provider(self.config)
-        return self._provider
-
-    @provider.setter
-    def provider(self, value) -> None:
-        self._provider = value
 
     def get_breakpoint_spec(self) -> Optional[BreakpointSpec]:
         return None

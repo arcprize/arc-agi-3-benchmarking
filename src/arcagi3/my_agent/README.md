@@ -73,7 +73,7 @@ uv run python -m arcagi3.runner \
 Notes:
 
 - You still need `ARC_API_KEY` to talk to the ARC server.
-- This starter agent does not use `self.provider`, so it will not touch the model provider unless you add model calls yourself.
+- This starter agent has its own lightweight `__init__`, so it does not initialize a model provider unless you choose to add one.
 
 ## How to make it smarter
 
@@ -85,3 +85,5 @@ Once this wiring feels comfortable, the usual next step is:
 4. Return `GameStep(action=..., reasoning=...)`
 
 If you want a richer example, `src/arcagi3/adcr_agent/` shows a full Analyze -> Decide -> Convert loop with prompts, memory, and breakpoints.
+
+If you later want model calls in `my_agent`, add `self.provider = create_provider(config)` in its `__init__()` or switch back to the default base-class initialization pattern.

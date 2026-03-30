@@ -7,15 +7,11 @@ class DummyGameClient:
     pass
 
 
-def test_provider_is_initialized_lazily(monkeypatch):
-    provider = object()
-    calls = []
+def test_my_agent_initializes_without_creating_a_provider(monkeypatch):
+    def fail_create_provider(config):
+        raise AssertionError("provider should not be created for this test agent")
 
-    def fake_create_provider(config):
-        calls.append(config)
-        return provider
-
-    monkeypatch.setattr(agent_module, "create_provider", fake_create_provider)
+    monkeypatch.setattr(agent_module, "create_provider", fail_create_provider)
 
     agent = MyAgent(
         config="dummy-config",
@@ -24,9 +20,7 @@ def test_provider_is_initialized_lazily(monkeypatch):
         checkpoint_frequency=0,
     )
 
-    assert calls == []
-    assert agent.provider is provider
-    assert calls == ["dummy-config"]
+    assert agent.provider is None
 
 
 def test_my_agent_cycles_actions_without_touching_provider(monkeypatch):
