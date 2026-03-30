@@ -1,3 +1,5 @@
+# Prices are in USD per 1 million tokens.
+
 - name: "openai-gpt-5.4-openrouter"
   agent:
     MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
