@@ -16,6 +16,7 @@ from typing import Any, Dict, Iterable, Optional, Sequence
 from dotenv import load_dotenv
 
 from arcagi3.adcr_agent.definition import agents as adcr_definition
+from arcagi3.my_agent.definition import agents as my_agent_definition
 from arcagi3.arc3tester import ARC3Tester
 from arcagi3.game_client import GameClient
 from arcagi3.utils import errors
@@ -212,6 +213,7 @@ class AgentRunner:
 def _build_default_registry() -> AgentRunner:
     runner = AgentRunner()
     runner.register(adcr_definition)
+    runner.register(my_agent_definition)
     return runner
 
 
