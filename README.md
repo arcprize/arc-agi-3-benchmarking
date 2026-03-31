@@ -1,4 +1,4 @@
-# ARC-AGI-3 Benchmarking Harness
+# ARC-AGI-3 Benchmarking
 
 ## Quickstart
 
@@ -128,7 +128,7 @@ pip install -U agentops
 
 1. Visit [app.agentops.ai](https://app.agentops.ai) and create an account if you haven't already
 2. Once logged in, click on "New Project" to create a project for your ARC-AGI-3 agents
-3. Give your project a meaningful name (e.g., "ARC-AGI-3-Agents")
+3. Give your project a meaningful name (e.g., "ARC-AGI-3-Benchmarking")
 4. After creating the project, you'll see your project dashboard
 5. Click on the "API Keys" tab on the left side & copy the API key
 
@@ -160,7 +160,7 @@ To submit your agent for the ARC-AGI-3 competition, please use this form: https:
 
 ## Contributing
 
-We welcome contributions! To contribute to ARC-AGI-3-Agents, please follow these steps:
+We welcome contributions! To contribute to ARC-AGI-3-Benchmarking, please follow these steps:
 
 1.  Fork the repository and create a new branch for your feature or bugfix.
 2.  Make your changes and ensure that all tests pass, you are welcome to add more tests for your specific fixes.
