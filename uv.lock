@@ -137,7 +137,7 @@ wheels = [
 
 [[package]]
 name = "arc-agi"
-version = "0.9.4"
+version = "0.9.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "arcengine" },
@@ -148,9 +148,9 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a3/5a/bd0320fd93910b8b0be1aa8a24bcdcfdd199502ead7d6630f35c9a150929/arc_agi-0.9.4.tar.gz", hash = "sha256:b737df78ec1fe43a81742e42d197a02da29048eadc14cae75b96a526c718ce39", size = 33621, upload-time = "2026-03-10T22:12:47.38Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/09/23/30fad44d5ceb17063a3ad8f7740f6214a35cf57e8a158c9748537cbfea55/arc_agi-0.9.6.tar.gz", hash = "sha256:482dc07b6d05c08303d5a2f27d9c5751a1113fbf64afa2f1776315cbe4a54863", size = 33780, upload-time = "2026-03-21T16:34:24.501Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c6/27/91a6c95cb67ad9a7f7fce7946745d0c1d5b1504e5aac1c61b01681129786/arc_agi-0.9.4-py3-none-any.whl", hash = "sha256:8b16f2aacf5d7253b9f444aa2fb32ccec3ec355d7e3f33126fde3fa69942a88e", size = 38547, upload-time = "2026-03-10T22:12:46.169Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/aa/9bc79a8e69c42e4cbda8bbda64d5a4784485dae43f39125bc0fdcf3cd609/arc_agi-0.9.6-py3-none-any.whl", hash = "sha256:b717b4bb9e44499513513b2284ba827320ceed2f106f08a78863505beb7c6bf1", size = 38720, upload-time = "2026-03-21T16:34:23.423Z" },
 ]
 
 [[package]]
@@ -189,7 +189,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "agentops", marker = "extra == 'agentops'", specifier = ">=0.4.18" },
-    { name = "arc-agi", specifier = ">=0.9.3" },
+    { name = "arc-agi", specifier = ">=0.9.6" },
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "langchain", extras = ["openai"], specifier = ">=0.3.27" },
     { name = "langgraph", specifier = ">=0.6.3" },

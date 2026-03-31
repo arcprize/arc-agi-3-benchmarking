@@ -1,11 +1,11 @@
 [project]
-name = "arc-agi-3-agents"
+name = "arc-agi-3-benchmarking"
 version = "0.1.0"
-description = "ARC-AGI-3-Agents"
+description = "ARC-AGI-3-Benchmarking"
 readme = "readme.md"
 requires-python = ">=3.12"
 dependencies = [
-    "arc-agi>=0.9.3",
+    "arc-agi>=0.9.6",
     "dotenv>=0.9.9",
     "langchain[openai]>=0.3.27",
     "langgraph>=0.6.3",
@@ -43,3 +43,6 @@ plugins = []
 
 [tool.ruff.lint]
 extend-select = ["I"]
+
+[tool.setuptools]
+packages = ["agents"]
