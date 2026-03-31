@@ -1,58 +1,110 @@
-# ARC-AGI-3-Agents
+# ARC-AGI-3 Benchmarking Harness
 
 ## Quickstart
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if not aready installed.
+Install [`uv`](https://docs.astral.sh/uv/getting-started/installation/) if not already installed.
 
-1. Clone the ARC-AGI-3-Agents repo and enter the directory.
+1. Clone the arc-agi-3-benchmarking repo, enter the directory
 
 ```bash
-git clone https://github.com/arcprize/ARC-AGI-3-Agents.git
-cd ARC-AGI-3-Agents
+git clone https://github.com/arcprize/arc-agi-3-benchmarking.git
+cd arc-agi-3-benchmarking
 ```
 
-2. Copy .env.example to .env
+2. Install dependencies
+
+```bash
+uv venv
+uv sync
+```
+
+3. Copy .env.example to .env
 
 ```bash
 cp .env.example .env
 ```
 
-3. Get an API key from the [ARC-AGI-3 Website](https://arcprize.org/) and set it as an environment variable in your .env file.
+4. Get an API key from the [Arc Prize Website](https://arcprize.org/) and set it as an environment variable in your .env file.
 
 ```bash
-export ARC_API_KEY="your_api_key_here"
+ARC_API_KEY=your_api_key_here
 ```
 
-4. Run the random agent (generates random actions) against the ls20 game.
+5. Run the random agent (generates random actions) against ls20.
 
 ```bash
 uv run main.py --agent=random --game=ls20
 ```
 
-For more information, see the [documentation](https://arcprize.org/docs) or the [tutorial video](https://youtu.be/xEVg9dcJMkw).
 
-## Changelog
-## [0.9.3] - 2026-01-29
-**Note: This will be a breaking change is you use the fields outline below**
+## Running a Benchmarking Agent
 
-### Added
-- `FrameData` had two field names changes. 
-  - `score` changed to `levels_completed`
-  - `win_score` changed to `win_levels`
-- Updated to use the new [ARC-AGI](https://github.com/arcprize/ARC-AGI) tool
-  - Allows local execution of environments
-  - Allows the creation of your own environments, see [Creating an Environment](https://docs.arcprize.org/add_game)
-  - If you want to continue to use the online API/Replays set `ONLINE_ONLY` to `True` in `.env.example`
+1. Get a model provider API key
 
-## [0.9.2] - 2025-08-19
+Provider key links:
 
-### Added
-- `available_actions` to `FrameData`
-- `ACTION7` as possible `GameAction`
+- [OpenAI](https://platform.openai.com/)
+- [Anthropic](https://console.anthropic.com/)
+- [Google Gemini](https://console.cloud.google.com/)
+- [xAI](https://console.x.ai/home)
+- [DeepSeek](https://console.deepseek.com/)
+- [Groq](https://groq.com/)
+- [OpenRouter](https://openrouter.ai/)
+- [Fireworks](https://app.fireworks.ai/)
 
-## [0.9.1] - 2025-07-18
+2. Set your provider keys as environment variables in your .env file.
 
-Initial Release
+```bash
+ANTHROPIC_API_KEY=your_anthropic_key_here
+OPENAI_API_KEY=your_openai_key_here
+GOOGLE_API_KEY=your_google_key_here
+XAI_API_KEY=your_xai_key_here
+GROK_API_KEY=your_grok_key_here
+DEEPSEEK_API_KEY=your_deepseek_key_here
+GROQ_API_KEY=your_groq_key_here
+OPENROUTER_API_KEY=your_openrouter_key_here
+FIREWORKS_API_KEY=your_fireworks_key_here
+```
+
+3. View available agents.
+
+```bash
+uv run main.py --list-agents
+```
+
+4. View available games (there should be 25).
+
+```bash
+uv run main.py --list-games
+```
+
+5. View available model config.
+
+```bash
+uv run main.py --list-models
+```
+
+6. Run an agent against a game:
+
+```bash
+uv run main.py \
+  --agent conversationrollingwindow \
+  --game ls20 \
+  --configs openai-gpt-5-4-2026-03-05-high
+```
+
+7. Or on all games:
+
+```bash
+uv run main.py \
+  --agent conversationrollingwindow \
+  --config openai-gpt-5.4-openrouter
+```
+
+8. View your scorecard
+
+When you run a benchmark, a scorecard is saved on the ARC server. If you are logged in, you can browse your saved scorecards at [arcprize.org/scorecards](https://arcprize.org/scorecards).
+
 
 ## Observability (Optional)
 
@@ -130,7 +182,7 @@ To run the tests, you will need to have `pytest` installed. Run the tests like t
 pytest
 ```
 
-For more information on tests, please see the [tests documentation](https://arcprize.org/docs#testing).
+For more information on tests, please see the [tests documentation](https://three.arcprize.org/docs#testing).
 
 ## License
 

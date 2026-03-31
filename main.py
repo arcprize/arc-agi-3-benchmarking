@@ -8,13 +8,15 @@ import argparse
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import threading
 from functools import partial
-from urllib.parse import urlparse
+from pathlib import Path
 from types import FrameType
 from typing import Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -23,12 +25,23 @@ from agents.tracing import initialize as init_agentops
 
 logger = logging.getLogger()
 
-DEFAULT_URL = "https://arcprize.org"
+DEFAULT_ARC_BASE_URL = "https://arcprize.org"
 SCHEME = os.environ.get("SCHEME", "http")
 HOST = os.environ.get("HOST", "localhost")
 PORT = os.environ.get("PORT", 8001)
 ARC_BASE_URL = os.environ.get("ARC_BASE_URL")
-ARC_API_KEY = os.getenv("ARC_API_KEY", "")
+MODEL_CONFIG_PATH = (
+    Path(__file__).resolve().parent
+    / "agents"
+    / "templates"
+    / "conversation_rolling_window"
+    / "model_configs.yaml"
+)
+MODEL_CONFIG_NAME_PATTERN = re.compile(
+    r'^\s*-\s+name:\s*["\']?([^"\']+)["\']?\s*$',
+    re.MULTILINE,
+)
+RECORDING_SUFFIX = ".recording.jsonl"
 
 def build_root_url() -> str:
     """Prefer ARC_BASE_URL, otherwise use explicit local host settings, else hosted ARC."""
@@ -46,14 +59,141 @@ def build_root_url() -> str:
             return f"{SCHEME}://{HOST}"
         return f"{SCHEME}://{HOST}:{PORT}"
 
-    return DEFAULT_URL
+    return DEFAULT_ARC_BASE_URL
 
 
 ROOT_URL = build_root_url()
-HEADERS = {
-    "X-API-Key": ARC_API_KEY,
-    "Accept": "application/json",
-}
+
+
+def build_headers() -> dict[str, str]:
+    return {
+        "X-API-Key": os.getenv("ARC_API_KEY", ""),
+        "Accept": "application/json",
+    }
+
+
+def fetch_available_games(root_url: str) -> list[str]:
+    games: list[str] = []
+    try:
+        with requests.Session() as session:
+            session.headers.update(build_headers())
+            response = session.get(f"{root_url}/api/games", timeout=10)
+
+        if response.status_code != 200:
+            logger.error(
+                "API request failed with status %s: %s",
+                response.status_code,
+                response.text[:200],
+            )
+            return []
+
+        try:
+            payload = response.json()
+        except ValueError as e:
+            logger.error("Failed to parse games response: %s", e)
+            logger.error("Response content: %s", response.text[:200])
+            return []
+
+        for game in payload:
+            if isinstance(game, dict) and "game_id" in game:
+                games.append(str(game["game_id"]))
+        return games
+    except requests.exceptions.RequestException as e:
+        logger.error("Failed to connect to API server: %s", e)
+        return []
+
+
+def list_model_config_ids() -> list[str]:
+    if not MODEL_CONFIG_PATH.exists():
+        logger.error("Model config file not found: %s", MODEL_CONFIG_PATH)
+        return []
+
+    try:
+        return MODEL_CONFIG_NAME_PATTERN.findall(MODEL_CONFIG_PATH.read_text())
+    except OSError as e:
+        logger.error("Failed to read model config file %s: %s", MODEL_CONFIG_PATH, e)
+        return []
+
+
+def is_recording_agent_name(agent_name: str) -> bool:
+    return agent_name.endswith(RECORDING_SUFFIX)
+
+
+def list_agent_names() -> list[str]:
+    return sorted(
+        agent_name
+        for agent_name in AVAILABLE_AGENTS.keys()
+        if not is_recording_agent_name(agent_name)
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="ARC-AGI-3-Agents")
+    parser.add_argument(
+        "-a",
+        "--agent",
+        help="Choose which built-in agent to run. Use --list-agents to see built-ins. Recording filenames are also accepted for playback.",
+    )
+    parser.add_argument(
+        "-g",
+        "--game",
+        help="Choose a specific game_id for the agent to play. If none specified, an agent swarm will play all available games.",
+    )
+    parser.add_argument(
+        "-t",
+        "--tags",
+        type=str,
+        help="Comma-separated list of tags for the scorecard (e.g., 'experiment,v1.0')",
+        default=None,
+    )
+    parser.add_argument(
+        "-c",
+        "--config",
+        type=str,
+        help="Model config ID to use (from model_configs.yaml)",
+        default=None,
+    )
+    parser.add_argument(
+        "--list-games",
+        action="store_true",
+        help="List available game IDs and exit.",
+    )
+    parser.add_argument(
+        "--list-models",
+        action="store_true",
+        help="List available model config IDs and exit.",
+    )
+    parser.add_argument(
+        "--list-agents",
+        action="store_true",
+        help="List available agent names and exit.",
+    )
+    return parser
+
+
+def maybe_handle_list_requests(args: argparse.Namespace) -> bool:
+    requested_lists: list[tuple[str, list[str]]] = []
+
+    if args.list_agents:
+        requested_lists.append(("Agents", list_agent_names()))
+    if args.list_models:
+        requested_lists.append(("Models", list_model_config_ids()))
+    if args.list_games:
+        requested_lists.append(("Games", fetch_available_games(ROOT_URL)))
+
+    if not requested_lists:
+        return False
+
+    show_titles = len(requested_lists) > 1
+    for index, (title, values) in enumerate(requested_lists):
+        if index > 0:
+            print()
+        if show_titles:
+            print(f"{title}:")
+        for value in values:
+            print(value)
+
+    return True
 
 
 def run_agent(swarm: Swarm) -> None:
@@ -105,61 +245,27 @@ def main() -> None:
     # logging.getLogger("requests").setLevel(logging.CRITICAL)
     # logging.getLogger("werkzeug").setLevel(logging.CRITICAL)
 
-    parser = argparse.ArgumentParser(description="ARC-AGI-3-Agents")
-    parser.add_argument(
-        "-a",
-        "--agent",
-        choices=AVAILABLE_AGENTS.keys(),
-        help="Choose which agent to run.",
-    )
-    parser.add_argument(
-        "-g",
-        "--game",
-        help="Choose a specific game_id for the agent to play. If none specified, an agent swarm will play all available games.",
-    )
-    parser.add_argument(
-        "-t",
-        "--tags",
-        type=str,
-        help="Comma-separated list of tags for the scorecard (e.g., 'experiment,v1.0')",
-        default=None,
-    )
-    parser.add_argument(
-        "-c",
-        "--config",
-        type=str,
-        help="Model config ID to use (from model_configs.yaml)",
-        default=None,
-    )
-
+    parser = build_parser()
     args = parser.parse_args()
+
+    if maybe_handle_list_requests(args):
+        return
 
     if not args.agent:
         logger.error("An Agent must be specified")
         return
 
+    if args.agent not in AVAILABLE_AGENTS:
+        logger.error(
+            "Unknown agent '%s'. Use --list-agents to see built-in agents, or pass a valid .recording.jsonl filename for playback.",
+            args.agent,
+        )
+        return
+
     print(f"{ROOT_URL}/api/games")
 
     # Get the list of games from the API
-    full_games = []
-    try:
-        with requests.Session() as session:
-            session.headers.update(HEADERS)
-            r = session.get(f"{ROOT_URL}/api/games", timeout=10)
-
-        if r.status_code == 200:
-            try:
-                full_games = [g["game_id"] for g in r.json()]
-            except (ValueError, KeyError) as e:
-                logger.error(f"Failed to parse games response: {e}")
-                logger.error(f"Response content: {r.text[:200]}")
-        else:
-            logger.error(
-                f"API request failed with status {r.status_code}: {r.text[:200]}"
-            )
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to connect to API server: {e}")
+    full_games = fetch_available_games(ROOT_URL)
 
     # For playback agents, we can derive the game from the recording filename
     if not full_games and args.agent and args.agent.endswith(".recording.jsonl"):
