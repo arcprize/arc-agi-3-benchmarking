@@ -81,7 +81,7 @@ uv run main.py --list-games
 5. View available model config.
 
 ```bash
-uv run main.py --list-models
+uv run main.py --list-configs
 ```
 
 6. Run an agent against a game:
@@ -90,7 +90,7 @@ uv run main.py --list-models
 uv run main.py \
   --agent conversationrollingwindow \
   --game ls20 \
-  --configs openai-gpt-5-4-2026-03-05-high
+  --config openai-gpt-5-4-2026-03-05-high
 ```
 
 7. Or on all games:

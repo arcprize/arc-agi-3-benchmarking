@@ -159,7 +159,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="List available game IDs and exit.",
     )
     parser.add_argument(
-        "--list-models",
+        "--list-configs",
         action="store_true",
         help="List available model config IDs and exit.",
     )
@@ -176,22 +176,23 @@ def maybe_handle_list_requests(args: argparse.Namespace) -> bool:
 
     if args.list_agents:
         requested_lists.append(("Agents", list_agent_names()))
-    if args.list_models:
-        requested_lists.append(("Models", list_model_config_ids()))
+    if args.list_configs:
+        requested_lists.append(("Configs", list_model_config_ids()))
     if args.list_games:
         requested_lists.append(("Games", fetch_available_games(ROOT_URL)))
 
     if not requested_lists:
         return False
 
-    show_titles = len(requested_lists) > 1
     for index, (title, values) in enumerate(requested_lists):
         if index > 0:
             print()
-        if show_titles:
-            print(f"{title}:")
-        for value in values:
-            print(value)
+        print(f"{title}:")
+        for value in sorted(values):
+            if title != "Games":
+                print("-", value)
+            else:
+                print("-", value.split("-")[0])
 
     return True
 
