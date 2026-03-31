@@ -28,11 +28,6 @@ dev = [
     "ruff>=0.11.4",
 ]
 
-[project.optional-dependencies]
-agentops = [
-    "agentops>=0.4.18",
-]
-
 [tool.mypy]
 strict = true
 disallow_untyped_defs = true

@@ -21,7 +21,6 @@ from urllib.parse import urlparse
 import requests
 
 from agents import AVAILABLE_AGENTS, Swarm
-from agents.tracing import initialize as init_agentops
 
 logger = logging.getLogger()
 
@@ -306,9 +305,6 @@ def main() -> None:
     if args.tags:
         user_tags = [tag.strip() for tag in args.tags.split(",")]
         tags.extend(user_tags)
-
-    # Initialize AgentOps client
-    init_agentops(api_key=os.getenv("AGENTOPS_API_KEY"), log_level=log_level)
 
     swarm = Swarm(
         args.agent,

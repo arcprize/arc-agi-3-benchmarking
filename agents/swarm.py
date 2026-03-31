@@ -56,7 +56,7 @@ class Swarm:
         self.config = config
         self._arc = Arcade()
 
-        # Set up base tags for tracing
+        # Set up base tags for scorecard metadata
         if self.agent_name.endswith(".recording.jsonl"):
             # Extract GUID from playback filename
             # Format: game.agent.count.guid.recording.jsonl
@@ -84,7 +84,6 @@ class Swarm:
                 ROOT_URL=self.ROOT_URL,
                 record=True,
                 arc_env=self._arc.make(g, scorecard_id=self.card_id),
-                tags=self.tags,
                 config=self.config,
             )
             self.agents.append(a)
