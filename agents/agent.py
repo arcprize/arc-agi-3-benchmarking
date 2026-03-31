@@ -33,6 +33,7 @@ class Agent(ABC):
     recorder: Recorder
     headers: dict[str, str]
     arc_env: EnvironmentWrapper
+    _previous_action: Optional[GameAction]
 
     def __init__(
         self,
@@ -59,6 +60,7 @@ class Agent(ABC):
             "Accept": "application/json",
         }
         self.arc_env = arc_env
+        self._previous_action = None
 
     def main(self) -> None:
         """The main agent loop. Play the game_id until finished, then exits."""
@@ -124,13 +126,23 @@ class Agent(ABC):
         if hasattr(self, "recorder") and not self.is_playback:
             self.recorder.record(json.loads(frame.model_dump_json()))
 
+    def is_reset_a_valid_action(self) -> bool:
+        return self.action_counter > 0 and self._previous_action != GameAction.RESET
+
     def do_action_request(self, action: GameAction) -> FrameData:
         data = action.action_data.model_dump()
-        raw = self.arc_env.step(
-            action,
-            data=data,
-            reasoning=data["reasoning"] if "reasoning" in data else {},
-        )
+
+        if self.is_reset_a_valid_action():
+            raw = self.arc_env.step(
+                action,
+                data=data,
+                reasoning=data["reasoning"] if "reasoning" in data else {},
+            )
+        else:
+            return self.frames[-1]
+ 
+        self._previous_action = action
+
         return self._convert_raw_frame_data(raw)
 
     def _convert_raw_frame_data(self, raw: FrameDataRaw | None) -> FrameData:
