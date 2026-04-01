@@ -103,3 +103,7 @@ breakpointer/*.local
 *.njsproj
 *.sln
 *.sw?
+
+# Environment Files and Recordings
+environment_files
+recordings
