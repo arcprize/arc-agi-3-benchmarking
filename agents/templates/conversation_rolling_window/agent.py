@@ -184,10 +184,13 @@ class ConversationRollingWindow(Agent):
 
         Always includes RESET so the model can choose to restart the current
         level even when the game engine does not advertise it.
+        * Exception: Do not include RESET on the first action
+        and when the previous action was RESET.
         """
         actions = [GameAction.from_id(a) for a in latest_frame.available_actions]
         if not any(a.name == "RESET" for a in actions):
-            actions.insert(0, GameAction.RESET)
+            if self.is_reset_a_valid_action():
+                actions.insert(0, GameAction.RESET)
         return actions
 
     def _build_available_actions_text(self, actions: list[GameAction]) -> str:
