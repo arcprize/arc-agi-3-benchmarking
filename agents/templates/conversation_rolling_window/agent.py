@@ -191,6 +191,10 @@ class ConversationRollingWindow(Agent):
         if not any(a.name == "RESET" for a in actions):
             if self.is_reset_a_valid_action():
                 actions.insert(0, GameAction.RESET)
+
+        if not self.is_reset_a_valid_action():
+            actions = [a for a in actions if a != GameAction.RESET]
+
         return actions
 
     def _build_available_actions_text(self, actions: list[GameAction]) -> str:
