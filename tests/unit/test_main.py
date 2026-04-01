@@ -13,8 +13,8 @@ class TestMainCliHelpers:
 
         assert args.list_agents is True
         assert args.list_games is False
-        assert args.list_models is False
-        assert args.agent is None
+        assert args.list_configs is False
+        assert args.agent == cli_main.DEFAULT_AGENT_NAME
 
     def test_list_model_config_ids_reads_checked_in_configs(self):
         configs = cli_main.list_model_config_ids()
@@ -59,7 +59,7 @@ class TestMainCliHelpers:
         )
 
     def test_maybe_handle_list_requests_prints_requested_lists(self, capsys):
-        args = Namespace(list_agents=True, list_models=True, list_games=False)
+        args = Namespace(list_agents=True, list_configs=True, list_games=False)
 
         with (
             patch("main.list_agent_names", return_value=["random", "llm"]),
@@ -72,14 +72,14 @@ class TestMainCliHelpers:
         assert handled is True
         assert captured.out == (
             "Agents:\n"
-            "random\n"
-            "llm\n"
+            "- llm\n"
+            "- random\n"
             "\n"
-            "Models:\n"
-            "openai-gpt-5.4-openrouter\n"
+            "Configs:\n"
+            "- openai-gpt-5.4-openrouter\n"
         )
 
     def test_maybe_handle_list_requests_returns_false_when_unused(self):
-        args = Namespace(list_agents=False, list_models=False, list_games=False)
+        args = Namespace(list_agents=False, list_configs=False, list_games=False)
 
         assert cli_main.maybe_handle_list_requests(args) is False

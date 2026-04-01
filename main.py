@@ -41,6 +41,7 @@ MODEL_CONFIG_NAME_PATTERN = re.compile(
     re.MULTILINE,
 )
 RECORDING_SUFFIX = ".recording.jsonl"
+DEFAULT_AGENT_NAME = "conversationrollingwindow"
 
 def build_root_url() -> str:
     """Prefer ARC_BASE_URL, otherwise use explicit local host settings, else hosted ARC."""
@@ -131,7 +132,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-a",
         "--agent",
-        help="Choose which built-in agent to run. Use --list-agents to see built-ins. Recording filenames are also accepted for playback.",
+        default=DEFAULT_AGENT_NAME,
+        help=(
+            "Choose which built-in agent to run. Defaults to "
+            f"'{DEFAULT_AGENT_NAME}'. Use --list-agents to see built-ins. "
+            "Recording filenames are also accepted for playback."
+        ),
     )
     parser.add_argument(
         "-g",

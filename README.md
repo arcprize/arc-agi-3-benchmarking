@@ -81,18 +81,13 @@ uv run main.py --list-configs
 5. Run an agent against a game:
 
 ```bash
-uv run main.py \
-  --agent conversationrollingwindow \
-  --game ls20 \
-  --config openai-gpt-5-4-2026-03-05
+uv run main.py --game=ls20 --config=openai-gpt-5-4-2026-03-05
 ```
 
 6. Or on all games:
 
 ```bash
-uv run main.py \
-  --agent conversationrollingwindow \
-  --config openai-gpt-5-4-2026-03-05
+uv run main.py --config=openai-gpt-5-4-2026-03-05
 ```
 
 7. View your scorecard
