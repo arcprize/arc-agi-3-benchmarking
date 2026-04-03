@@ -75,8 +75,9 @@ class Recorder:
     @classmethod
     def get_prefix(cls, filename: str) -> str:
         """
-        Example filename: locksmith.random.50.81329339-1951-487c-8bed-e9d4780320f2.recording.jsonl
-        Returns: locksmith.random.50
+        Example filename:
+        locksmith.benchmarkingagent.anim7.81329339-1951-487c-8bed-e9d4780320f2.recording.jsonl
+        Returns: locksmith.benchmarkingagent.anim7
         """
         if "." in filename:
             parts = filename.split(".")
@@ -85,21 +86,10 @@ class Recorder:
             return filename
 
     @classmethod
-    def get_prefix_one(cls, filename: str) -> str:
-        """
-        Example filename: locksmith.random.50.81329339-1951-487c-8bed-e9d4780320f2.recording.jsonl
-        Returns: locksmith
-        """
-        if "." in filename:
-            parts = filename.split(".")
-            return parts[0]
-        else:
-            return filename
-
-    @classmethod
     def get_guid(cls, filename: str) -> str:
         """
-        Example filename: locksmith.random.50.81329339-1951-487c-8bed-e9d4780320f2.recording.jsonl
+        Example filename:
+        locksmith.benchmarkingagent.anim7.81329339-1951-487c-8bed-e9d4780320f2.recording.jsonl
         Returns: 81329339-1951-487c-8bed-e9d4780320f2
         """
         if "." in filename:

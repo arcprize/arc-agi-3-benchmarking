@@ -8,13 +8,12 @@ import main as cli_main
 
 @pytest.mark.unit
 class TestMainCliHelpers:
-    def test_build_parser_supports_list_flags(self):
-        args = cli_main.build_parser().parse_args(["--list-agents"])
+    def test_build_parser_supports_runtime_flags(self):
+        args = cli_main.build_parser().parse_args(["--config", "openai-gpt-5.4-openrouter"])
 
-        assert args.list_agents is True
         assert args.list_games is False
         assert args.list_configs is False
-        assert args.agent == cli_main.DEFAULT_AGENT_NAME
+        assert args.config == "openai-gpt-5.4-openrouter"
 
     def test_list_model_config_ids_reads_checked_in_configs(self):
         configs = cli_main.list_model_config_ids()
@@ -22,19 +21,32 @@ class TestMainCliHelpers:
         assert "openai-gpt-5.4-openrouter" in configs
         assert "anthropic-opus-4-6" in configs
 
-    def test_list_agent_names_filters_out_recordings(self):
-        with patch.dict(
-            "main.AVAILABLE_AGENTS",
-            {
-                "random": object(),
-                "llm": object(),
-                "ls20.random.80.guid.recording.jsonl": object(),
-            },
-            clear=True,
-        ):
-            agents = cli_main.list_agent_names()
+    def test_validate_required_model_api_key_uses_selected_config_env(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
-        assert agents == ["llm", "random"]
+        cli_main.validate_required_model_api_key("openai-gpt-5.4-openrouter")
+
+    def test_validate_required_model_api_key_uses_default_config(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+        cli_main.validate_required_model_api_key(None)
+
+    def test_validate_required_model_api_key_rejects_blank_values(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "   ")
+
+        with pytest.raises(ValueError, match="No OPENROUTER_API_KEY set"):
+            cli_main.validate_required_model_api_key("openai-gpt-5.4-openrouter")
+
+    def test_validate_required_model_api_key_lists_available_configs_for_unknown_id(
+        self,
+    ):
+        with pytest.raises(ValueError) as exc_info:
+            cli_main.validate_required_model_api_key("does-not-exist")
+
+        message = str(exc_info.value)
+        assert "Model config 'does-not-exist' not found" in message
+        assert "Available configs:" in message
+        assert "openai-gpt-5.4-openrouter" in message
 
     def test_fetch_available_games_parses_game_ids(self):
         mock_response = MagicMock()
@@ -59,11 +71,11 @@ class TestMainCliHelpers:
         )
 
     def test_maybe_handle_list_requests_prints_requested_lists(self, capsys):
-        args = Namespace(list_agents=True, list_configs=True, list_games=False)
+        args = Namespace(list_configs=True, list_games=False)
 
-        with (
-            patch("main.list_agent_names", return_value=["random", "llm"]),
-            patch("main.list_model_config_ids", return_value=["openai-gpt-5.4-openrouter"]),
+        with patch(
+            "main.list_model_config_ids",
+            return_value=["openai-gpt-5.4-openrouter"],
         ):
             handled = cli_main.maybe_handle_list_requests(args)
 
@@ -71,15 +83,11 @@ class TestMainCliHelpers:
 
         assert handled is True
         assert captured.out == (
-            "Agents:\n"
-            "- llm\n"
-            "- random\n"
-            "\n"
             "Configs:\n"
             "- openai-gpt-5.4-openrouter\n"
         )
 
     def test_maybe_handle_list_requests_returns_false_when_unused(self):
-        args = Namespace(list_agents=False, list_configs=False, list_games=False)
+        args = Namespace(list_configs=False, list_games=False)
 
         assert cli_main.maybe_handle_list_requests(args) is False

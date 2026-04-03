@@ -7,15 +7,14 @@ import textwrap
 import time
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Optional
 
-import yaml
 from arcengine import FrameData, GameAction, GameState
 from openai import OpenAI as OpenAIClient
 
-from ...agent import Agent
+from .base import Agent
 from .exceptions import EmptyResponseError
+from .model_config import get_model_config
 from .models import (
     ActionMetadata,
     CostDetails,
@@ -29,7 +28,7 @@ from .recording import RunRecord, StepRecord, StepUsage
 logger = logging.getLogger()
 
 
-class ConversationRollingWindow(Agent):
+class BenchmarkingAgent(Agent):
     """An agent that maintains a growing conversation with an OpenAI model.
 
     Each turn appends a user message (frame data as text) and an assistant
@@ -37,7 +36,7 @@ class ConversationRollingWindow(Agent):
     turns are trimmed from the front of the conversation.
     """
 
-    MODEL_CONFIG_ID: str = "gpt-5.4-openrouter"
+    MODEL_CONFIG_ID: str = ""
     MAX_ACTIONS: int = 10  # Fallback only when baseline_actions are unavailable.
     MAX_ACTIONS_BASELINE_MULTIPLIER: float = 2.0
     MAX_RETRIES: int = 3
@@ -53,8 +52,12 @@ class ConversationRollingWindow(Agent):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        if self.config:
-            self.MODEL_CONFIG_ID = self.config
+        if not self.config:
+            raise ValueError(
+                "No model config specified. Pass --config=<config_name> when running main.py. "
+                "Use --list-configs to see available options."
+            )
+        self.MODEL_CONFIG_ID = self.config
         self.conversation: list[dict[str, Any]] = []
         self.token_counter: int = 0
 
@@ -103,10 +106,20 @@ class ConversationRollingWindow(Agent):
         self.MODEL: str = call_cfg["model"]
         self._call_kwargs: dict[str, Any] = call_cfg
 
+        # Validate that the required API key is set before attempting any requests
+        api_key_env = client_cfg["api_key_env"]
+        api_key = os.environ.get(api_key_env, "")
+        if not api_key:
+            raise ValueError(
+                f"No {api_key_env} set. "
+                f"The selected model config '{self.MODEL_CONFIG_ID}' requires "
+                f"the {api_key_env} environment variable to be set in your .env file."
+            )
+
         # Client
         self._client = OpenAIClient(
             base_url=client_cfg["base_url"],
-            api_key=os.environ.get(client_cfg["api_key_env"], ""),
+            api_key=api_key,
         )
         # Per-step recording
         self.step_counter: int = 0
@@ -138,24 +151,7 @@ class ConversationRollingWindow(Agent):
 
         Raises ``ValueError`` if the YAML file is missing or no matching entry.
         """
-        cfg_path = Path(__file__).parent / "model_configs.yaml"
-        if not cfg_path.exists():
-            raise ValueError(
-                f"model_configs.yaml not found at {cfg_path}. "
-                f"Cannot resolve MODEL_CONFIG_ID={self.MODEL_CONFIG_ID!r}."
-            )
-        configs = yaml.safe_load(cfg_path.read_text()) or []
-        raw: dict[str, Any] | None = None
-        for entry in configs:
-            if entry.get("name") == self.MODEL_CONFIG_ID:
-                raw = entry
-                break
-        if raw is None:
-            available = [e.get("name") for e in configs]
-            raise ValueError(
-                f"Model config {self.MODEL_CONFIG_ID!r} not found in {cfg_path}. "
-                f"Available configs: {available}"
-            )
+        raw = get_model_config(self.MODEL_CONFIG_ID)
 
         agent_cfg: dict[str, Any] = dict(raw.get("agent", {}))
         client_cfg: dict[str, Any] = dict(raw.get("client", {}))
@@ -586,7 +582,7 @@ class ConversationRollingWindow(Agent):
 
     def track_tokens(self, tokens: int, message: str = "") -> None:
         self.token_counter += tokens
-        if hasattr(self, "recorder") and not self.is_playback:
+        if hasattr(self, "recorder"):
             self.recorder.record(
                 {
                     "tokens": tokens,
@@ -615,7 +611,7 @@ class ConversationRollingWindow(Agent):
                 self.run_record.outcome = "MAX_ACTIONS"
             self._write_run_meta()
 
-            if hasattr(self, "recorder") and not self.is_playback:
+            if hasattr(self, "recorder"):
                 self.recorder.record(
                     {
                         "system_prompt": self._build_system_prompt(),

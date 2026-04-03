@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agents.recorder import RECORDING_SUFFIX, Recorder
+from benchmarking.recorder import RECORDING_SUFFIX, Recorder
 
 
 @pytest.mark.unit
@@ -201,23 +201,19 @@ class TestRecorderClassMethods:
         assert recordings == []
 
     @pytest.mark.parametrize(
-        "filename,expected_prefix,expected_prefix_one,expected_guid",
+        "filename,expected_prefix,expected_guid",
         [
             (
-                "locksmith.random.50.81329339-1951-487c-8bed-e9d4780320f2.recording.jsonl",
-                "locksmith.random.50",
-                "locksmith",
+                "locksmith.benchmarkingagent.anim7.81329339-1951-487c-8bed-e9d4780320f2.recording.jsonl",
+                "locksmith.benchmarkingagent.anim7",
                 "81329339-1951-487c-8bed-e9d4780320f2",
             ),
-            ("a.b.c.recording.jsonl", "a.b", "a", "c"),
-            ("simple", "simple", "simple", "simple"),
+            ("a.b.c.recording.jsonl", "a.b", "c"),
+            ("simple", "simple", "simple"),
         ],
     )
-    def test_filename_parsing(
-        self, filename, expected_prefix, expected_prefix_one, expected_guid
-    ):
+    def test_filename_parsing(self, filename, expected_prefix, expected_guid):
         assert Recorder.get_prefix(filename) == expected_prefix
-        assert Recorder.get_prefix_one(filename) == expected_prefix_one
         assert Recorder.get_guid(filename) == expected_guid
 
 

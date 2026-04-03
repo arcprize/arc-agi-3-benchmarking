@@ -40,4 +40,4 @@ plugins = []
 extend-select = ["I"]
 
 [tool.setuptools]
-packages = ["agents"]
+packages = ["benchmarking"]

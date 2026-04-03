@@ -30,10 +30,10 @@ cp .env.example .env
 ARC_API_KEY=your_api_key_here
 ```
 
-5. Run the random agent (generates random actions) against ls20.
+5. Run the benchmarking agent against ls20.
 
 ```bash
-uv run main.py --agent=random --game=ls20
+uv run main.py --game=ls20
 ```
 
 

@@ -1,26 +1,24 @@
 # ruff: noqa: E402
 from dotenv import load_dotenv
 
-load_dotenv(dotenv_path=".env.example")
-load_dotenv(dotenv_path=".env", override=True)
+load_dotenv(dotenv_path=".env", override=False)
 
 import argparse
 import json
 import logging
 import os
-import re
 import signal
 import sys
 import threading
 from functools import partial
-from pathlib import Path
 from types import FrameType
 from typing import Optional
 from urllib.parse import urlparse
 
 import requests
 
-from agents import AVAILABLE_AGENTS, Swarm
+from benchmarking import BenchmarkingAgent, Swarm
+from benchmarking.model_config import get_model_config, list_model_config_ids
 
 logger = logging.getLogger()
 
@@ -29,19 +27,7 @@ SCHEME = os.environ.get("SCHEME", "http")
 HOST = os.environ.get("HOST", "localhost")
 PORT = os.environ.get("PORT", 8001)
 ARC_BASE_URL = os.environ.get("ARC_BASE_URL")
-MODEL_CONFIG_PATH = (
-    Path(__file__).resolve().parent
-    / "agents"
-    / "templates"
-    / "conversation_rolling_window"
-    / "model_configs.yaml"
-)
-MODEL_CONFIG_NAME_PATTERN = re.compile(
-    r'^\s*-\s+name:\s*["\']?([^"\']+)["\']?\s*$',
-    re.MULTILINE,
-)
-RECORDING_SUFFIX = ".recording.jsonl"
-DEFAULT_AGENT_NAME = "conversationrollingwindow"
+
 
 def build_root_url() -> str:
     """Prefer ARC_BASE_URL, otherwise use explicit local host settings, else hosted ARC."""
@@ -103,42 +89,33 @@ def fetch_available_games(root_url: str) -> list[str]:
         return []
 
 
-def list_model_config_ids() -> list[str]:
-    if not MODEL_CONFIG_PATH.exists():
-        logger.error("Model config file not found: %s", MODEL_CONFIG_PATH)
-        return []
+def validate_required_model_api_key(config_name: Optional[str]) -> None:
+    selected_config = config_name or BenchmarkingAgent.MODEL_CONFIG_ID
+    entry = get_model_config(selected_config)
 
-    try:
-        return MODEL_CONFIG_NAME_PATTERN.findall(MODEL_CONFIG_PATH.read_text())
-    except OSError as e:
-        logger.error("Failed to read model config file %s: %s", MODEL_CONFIG_PATH, e)
-        return []
+    client_cfg = entry.get("client", {})
+    if not isinstance(client_cfg, dict):
+        raise ValueError(
+            f"Model config '{selected_config}' is missing client configuration."
+        )
 
+    api_key_env = str(client_cfg.get("api_key_env", "")).strip()
+    if not api_key_env:
+        raise ValueError(
+            f"Model config '{selected_config}' is missing client.api_key_env."
+        )
 
-def is_recording_agent_name(agent_name: str) -> bool:
-    return agent_name.endswith(RECORDING_SUFFIX)
-
-
-def list_agent_names() -> list[str]:
-    return sorted(
-        agent_name
-        for agent_name in AVAILABLE_AGENTS.keys()
-        if not is_recording_agent_name(agent_name)
-    )
+    api_key = os.environ.get(api_key_env, "").strip()
+    if not api_key:
+        raise ValueError(
+            f"No {api_key_env} set. "
+            f"The selected model config '{selected_config}' requires "
+            f"the {api_key_env} environment variable to be set in your .env file."
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="ARC-AGI-3-Agents")
-    parser.add_argument(
-        "-a",
-        "--agent",
-        default=DEFAULT_AGENT_NAME,
-        help=(
-            "Choose which built-in agent to run. Defaults to "
-            f"'{DEFAULT_AGENT_NAME}'. Use --list-agents to see built-ins. "
-            "Recording filenames are also accepted for playback."
-        ),
-    )
+    parser = argparse.ArgumentParser(description="ARC-AGI-3 Benchmarking")
     parser.add_argument(
         "-g",
         "--game",
@@ -168,19 +145,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List available model config IDs and exit.",
     )
-    parser.add_argument(
-        "--list-agents",
-        action="store_true",
-        help="List available agent names and exit.",
-    )
     return parser
 
 
 def maybe_handle_list_requests(args: argparse.Namespace) -> bool:
     requested_lists: list[tuple[str, list[str]]] = []
 
-    if args.list_agents:
-        requested_lists.append(("Agents", list_agent_names()))
     if args.list_configs:
         requested_lists.append(("Configs", list_model_config_ids()))
     if args.list_games:
@@ -257,15 +227,10 @@ def main() -> None:
     if maybe_handle_list_requests(args):
         return
 
-    if not args.agent:
-        logger.error("An Agent must be specified")
-        return
-
-    if args.agent not in AVAILABLE_AGENTS:
-        logger.error(
-            "Unknown agent '%s'. Use --list-agents to see built-in agents, or pass a valid .recording.jsonl filename for playback.",
-            args.agent,
-        )
+    try:
+        validate_required_model_api_key(args.config)
+    except ValueError as e:
+        logger.error(str(e))
         return
 
     print(f"{ROOT_URL}/api/games")
@@ -273,15 +238,6 @@ def main() -> None:
     # Get the list of games from the API
     full_games = fetch_available_games(ROOT_URL)
 
-    # For playback agents, we can derive the game from the recording filename
-    if not full_games and args.agent and args.agent.endswith(".recording.jsonl"):
-        from agents.recorder import Recorder
-
-        game_prefix = Recorder.get_prefix_one(args.agent)
-        full_games = [game_prefix]
-        logger.info(
-            f"Using game '{game_prefix}' derived from playback recording filename"
-        )
     games = full_games[:]
     if args.game:
         filters = args.game.split(",")
@@ -300,7 +256,7 @@ def main() -> None:
             )
         else:
             logger.error(
-                "No games available to play. Check API connection or recording file."
+                "No games available to play. Check API connection."
             )
         return
 
@@ -313,7 +269,6 @@ def main() -> None:
         tags.extend(user_tags)
 
     swarm = Swarm(
-        args.agent,
         ROOT_URL,
         games,
         tags=tags,

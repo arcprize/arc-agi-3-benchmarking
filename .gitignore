@@ -107,3 +107,9 @@ breakpointer/*.local
 # Environment Files and Recordings
 environment_files
 recordings
+
+# Ruff cache
+.ruff_cache/
+
+# Claude Code
+.claude/

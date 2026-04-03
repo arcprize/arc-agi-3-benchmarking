@@ -3,7 +3,7 @@ import logging
 import os
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Optional
 
 from arc_agi import EnvironmentWrapper
 from arc_agi.scorecard import EnvironmentScorecard
@@ -104,17 +104,12 @@ class Agent(ABC):
         return round(self.action_counter / elapsed_time, 2)
 
     @property
-    def is_playback(self) -> bool:
-        return type(self) is Playback
-
-    @property
     def name(self) -> str:
         n = self.__class__.__name__.lower()
         return f"{self.game_id}.{n}"
 
     def start_recording(self) -> None:
-        filename = self.agent_name if self.is_playback else None
-        self.recorder = Recorder(prefix=self.name, filename=filename)
+        self.recorder = Recorder(prefix=self.name)
         logger.info(
             f"created new recording for {self.name} into {self.recorder.filename}"
         )
@@ -123,7 +118,7 @@ class Agent(ABC):
         self.frames.append(frame)
         if frame.guid:
             self.guid = frame.guid
-        if hasattr(self, "recorder") and not self.is_playback:
+        if hasattr(self, "recorder"):
             self.recorder.record(json.loads(frame.model_dump_json()))
 
     def is_reset_a_valid_action(self) -> bool:
@@ -140,7 +135,7 @@ class Agent(ABC):
             )
         else:
             return self.frames[-1]
- 
+
         self._previous_action = action
 
         return self._convert_raw_frame_data(raw)
@@ -174,7 +169,7 @@ class Agent(ABC):
         """Called after main loop is finished."""
         if self._cleanup:
             self._cleanup = False  # only cleanup once per agent
-            if hasattr(self, "recorder") and not self.is_playback:
+            if hasattr(self, "recorder"):
                 if scorecard:
                     self.recorder.record(scorecard.get(self.game_id))
                 logger.info(
@@ -200,82 +195,3 @@ class Agent(ABC):
     ) -> GameAction:
         """Choose which action the Agent should take, fill in any arguments, and return it."""
         raise NotImplementedError
-
-
-class Playback(Agent):
-    """An agent that plays back from a recorded session from another agent."""
-
-    MAX_ACTIONS = 1000000
-    PLAYBACK_FPS = 5
-
-    recorded_actions: list[dict[str, Any]]
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self.recorder = Recorder(
-            prefix=Recorder.get_prefix(self.agent_name),
-            guid=Recorder.get_guid(self.agent_name),
-        )
-        self.recorded_actions = []
-        if self.agent_name in Recorder.list():
-            try:
-                self.recorded_actions = self.filter_actions()
-                logger.info(
-                    f"Loaded {len(self.recorded_actions)} actions from {self.agent_name}"
-                )
-            except Exception as e:
-                logger.error(f"Failed to load recording {self.agent_name}: {e}")
-                self.recorded_actions = []
-        else:
-            logger.warning(
-                f"Recording {self.agent_name} not found in available recordings"
-            )
-
-    def filter_actions(self) -> list[dict[str, Any]]:
-        return [
-            a
-            for a in self.recorder.get()
-            if "data" in a and "action_input" in a["data"]
-        ]
-
-    def is_done(self, frames: list[FrameData], latest_frame: FrameData) -> bool:
-        return bool(self.action_counter >= len(self.recorded_actions))
-
-    def choose_action(
-        self, frames: list[FrameData], latest_frame: FrameData
-    ) -> GameAction:
-        loop_start_time = time.time()
-
-        if self.action_counter >= len(self.recorded_actions):
-            logger.warning(
-                f"No more recorded actions available (counter: {self.action_counter}, total: {len(self.recorded_actions)})"
-            )
-            return GameAction.RESET
-
-        recorded_data = self.recorded_actions[self.action_counter]["data"]
-        action_input = recorded_data["action_input"]
-
-        action = GameAction.from_id(action_input["id"])
-        data = action_input["data"].copy()
-        data["game_id"] = self.game_id
-        action.set_data(data)
-        if "reasoning" in action_input and action_input["reasoning"] is not None:
-            action.reasoning = action_input["reasoning"]
-
-        logger.debug(
-            f"Playback action {self.action_counter}: {action.name} with data {data}"
-        )
-
-        target_frame_time = 1.0 / getattr(self, "PLAYBACK_FPS", 5)
-        elapsed_time = time.time() - loop_start_time
-        sleep_time = max(0, target_frame_time - elapsed_time)
-        if sleep_time > 0:
-            time.sleep(sleep_time)
-
-        return action
-
-    def append_frame(self, frame: FrameData) -> None:
-        # overwrite append_frame to not double record
-        self.frames.append(frame)
-        if frame.guid:
-            self.guid = frame.guid

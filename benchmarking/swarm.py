@@ -9,10 +9,13 @@ from typing import TYPE_CHECKING, Optional, Type
 from arc_agi import Arcade, OperationMode
 from arc_agi.scorecard import EnvironmentScorecard
 
+from .agent import BenchmarkingAgent
+
 if TYPE_CHECKING:
-    from .agent import Agent
+    from .base import Agent
 
 logger = logging.getLogger()
+DEFAULT_AGENT_NAME = BenchmarkingAgent.__name__.lower()
 
 
 class Swarm:
@@ -33,18 +36,15 @@ class Swarm:
 
     def __init__(
         self,
-        agent: str,
         ROOT_URL: str,
         games: list[str],
-        tags: list[str] = [],
+        tags: Optional[list[str]] = None,
         config: Optional[str] = None,
     ) -> None:
-        from . import AVAILABLE_AGENTS
-
         self.GAMES = games
         self.ROOT_URL = ROOT_URL
-        self.agent_name = agent
-        self.agent_class = AVAILABLE_AGENTS[agent]
+        self.agent_name = DEFAULT_AGENT_NAME
+        self.agent_class = BenchmarkingAgent
         self.threads = []
         self.agents = []
         self.cleanup_threads = []
@@ -54,17 +54,8 @@ class Swarm:
         }
         self.tags = tags.copy() if tags is not None else []
         self.config = config
-        self._arc = Arcade()
-
-        # Set up base tags for scorecard metadata
-        if self.agent_name.endswith(".recording.jsonl"):
-            # Extract GUID from playback filename
-            # Format: game.agent.count.guid.recording.jsonl
-            parts = self.agent_name.split(".")
-            guid = parts[-3] if len(parts) >= 4 else "unknown"
-            self.tags.extend(["playback", guid])
-        else:
-            self.tags.extend(["agent", self.agent_name])
+        self._arc = Arcade(operation_mode=OperationMode.ONLINE)
+        self.tags.extend(["agent", self.agent_name])
 
     def main(self) -> EnvironmentScorecard | None:
         """The main orchestration loop, continues until all agents are done."""
