@@ -1,60 +1,37 @@
-# Dockerfile for ARC-AGI-3 Benchmarking CLI
-# Supports building and running cli/main.py (main.py) with all prerequisites
+FROM ghcr.io/astral-sh/uv:0.11.2 AS uv
 
-FROM python:3.11-slim
+FROM python:3.12
 
-# Set working directory
 WORKDIR /app
 
-# Install system dependencies
 RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    git \
+    build-essential curl ca-certificates git openssl libssl-dev \
+    libjpeg-dev zlib1g-dev libfreetype6-dev liblcms2-dev libwebp-dev \
+    tcl8.6-dev tk8.6-dev python3-tk \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv for faster dependency management (optional, but recommended)
-RUN pip install --no-cache-dir uv
+COPY --from=uv /uv /uvx /bin/
 
-# Copy dependency files first for better layer caching
+RUN python -m pip install --no-cache-dir --upgrade pip
+
+# Copy dependency files first for caching
 COPY pyproject.toml uv.lock* ./
 
-# Copy the entire project
+# ---- create non-root user ----
+RUN useradd -m -u 10001 appuser
+
+# Install deps (do this as root, then chown site-packages not needed; just chown /app)
 COPY . .
+RUN test -f uv.lock
+RUN uv pip install --system -e .
 
-# Install Python dependencies using uv (or fallback to pip)
-# uv.lock is optional - if it doesn't exist, pip will be used
-RUN if [ -f uv.lock ]; then \
-        uv pip install --system -e .; \
-    else \
-        pip install --no-cache-dir -e .; \
-    fi
+RUN mkdir -p results logs .checkpoint \
+  && chown -R appuser:appuser /app
 
-# Create directories for results, checkpoints, and logs
-RUN mkdir -p results logs .checkpoint
+ENV ARC_URL_BASE="https://arcprize.org"
+ENV PYTHONUNBUFFERED=1
 
-ENV ARC_URL_BASE="https://three.arcprize.org"
+# Switch to non-root for runtime (this is the important part)
+USER appuser
 
-# CLI argument environment variables (all can be set via env vars)
-ENV GAME_ID=""
-ENV CONFIG=""
-ENV CHECKPOINT=""
-ENV SAVE_RESULTS_DIR=""
-ENV OVERWRITE_RESULTS="false"
-ENV MAX_ACTIONS="40"
-ENV RETRY_ATTEMPTS="3"
-ENV RETRIES="3"
-ENV NUM_PLAYS="1"
-ENV SHOW_IMAGES="false"
-ENV USE_VISION="true"
-ENV MEMORY_LIMIT=""
-ENV CHECKPOINT_FREQUENCY="1"
-ENV CLOSE_ON_EXIT="false"
-ENV LOG_LEVEL="INFO"
-ENV VERBOSE="false"
-ENV LIST_CHECKPOINTS="false"
-ENV CLOSE_SCORECARD=""
-
-# Default command runs the main CLI
 CMD ["python", "main.py"]
-

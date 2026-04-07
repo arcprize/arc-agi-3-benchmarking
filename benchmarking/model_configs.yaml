@@ -1,0 +1,113 @@
+- name: "openai-gpt-5.4-openrouter"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
+    MAX_CONTEXT_LENGTH: 175_000
+  client:
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: "OPENROUTER_API_KEY"
+  call:
+    model: "openai/gpt-5.4"
+    max_completion_tokens: 1_000_000
+
+- name: "anthropic-opus-4-6"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
+    MAX_CONTEXT_LENGTH: 175_000
+  client:
+    base_url: "https://api.anthropic.com/v1/"
+    api_key_env: "ANTHROPIC_API_KEY"
+  call:
+    model: "claude-opus-4-6"
+    max_tokens: 128_000
+  pricing:
+    input: 5.00
+    output: 25.00
+
+- name: "anthropic-opus-4-6-max-effort"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
+    MAX_CONTEXT_LENGTH: 175_000
+  client:
+    base_url: "https://api.anthropic.com/v1/"
+    api_key_env: "ANTHROPIC_API_KEY"
+  call:
+    model: "claude-opus-4-6"
+    max_tokens: 128_000
+    extra_body:
+      output_config:
+        effort: "max"
+  pricing:
+    input: 5.00
+    output: 25.00
+
+- name: "openai-gpt-5-4-2026-03-05"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
+    MAX_CONTEXT_LENGTH: 175_000
+  client:
+    base_url: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+  call:
+    model: "gpt-5.4-2026-03-05"
+    max_completion_tokens: 128_000
+  pricing:
+    input: 2.50
+    output: 15.00
+
+- name: "openai-gpt-5-4-2026-03-05-xhigh"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
+    MAX_CONTEXT_LENGTH: 175_000
+  client:
+    base_url: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+  call:
+    model: "gpt-5.4-2026-03-05"
+    max_completion_tokens: 128_000
+    reasoning_effort: "xhigh"
+  pricing:
+    input: 2.50
+    output: 15.00
+
+- name: "openai-gpt-5-4-2026-03-05-high"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
+    MAX_CONTEXT_LENGTH: 175_000
+  client:
+    base_url: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+  call:
+    model: "gpt-5.4-2026-03-05"
+    max_completion_tokens: 128_000
+    reasoning_effort: "high"
+  pricing:
+    input: 2.50
+    output: 15.00
+
+- name: "xai-grok-4-20-beta-0309-reasoning"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
+    MAX_CONTEXT_LENGTH: 175_000
+  client:
+    base_url: "https://api.x.ai/v1"
+    api_key_env: "XAI_API_KEY"
+  call:
+    model: "grok-4.20-beta-0309-reasoning"
+    max_tokens: 128_000
+  pricing:
+    input: 2.00
+    output: 6.00
+
+- name: "google-gemini-3-1-pro-preview"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
+    MAX_CONTEXT_LENGTH: 175_000
+  client:
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+    api_key_env: "GOOGLE_API_KEY"
+  call:
+    model: "gemini-3.1-pro-preview"
+    max_tokens: 128_000
+  pricing:
+    input: 2.00
+    output: 12.00

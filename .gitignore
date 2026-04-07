@@ -103,3 +103,13 @@ breakpointer/*.local
 *.njsproj
 *.sln
 *.sw?
+
+# Environment Files and Recordings
+environment_files
+recordings
+
+# Ruff cache
+.ruff_cache/
+
+# Claude Code
+.claude/
