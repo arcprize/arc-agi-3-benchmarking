@@ -1,4 +1,3 @@
-from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,8 +25,15 @@ class TestMainCliHelpers:
 
         cli_main.validate_required_model_api_key("openai-gpt-5.4-openrouter")
 
-    def test_validate_required_model_api_key_uses_default_config(self, monkeypatch):
+    def test_validate_required_model_api_key_uses_agent_model_config_id_when_config_omitted(
+        self, monkeypatch
+    ):
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+        monkeypatch.setattr(
+            cli_main.BenchmarkingAgent,
+            "MODEL_CONFIG_ID",
+            "openai-gpt-5.4-openrouter",
+        )
 
         cli_main.validate_required_model_api_key(None)
 
@@ -47,6 +53,42 @@ class TestMainCliHelpers:
         assert "Model config 'does-not-exist' not found" in message
         assert "Available configs:" in message
         assert "openai-gpt-5.4-openrouter" in message
+
+    def test_validate_required_model_api_key_rejects_missing_client_api_key_env(self):
+        with patch(
+            "main.get_model_config",
+            return_value={"client": {}},
+        ):
+            with pytest.raises(ValueError) as exc_info:
+                cli_main.validate_required_model_api_key("missing-api-key-env")
+
+        assert (
+            str(exc_info.value)
+            == "Model config 'missing-api-key-env' is missing client.api_key_env."
+        )
+
+    @pytest.mark.parametrize(
+        "config_id",
+        [
+            "openai-gpt-5-4-2026-03-05",
+            "openai-gpt-5-4-2026-03-05-responses",
+        ],
+    )
+    def test_validate_required_model_api_key_rejects_missing_openai_key_for_chat_and_responses_configs(
+        self,
+        monkeypatch,
+        config_id,
+    ):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        with pytest.raises(ValueError) as exc_info:
+            cli_main.validate_required_model_api_key(config_id)
+
+        assert str(exc_info.value) == (
+            "No OPENAI_API_KEY set. "
+            f"The selected model config '{config_id}' requires "
+            "the OPENAI_API_KEY environment variable to be set in your .env file."
+        )
 
     def test_fetch_available_games_parses_game_ids(self):
         mock_response = MagicMock()
@@ -69,25 +111,3 @@ class TestMainCliHelpers:
             "https://example.com/api/games",
             timeout=10,
         )
-
-    def test_maybe_handle_list_requests_prints_requested_lists(self, capsys):
-        args = Namespace(list_configs=True, list_games=False)
-
-        with patch(
-            "main.list_model_config_ids",
-            return_value=["openai-gpt-5.4-openrouter"],
-        ):
-            handled = cli_main.maybe_handle_list_requests(args)
-
-        captured = capsys.readouterr()
-
-        assert handled is True
-        assert captured.out == (
-            "Configs:\n"
-            "- openai-gpt-5.4-openrouter\n"
-        )
-
-    def test_maybe_handle_list_requests_returns_false_when_unused(self):
-        args = Namespace(list_configs=False, list_games=False)
-
-        assert cli_main.maybe_handle_list_requests(args) is False

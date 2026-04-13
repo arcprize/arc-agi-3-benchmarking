@@ -15,15 +15,15 @@ from openai import OpenAI as OpenAIClient
 from .base import Agent
 from .exceptions import EmptyResponseError
 from .model_config import get_model_config
-from .models import (
-    ActionMetadata,
-    CostDetails,
-    InputTokensDetails,
-    OutputTokensDetails,
-    ResponseUsage,
-    calculate_cost,
-)
 from .recording import RunRecord, StepRecord, StepUsage
+from .runtime_adapters import build_model_runtime_adapter
+from .runtime_models import (
+    Message,
+    ModelRequest,
+    ModelResponse,
+    NormalizedUsage,
+    action_metadata_from_model_response,
+)
 
 logger = logging.getLogger()
 
@@ -42,6 +42,7 @@ class BenchmarkingAgent(Agent):
     MAX_RETRIES: int = 3
     MAX_CONTEXT_LENGTH: int = 100000
     MAX_ANIMATION_FRAMES: int = 7
+    analysis_mode: bool = False
     # Empirically, rendered ARC grid payloads are close to 1 char per token.
     # Using 1.0 is intentionally conservative relative to observed runs.
     ESTIMATED_CHARS_PER_TOKEN: float = 1.0
@@ -54,14 +55,16 @@ class BenchmarkingAgent(Agent):
         super().__init__(*args, **kwargs)
         if not self.config:
             raise ValueError(
-                "No model config specified. Pass --config=<config_name> when running main.py. "
+                "No model config specified. Pass --config=<config_id> when running main.py. "
                 "Use --list-configs to see available options."
             )
         self.MODEL_CONFIG_ID = self.config
         self.conversation: list[dict[str, Any]] = []
         self.token_counter: int = 0
 
-        agent_cfg, client_cfg, call_cfg, pricing_cfg = self._load_model_config()
+        agent_cfg, runtime_cfg, client_cfg, request_cfg, pricing_cfg = (
+            self._load_model_config()
+        )
         self._pricing: dict[str, float] = pricing_cfg
 
         # Agent-level overrides
@@ -75,6 +78,7 @@ class BenchmarkingAgent(Agent):
             "MAX_ANIMATION_FRAMES", self.MAX_ANIMATION_FRAMES
         )
         self.MAX_RETRIES = agent_cfg.get("MAX_RETRIES", self.MAX_RETRIES)
+        self.analysis_mode = agent_cfg.get("analysis_mode", self.analysis_mode)
 
         # Per-level action budgets from baseline_actions * multiplier.
         # MAX_ACTIONS becomes the derived total budget across all levels.
@@ -102,9 +106,9 @@ class BenchmarkingAgent(Agent):
         self._last_levels_completed: int = 0
         self._level_just_advanced: bool = False
 
-        # Call kwargs passed directly to chat.completions.create()
-        self.MODEL: str = call_cfg["model"]
-        self._call_kwargs: dict[str, Any] = call_cfg
+        # Adapter-specific request kwargs from the selected model config.
+        self.MODEL: str = request_cfg["model"]
+        self._request_kwargs: dict[str, Any] = request_cfg
 
         # Validate that the required API key is set before attempting any requests
         api_key_env = client_cfg["api_key_env"]
@@ -120,6 +124,11 @@ class BenchmarkingAgent(Agent):
         self._client = OpenAIClient(
             base_url=client_cfg["base_url"],
             api_key=api_key,
+        )
+        self._adapter = build_model_runtime_adapter(
+            client=self._client,
+            runtime_config=runtime_cfg,
+            config_id=self.MODEL_CONFIG_ID,
         )
         # Per-step recording
         self.step_counter: int = 0
@@ -138,15 +147,23 @@ class BenchmarkingAgent(Agent):
 
     def _load_model_config(
         self,
-    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, float]]:
+    ) -> tuple[
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, float],
+    ]:
         """Load config from model_configs.yaml matching MODEL_CONFIG_ID.
 
-        Returns four dicts: (agent_cfg, client_cfg, call_cfg, pricing_cfg).
+        Returns five dicts:
+        (agent_cfg, runtime_cfg, client_cfg, request_cfg, pricing_cfg).
         - agent_cfg:    agent-level settings
                         (MAX_ACTIONS_BASELINE_MULTIPLIER, MAX_CONTEXT_LENGTH, …)
+        - runtime_cfg:  execution profile (sdk, api)
         - client_cfg:   OpenAI client constructor args (base_url, api_key_env)
-        - call_cfg:     kwargs passed directly to chat.completions.create()
-                        (model, max_completion_tokens, reasoning_effort, …)
+        - request_cfg:  kwargs passed to the selected runtime adapter
+                        (model, max_completion_tokens, reasoning_effort, ...)
         - pricing_cfg:  per-million-token pricing (input, output)
 
         Raises ``ValueError`` if the YAML file is missing or no matching entry.
@@ -154,14 +171,15 @@ class BenchmarkingAgent(Agent):
         raw = get_model_config(self.MODEL_CONFIG_ID)
 
         agent_cfg: dict[str, Any] = dict(raw.get("agent", {}))
+        runtime_cfg: dict[str, Any] = dict(raw.get("runtime", {}))
         client_cfg: dict[str, Any] = dict(raw.get("client", {}))
-        call_cfg: dict[str, Any] = dict(raw.get("call", {}))
+        request_cfg: dict[str, Any] = dict(raw.get("request", {}))
         pricing_cfg: dict[str, float] = dict(raw.get("pricing", {}))
 
         client_cfg.setdefault("base_url", self._DEFAULT_BASE_URL)
         client_cfg.setdefault("api_key_env", self._DEFAULT_API_KEY_ENV)
 
-        return agent_cfg, client_cfg, call_cfg, pricing_cfg
+        return agent_cfg, runtime_cfg, client_cfg, request_cfg, pricing_cfg
 
     @property
     def name(self) -> str:
@@ -171,8 +189,29 @@ class BenchmarkingAgent(Agent):
     # ── Prompts ──────────────────────────────────────────────────────────
 
     def _build_system_prompt(self) -> str:
+        if self.analysis_mode:
+            return textwrap.dedent("""\
+                You are playing a game. Your goal is to win. Reply with the exact action you want to take. The final action in your reply will be executed next turn. Your entire reply will be carried to the next turn.
+
+                Prior assistant turns may include a <reasoning_summary> block before the prior action text. Treat those summaries as compact helper context about the earlier decision process, then continue by choosing the next action normally.
+            """)
         return textwrap.dedent("""\
             You are playing a game. Your goal is to win. Reply with the exact action you want to take. The final action in your reply will be executed next turn. Your entire reply will be carried to the next turn.
+        """)
+
+    def _build_assistant_turn_content(
+        self,
+        output_text: str,
+        reasoning_text: str | None,
+    ) -> str:
+        if not self.analysis_mode or not reasoning_text:
+            return output_text
+        return textwrap.dedent(f"""\
+            <reasoning_summary>
+            {reasoning_text}
+            </reasoning_summary>
+
+            {output_text}
         """)
 
     def _get_actions(self, latest_frame: FrameData) -> list[GameAction]:
@@ -329,6 +368,40 @@ class BenchmarkingAgent(Agent):
         self._write_run_meta()
         logger.info(f"Saved step {self.step_counter} to {filename}")
 
+    def _build_model_request(self) -> ModelRequest:
+        return ModelRequest(
+            messages=[Message.model_validate(message) for message in self.conversation],
+            request_config=dict(self._request_kwargs),
+        )
+
+    def _record_forced_action_observation(
+        self,
+        frames: list[FrameData],
+        latest_frame: FrameData,
+        forced_action: GameAction,
+    ) -> None:
+        self._sync_level_progress(latest_frame)
+        self._level_action_counter += 1
+
+        if forced_action == GameAction.RESET and latest_frame.state is GameState.GAME_OVER:
+            self.conversation.append(
+                {
+                    "role": "user",
+                    "content": self.build_frame_content(latest_frame),
+                }
+            )
+
+        self._save_step(
+            StepRecord(
+                step=self.step_counter + 1,
+                timestamp=datetime.now(timezone.utc),
+                duration_seconds=0.0,
+                model=self.MODEL,
+                messages_sent=list(self.conversation),
+                parsed_action=self._format_parsed_action(forced_action),
+            )
+        )
+
     # ── Action submission ──────────────────────────────────────────────
 
     def do_action_request(self, action: GameAction) -> FrameData:
@@ -370,30 +443,17 @@ class BenchmarkingAgent(Agent):
     def choose_action(
         self, frames: list[FrameData], latest_frame: FrameData
     ) -> GameAction:
+        forced_action = self._forced_action_for_frame(latest_frame)
+        if forced_action is not None:
+            self._record_forced_action_observation(
+                frames,
+                latest_frame,
+                forced_action,
+            )
+            return forced_action
+
         self._sync_level_progress(latest_frame)
         self._level_action_counter += 1
-
-        # Reset whenever the environment indicates the game is not currently playable.
-        # Show the game-over frame to the model so it sees why it died.
-        if latest_frame.state in (GameState.NOT_PLAYED, GameState.GAME_OVER):
-            if latest_frame.state == GameState.GAME_OVER:
-                self.conversation.append(
-                    {
-                        "role": "user",
-                        "content": self.build_frame_content(latest_frame),
-                    }
-                )
-            self._save_step(
-                StepRecord(
-                    step=self.step_counter + 1,
-                    timestamp=datetime.now(timezone.utc),
-                    duration_seconds=0.0,
-                    model=self.MODEL,
-                    messages_sent=list(self.conversation),
-                    parsed_action="RESET",
-                )
-            )
-            return GameAction.RESET
 
         # Ensure the system prompt is present before the first real turn
         if not self.conversation:
@@ -408,12 +468,21 @@ class BenchmarkingAgent(Agent):
 
         actions = self._get_actions(latest_frame)
         start = time.monotonic()
-        assistant_text, reasoning, action, step_usage, retries = (
-            self._request_with_retries(actions)
+        model_response, action, retries, messages_sent = self._request_with_retries(
+            actions
         )
         duration = round(time.monotonic() - start, 3)
+        step_usage = StepUsage.from_normalized_usage(model_response.usage)
 
-        self.conversation.append({"role": "assistant", "content": assistant_text})
+        self.conversation.append(
+            {
+                "role": "assistant",
+                "content": self._build_assistant_turn_content(
+                    model_response.output_text,
+                    model_response.reasoning_text,
+                ),
+            }
+        )
 
         logger.info(f"Parsed action: {self._format_parsed_action(action)}")
         self._save_step(
@@ -422,9 +491,9 @@ class BenchmarkingAgent(Agent):
                 timestamp=datetime.now(timezone.utc),
                 duration_seconds=duration,
                 model=self.MODEL,
-                messages_sent=list(self.conversation),
-                assistant_response=assistant_text,
-                reasoning=reasoning,
+                messages_sent=messages_sent,
+                assistant_response=model_response.output_text,
+                reasoning=model_response.reasoning_text,
                 parsed_action=self._format_parsed_action(action),
                 usage=step_usage,
                 retries=retries,
@@ -432,35 +501,16 @@ class BenchmarkingAgent(Agent):
         )
 
         # Build ActionMetadata and pass as dict through the reasoning field
-        usage_obj = ResponseUsage(
-            input_tokens=step_usage.prompt_tokens,
-            input_tokens_details=InputTokensDetails(
-                cached_tokens=step_usage.cached_tokens,
-            ),
-            output_tokens=step_usage.completion_tokens,
-            output_tokens_details=OutputTokensDetails(
-                reasoning_tokens=step_usage.reasoning_tokens,
-            ),
-            total_tokens=step_usage.total_tokens,
+        metadata = action_metadata_from_model_response(
+            model_response=model_response,
+            pricing=self._pricing,
         )
-        input_cost = calculate_cost(
-            step_usage.prompt_tokens, self._pricing.get("input", 0.0)
-        )
-        output_cost = calculate_cost(
-            step_usage.completion_tokens, self._pricing.get("output", 0.0)
-        )
-        total_cost = input_cost + output_cost
-        metadata = ActionMetadata(
-            output=assistant_text,
-            reasoning=reasoning,
-            usage=usage_obj,
-            cost=CostDetails(
-                input_cost=input_cost,
-                output_cost=output_cost,
-                total_cost=total_cost,
-            ),
-        )
+        if metadata.reasoning:
+            metadata.reasoning = metadata.reasoning[:12_000]
         action.reasoning = metadata.model_dump()
+        total_cost = metadata.cost.total_cost
+        input_cost = metadata.cost.input_cost
+        output_cost = metadata.cost.output_cost
         logger.info(
             f"Step cost: ${total_cost:.6f} "
             f"(input: ${input_cost:.6f}, output: ${output_cost:.6f})"
@@ -496,13 +546,22 @@ class BenchmarkingAgent(Agent):
 
     def _request_with_retries(
         self, actions: list[GameAction]
-    ) -> tuple[str, str | None, GameAction, StepUsage, int]:
-        """Call the API with retries. Returns (assistant_text, reasoning, action, usage, retries)."""
-        step_usage = StepUsage()
+    ) -> tuple[ModelResponse, GameAction, int, list[dict[str, Any]]]:
+        """Call the API with retries.
+
+        Returns (model_response, action, retries, messages_sent) where
+        messages_sent is the exact request transcript used by the successful
+        attempt before the current assistant reply is appended locally.
+        """
+        accumulated_usage = NormalizedUsage()
         for attempt in range(self.MAX_RETRIES + 1):
             try:
-                response = self._call_api()
-            except EmptyResponseError:
+                self._trim_to_fit_context()
+                model_request = self._build_model_request()
+                model_response = self._call_api(model_request)
+            except EmptyResponseError as e:
+                if e.response is not None:
+                    self._save_diagnostic(e.response)
                 logger.warning(
                     f"Empty API response "
                     f"(attempt {attempt + 1}/{self.MAX_RETRIES + 1})."
@@ -515,17 +574,21 @@ class BenchmarkingAgent(Agent):
                 )
                 continue
 
-            step_usage = step_usage + StepUsage.from_response(response)
-            msg = response.choices[0].message
-            assistant_text = msg.content or ""
-            reasoning = getattr(msg, "reasoning", None) or getattr(
-                msg, "reasoning_content", None
+            self.track_tokens(model_response.usage.total_tokens)
+            accumulated_usage = accumulated_usage + model_response.usage
+            model_response = model_response.model_copy(
+                update={"usage": accumulated_usage}
             )
-            logger.info(f"Assistant response: {assistant_text[:200]}")
+            logger.info(f"Assistant response: {model_response.output_text[:200]}")
 
-            action = self._parse_action(assistant_text, actions)
+            action = self._parse_action(model_response.output_text, actions)
             if action is not None:
-                return assistant_text, reasoning, action, step_usage, attempt
+                return (
+                    model_response,
+                    action,
+                    attempt,
+                    [message.model_dump() for message in model_request.messages],
+                )
 
             logger.warning(
                 f"Could not parse action from response "
@@ -536,24 +599,8 @@ class BenchmarkingAgent(Agent):
             f"Failed to get a valid action after {self.MAX_RETRIES + 1} attempts."
         )
 
-    def _call_api(self) -> Any:
-        self._trim_to_fit_context()
-
-        response = self._client.chat.completions.create(
-            messages=self.conversation,
-            **self._call_kwargs,
-        )
-
-        if not response.choices:
-            self._save_diagnostic(response)
-            raise EmptyResponseError(
-                f"API returned 200 with empty choices. "
-                f"Diagnostics saved to {self.run_dir}"
-            )
-
-        if response.usage:
-            self.track_tokens(response.usage.total_tokens)
-        return response
+    def _call_api(self, model_request: ModelRequest) -> ModelResponse:
+        return self._adapter.invoke(model_request)
 
     def _trim_oldest_turn(self) -> bool:
         """Remove the oldest user/assistant pair, preserving the system message."""

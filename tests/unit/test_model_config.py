@@ -1,0 +1,313 @@
+from pathlib import Path
+
+import pytest
+import yaml
+
+import benchmarking.model_config as model_config
+
+
+def _write_model_configs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configs: list[dict],
+) -> Path:
+    config_path = tmp_path / "model_configs.yaml"
+    config_path.write_text(yaml.safe_dump(configs, sort_keys=False))
+    monkeypatch.setattr(model_config, "MODEL_CONFIG_PATH", config_path)
+    return config_path
+
+
+def _valid_config(
+    config_id: str,
+    *,
+    runtime_api: str = "chat_completions",
+    **overrides: dict,
+) -> dict:
+    config = {
+        "id": config_id,
+        "runtime": {
+            "sdk": "openai-python",
+            "api": runtime_api,
+            "state": "manual_rolling",
+        },
+        "client": {
+            "base_url": "https://api.openai.com/v1",
+            "api_key_env": "OPENAI_API_KEY",
+        },
+        "request": {
+            "model": "gpt-5.4-2026-03-05",
+            "max_completion_tokens": 128_000,
+        },
+        "agent": {"MAX_CONTEXT_LENGTH": 175_000},
+        "pricing": {"input": 2.50, "output": 15.00},
+    }
+    config.update(overrides)
+    return config
+
+
+@pytest.mark.unit
+class TestModelConfig:
+    def test_load_model_configs_reads_id(self, tmp_path, monkeypatch):
+        _write_model_configs(tmp_path, monkeypatch, [_valid_config("chat-config")])
+
+        configs = model_config.load_model_configs()
+
+        assert configs[0]["id"] == "chat-config"
+
+    def test_load_model_configs_accepts_responses_api(self, tmp_path, monkeypatch):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [_valid_config("responses-config", runtime_api="responses")],
+        )
+
+        configs = model_config.load_model_configs()
+
+        assert configs[0]["runtime"]["api"] == "responses"
+
+    def test_load_model_configs_accepts_boolean_analysis_mode(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "analysis-config",
+                    agent={"MAX_CONTEXT_LENGTH": 175_000, "analysis_mode": True},
+                )
+            ],
+        )
+
+        configs = model_config.load_model_configs()
+
+        assert configs[0]["agent"]["analysis_mode"] is True
+
+    def test_load_model_configs_allows_omitted_analysis_mode(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [_valid_config("normal-config", agent={"MAX_CONTEXT_LENGTH": 175_000})],
+        )
+
+        configs = model_config.load_model_configs()
+
+        assert "analysis_mode" not in configs[0]["agent"]
+
+    def test_load_model_configs_rejects_non_boolean_analysis_mode(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "bad-analysis-config",
+                    agent={"MAX_CONTEXT_LENGTH": 175_000, "analysis_mode": "true"},
+                )
+            ],
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="agent.analysis_mode must be a boolean",
+        ):
+            model_config.load_model_configs()
+
+    def test_load_model_configs_rejects_non_mapping_agent_section(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [_valid_config("bad-agent-section", agent=True)],
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="section 'agent' must be a mapping",
+        ):
+            model_config.load_model_configs()
+
+    def test_load_model_configs_rejects_entries_missing_id(self, tmp_path, monkeypatch):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                {
+                    "runtime": {
+                        "sdk": "openai-python",
+                        "api": "chat_completions",
+                        "state": "manual_rolling",
+                    },
+                    "client": {"api_key_env": "OPENAI_API_KEY"},
+                    "request": {"model": "gpt-5.4"},
+                }
+            ],
+        )
+
+        with pytest.raises(ValueError, match="missing required 'id'"):
+            model_config.load_model_configs()
+
+    def test_load_model_configs_rejects_duplicate_ids(self, tmp_path, monkeypatch):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config("duplicate-id"),
+                _valid_config("duplicate-id"),
+            ],
+        )
+
+        with pytest.raises(ValueError, match="Duplicate model config id 'duplicate-id'"):
+            model_config.load_model_configs()
+
+    def test_list_model_config_ids_returns_id_values_not_name(self, tmp_path, monkeypatch):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [_valid_config("chat-config", name="legacy-display-name")],
+        )
+
+        assert model_config.list_model_config_ids() == ["chat-config"]
+
+    def test_get_model_config_by_id_succeeds(self, tmp_path, monkeypatch):
+        _write_model_configs(tmp_path, monkeypatch, [_valid_config("lookup-success")])
+
+        config = model_config.get_model_config("lookup-success")
+
+        assert config["id"] == "lookup-success"
+        assert config["request"]["model"] == "gpt-5.4-2026-03-05"
+
+    def test_get_model_config_by_missing_id_lists_available_ids(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        config_path = _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config("available-a"),
+                _valid_config("available-b"),
+            ],
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            model_config.get_model_config("missing-id")
+
+        message = str(exc_info.value)
+        assert f"Model config 'missing-id' not found in {config_path}" in message
+        assert "Available configs: available-a, available-b" in message
+
+    def test_load_model_configs_requires_runtime_section(self, tmp_path, monkeypatch):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [_valid_config("missing-runtime", runtime=None)],
+        )
+
+        with pytest.raises(ValueError, match="missing required section 'runtime'"):
+            model_config.load_model_configs()
+
+    def test_load_model_configs_requires_client_section(self, tmp_path, monkeypatch):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [_valid_config("missing-client", client=None)],
+        )
+
+        with pytest.raises(ValueError, match="missing required section 'client'"):
+            model_config.load_model_configs()
+
+    def test_load_model_configs_requires_request_section(self, tmp_path, monkeypatch):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [_valid_config("missing-request", request=None)],
+        )
+
+        with pytest.raises(ValueError, match="missing required section 'request'"):
+            model_config.load_model_configs()
+
+    def test_legacy_name_only_entry_fails_clearly(self, tmp_path, monkeypatch):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                {
+                    "name": "legacy-only",
+                    "runtime": {
+                        "sdk": "openai-python",
+                        "api": "chat_completions",
+                        "state": "manual_rolling",
+                    },
+                    "client": {"api_key_env": "OPENAI_API_KEY"},
+                    "request": {"model": "gpt-5.4"},
+                }
+            ],
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="uses legacy field 'name'. Rename it to 'id'",
+        ):
+            model_config.load_model_configs()
+
+    def test_checked_in_config_ids_include_chat_and_responses_models(self):
+        config_ids = set(model_config.list_model_config_ids())
+
+        assert {
+            "anthropic-opus-4-6",
+            "anthropic-opus-4-6-max-effort",
+            "google-gemini-3-1-pro-preview",
+            "openai-gpt-5-4-2026-03-05",
+            "openai-gpt-5-4-2026-03-05-high",
+            "openai-gpt-5-4-2026-03-05-low",
+            "openai-gpt-5-4-2026-03-05-responses",
+            "openai-gpt-5-4-2026-03-05-responses-analysis",
+            "openai-gpt-5-4-2026-03-05-xhigh",
+            "openai-gpt-5.4-openrouter",
+            "xai-grok-4-20-beta-0309-reasoning",
+        } <= config_ids
+
+    def test_checked_in_analysis_config_enables_reasoning_summary_replay(self):
+        config = model_config.get_model_config(
+            "openai-gpt-5-4-2026-03-05-responses-analysis"
+        )
+
+        assert config["agent"]["analysis_mode"] is True
+        assert config["runtime"]["api"] == "responses"
+        assert config["request"]["reasoning"] == {
+            "effort": "low",
+            "summary": "auto",
+        }
+
+    def test_list_model_config_ids_supports_mixed_chat_and_responses_configs(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config("chat-config", runtime_api="chat_completions"),
+                _valid_config("responses-config", runtime_api="responses"),
+            ],
+        )
+
+        assert model_config.list_model_config_ids() == [
+            "chat-config",
+            "responses-config",
+        ]
