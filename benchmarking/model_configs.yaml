@@ -89,6 +89,28 @@
     input: 2.50
     output: 15.00
 
+- id: "openai-gpt-5-4-2026-03-05-responses-analysis"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
+    MAX_CONTEXT_LENGTH: 175_000
+    analysis_mode: true
+  runtime:
+    sdk: "openai-python"
+    api: "responses"
+    state: "manual_rolling"
+  client:
+    base_url: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+  request:
+    model: "gpt-5.4-2026-03-05"
+    max_output_tokens: 128_000
+    reasoning:
+      effort: "low"
+      summary: "auto"
+  pricing:
+    input: 2.50
+    output: 15.00
+
 - id: "openai-gpt-5-4-2026-03-05-xhigh"
   agent:
     MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
