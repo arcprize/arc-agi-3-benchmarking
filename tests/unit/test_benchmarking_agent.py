@@ -768,3 +768,56 @@ class TestBenchmarkingAgentAnalysisReplayIntegration:
             {"role": "assistant", "content": "ACTION1"},
             {"role": "user", "content": agent.build_frame_content(second_frame)},
         ]
+
+
+def _agent_with_env(step_frame: FrameData) -> BenchmarkingAgent:
+    """Reuse _agent_for_choose_action and patch in a minimal arc_env."""
+    agent = _agent_for_choose_action(analysis_mode=False, responses=[])
+    agent.arc_env = SimpleNamespace(step=lambda action, *, data, reasoning: step_frame)
+    agent._convert_raw_frame_data = lambda raw: raw
+    return agent
+
+
+@pytest.mark.unit
+class TestDoubleResetPrevention:
+    def test_do_action_request_sets_previous_action(self):
+        agent = _agent_with_env(_playable_frame())
+
+        agent.do_action_request(GameAction.RESET)
+
+        assert agent._previous_action == GameAction.RESET
+
+    def test_reset_is_not_valid_after_a_reset(self):
+        agent = _agent_with_env(_playable_frame())
+        agent.action_counter = 1
+
+        agent.do_action_request(GameAction.RESET)
+
+        assert agent.is_reset_a_valid_action() is False
+
+    def test_reset_becomes_valid_again_after_a_non_reset_action(self):
+        agent = _agent_with_env(_playable_frame())
+        agent.action_counter = 1
+
+        agent.do_action_request(GameAction.RESET)
+        agent.do_action_request(GameAction.ACTION1)
+
+        assert agent.is_reset_a_valid_action() is True
+
+    def test_get_actions_excludes_reset_after_a_reset(self):
+        agent = _agent_with_env(_playable_frame())
+        agent.action_counter = 1
+
+        agent.do_action_request(GameAction.RESET)
+        actions = agent._get_actions(_playable_frame())
+
+        assert GameAction.RESET not in actions
+
+    def test_get_actions_includes_reset_after_a_non_reset_action(self):
+        agent = _agent_with_env(_playable_frame())
+        agent.action_counter = 1
+
+        agent.do_action_request(GameAction.ACTION1)
+        actions = agent._get_actions(_playable_frame())
+
+        assert GameAction.RESET in actions

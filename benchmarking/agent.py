@@ -408,6 +408,7 @@ class BenchmarkingAgent(Agent):
         data = action.action_data.model_dump()
         reasoning = getattr(action, "reasoning", {}) or {}
         raw = self.arc_env.step(action, data=data, reasoning=reasoning)
+        self._previous_action = action
         return self._convert_raw_frame_data(raw)
 
     # ── Core loop ────────────────────────────────────────────────────────
