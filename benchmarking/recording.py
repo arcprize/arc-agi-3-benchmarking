@@ -7,6 +7,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from .runtime_models import NormalizedUsage
+
 
 class StepUsage(BaseModel):
     """Token usage and cost for a single step (or accumulated across a run)."""
@@ -65,6 +67,19 @@ class StepUsage(BaseModel):
         if "cost_details" in extras:
             kwargs["cost_details"] = extras["cost_details"]
         return cls(**kwargs)
+
+    @classmethod
+    def from_normalized_usage(cls, usage: NormalizedUsage) -> StepUsage:
+        return cls(
+            prompt_tokens=usage.input_tokens,
+            completion_tokens=usage.output_tokens,
+            total_tokens=usage.total_tokens,
+            reasoning_tokens=usage.reasoning_tokens,
+            cached_tokens=usage.cached_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+            cost=usage.cost,
+            cost_details=dict(usage.cost_details),
+        )
 
 
 class StepRecord(BaseModel):

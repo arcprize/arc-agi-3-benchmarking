@@ -4,16 +4,21 @@ from typing import Any
 import yaml
 
 MODEL_CONFIG_PATH = Path(__file__).resolve().parent / "model_configs.yaml"
+REQUIRED_CONFIG_SECTIONS = ("runtime", "client", "request")
+SUPPORTED_RUNTIME_APIS = frozenset({"chat_completions", "responses"})
+SUPPORTED_RUNTIME_STATE = "manual_rolling"
 
 
-def load_model_configs() -> list[dict[str, Any]]:
+def _read_raw_model_configs() -> list[dict[str, Any]]:
     if not MODEL_CONFIG_PATH.exists():
         raise ValueError(f"Model config file not found: {MODEL_CONFIG_PATH}")
 
     try:
         configs = yaml.safe_load(MODEL_CONFIG_PATH.read_text()) or []
     except OSError as e:
-        raise ValueError(f"Failed to read model config file {MODEL_CONFIG_PATH}: {e}") from e
+        raise ValueError(
+            f"Failed to read model config file {MODEL_CONFIG_PATH}: {e}"
+        ) from e
 
     if not isinstance(configs, list):
         raise ValueError(f"Model config file is invalid: {MODEL_CONFIG_PATH}")
@@ -21,19 +26,83 @@ def load_model_configs() -> list[dict[str, Any]]:
     return configs
 
 
-def list_model_config_ids() -> list[str]:
+def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        raise ValueError(
+            f"Model config entry #{index} in {MODEL_CONFIG_PATH} must be a mapping."
+        )
+
+    raw_config_id = entry.get("id")
+    if not isinstance(raw_config_id, str) or not raw_config_id.strip():
+        legacy_name = entry.get("name")
+        if isinstance(legacy_name, str) and legacy_name.strip():
+            raise ValueError(
+                f"Model config entry #{index} uses legacy field 'name'. "
+                f"Rename it to 'id'."
+            )
+        raise ValueError(
+            f"Model config entry #{index} is missing required 'id'."
+        )
+
+    config_id = raw_config_id.strip()
+    if config_id in seen_ids:
+        raise ValueError(
+            f"Duplicate model config id '{config_id}' found in {MODEL_CONFIG_PATH}."
+        )
+    seen_ids.add(config_id)
+
+    for section in REQUIRED_CONFIG_SECTIONS:
+        if not isinstance(entry.get(section), dict):
+            raise ValueError(
+                f"Model config '{config_id}' is missing required section '{section}'."
+            )
+
+    agent = entry.get("agent", {})
+    if agent is not None and not isinstance(agent, dict):
+        raise ValueError(
+            f"Model config '{config_id}' section 'agent' must be a mapping if present."
+        )
+    if isinstance(agent, dict) and "analysis_mode" in agent:
+        if not isinstance(agent["analysis_mode"], bool):
+            raise ValueError(
+                f"Model config '{config_id}' agent.analysis_mode must be a boolean."
+            )
+
+    runtime = entry["runtime"]
+    if not isinstance(runtime.get("sdk"), str) or not runtime["sdk"].strip():
+        raise ValueError(f"Model config '{config_id}' is missing runtime.sdk.")
+    if not isinstance(runtime.get("api"), str) or not runtime["api"].strip():
+        raise ValueError(f"Model config '{config_id}' is missing runtime.api.")
+    if runtime["api"] not in SUPPORTED_RUNTIME_APIS:
+        supported_apis = ", ".join(sorted(SUPPORTED_RUNTIME_APIS))
+        raise ValueError(
+            f"Model config '{config_id}' uses runtime.api={runtime['api']!r}, "
+            f"but only {supported_apis} are supported."
+        )
+    if runtime.get("state") != SUPPORTED_RUNTIME_STATE:
+        raise ValueError(
+            f"Model config '{config_id}' uses runtime.state={runtime.get('state')!r}, "
+            f"but only '{SUPPORTED_RUNTIME_STATE}' is supported."
+        )
+
+    return entry
+
+
+def load_model_configs() -> list[dict[str, Any]]:
+    seen_ids: set[str] = set()
     return [
-        name
-        for entry in load_model_configs()
-        if isinstance(entry, dict)
-        for name in [entry.get("name")]
-        if isinstance(name, str) and name.strip()
+        _validate_model_config_entry(entry, index, seen_ids)
+        for index, entry in enumerate(_read_raw_model_configs(), start=1)
     ]
+
+
+def list_model_config_ids() -> list[str]:
+    return [entry["id"] for entry in load_model_configs()]
 
 
 def get_model_config(config_id: str) -> dict[str, Any]:
     for entry in load_model_configs():
-        if entry.get("name") == config_id:
+        if entry["id"] == config_id:
             return entry
 
     available_configs = ", ".join(sorted(list_model_config_ids()))

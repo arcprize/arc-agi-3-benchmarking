@@ -32,7 +32,8 @@ class DummyAgent:
 
 
 class FakeArcade:
-    def __init__(self) -> None:
+    def __init__(self, operation_mode=None) -> None:  # noqa: ANN001
+        self.requested_operation_mode = operation_mode
         self.operation_mode = SimpleNamespace(ONLINE="online").ONLINE
         self.opened_tags: list[str] | None = None
         self.closed_card_id: str | None = None

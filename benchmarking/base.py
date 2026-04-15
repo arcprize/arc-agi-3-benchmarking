@@ -69,12 +69,10 @@ class Agent(ABC):
             not self.is_done(self.frames, self.frames[-1])
             and self.action_counter <= self.MAX_ACTIONS
         ):
-            action = self.choose_action(
-                self.frames,
-                self._convert_raw_frame_data(
-                    self.arc_env.observation_space if self.arc_env else None
-                ),
+            latest_frame = self._convert_raw_frame_data(
+                self.arc_env.observation_space if self.arc_env else None
             )
+            action = self._resolve_action(self.frames, latest_frame)
             if frame := self.take_action(action):
                 self.append_frame(frame)
                 logger.info(
@@ -124,18 +122,39 @@ class Agent(ABC):
     def is_reset_a_valid_action(self) -> bool:
         return self.action_counter > 0 and self._previous_action != GameAction.RESET
 
+    def _resolve_action(
+        self,
+        frames: list[FrameData],
+        latest_frame: FrameData,
+    ) -> GameAction:
+        forced_action = self._forced_action_for_frame(latest_frame)
+        if forced_action is not None:
+            self._record_forced_action_observation(frames, latest_frame, forced_action)
+            return forced_action
+        return self.choose_action(frames, latest_frame)
+
+    @staticmethod
+    def _forced_action_for_frame(latest_frame: FrameData) -> Optional[GameAction]:
+        if latest_frame.state in (GameState.GAME_OVER, GameState.NOT_PLAYED):
+            return GameAction.RESET
+        return None
+
+    def _record_forced_action_observation(
+        self,
+        frames: list[FrameData],
+        latest_frame: FrameData,
+        forced_action: GameAction,
+    ) -> None:
+        return None
+
     def do_action_request(self, action: GameAction) -> FrameData:
         data = action.action_data.model_dump()
 
-        if self.is_reset_a_valid_action():
-            raw = self.arc_env.step(
-                action,
-                data=data,
-                reasoning=data["reasoning"] if "reasoning" in data else {},
-            )
-        else:
-            return self.frames[-1]
-
+        raw = self.arc_env.step(
+            action,
+            data=data,
+            reasoning=data["reasoning"] if "reasoning" in data else {},
+        )
         self._previous_action = action
 
         return self._convert_raw_frame_data(raw)

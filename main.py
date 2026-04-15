@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 import requests
 
 from benchmarking import BenchmarkingAgent, Swarm
+from benchmarking.cli_list import print_requested_resource_lists
 from benchmarking.model_config import get_model_config, list_model_config_ids
 
 logger = logging.getLogger()
@@ -89,27 +90,27 @@ def fetch_available_games(root_url: str) -> list[str]:
         return []
 
 
-def validate_required_model_api_key(config_name: Optional[str]) -> None:
-    selected_config = config_name or BenchmarkingAgent.MODEL_CONFIG_ID
-    entry = get_model_config(selected_config)
+def validate_required_model_api_key(config_id: Optional[str]) -> None:
+    selected_config_id = config_id or BenchmarkingAgent.MODEL_CONFIG_ID
+    entry = get_model_config(selected_config_id)
 
     client_cfg = entry.get("client", {})
     if not isinstance(client_cfg, dict):
         raise ValueError(
-            f"Model config '{selected_config}' is missing client configuration."
+            f"Model config '{selected_config_id}' is missing client configuration."
         )
 
     api_key_env = str(client_cfg.get("api_key_env", "")).strip()
     if not api_key_env:
         raise ValueError(
-            f"Model config '{selected_config}' is missing client.api_key_env."
+            f"Model config '{selected_config_id}' is missing client.api_key_env."
         )
 
     api_key = os.environ.get(api_key_env, "").strip()
     if not api_key:
         raise ValueError(
             f"No {api_key_env} set. "
-            f"The selected model config '{selected_config}' requires "
+            f"The selected model config '{selected_config_id}' requires "
             f"the {api_key_env} environment variable to be set in your .env file."
         )
 
@@ -146,30 +147,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="List available model config IDs and exit.",
     )
     return parser
-
-
-def maybe_handle_list_requests(args: argparse.Namespace) -> bool:
-    requested_lists: list[tuple[str, list[str]]] = []
-
-    if args.list_configs:
-        requested_lists.append(("Configs", list_model_config_ids()))
-    if args.list_games:
-        requested_lists.append(("Games", fetch_available_games(ROOT_URL)))
-
-    if not requested_lists:
-        return False
-
-    for index, (title, values) in enumerate(requested_lists):
-        if index > 0:
-            print()
-        print(f"{title}:")
-        for value in sorted(values):
-            if title != "Games":
-                print("-", value)
-            else:
-                print("-", value.split("-")[0])
-
-    return True
 
 
 def run_agent(swarm: Swarm) -> None:
@@ -224,7 +201,11 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    if maybe_handle_list_requests(args):
+    if print_requested_resource_lists(
+        args,
+        root_url=ROOT_URL,
+        fetch_available_games=fetch_available_games,
+    ):
         return
 
     try:
