@@ -20,13 +20,14 @@ def _write_model_configs(
 def _valid_config(
     config_id: str,
     *,
+    runtime_sdk: str = "openai-python",
     runtime_api: str = "chat_completions",
     **overrides: dict,
 ) -> dict:
     config = {
         "id": config_id,
         "runtime": {
-            "sdk": "openai-python",
+            "sdk": runtime_sdk,
             "api": runtime_api,
             "state": "manual_rolling",
         },
@@ -64,6 +65,141 @@ class TestModelConfig:
         configs = model_config.load_model_configs()
 
         assert configs[0]["runtime"]["api"] == "responses"
+
+    def test_load_model_configs_accepts_anthropic_messages_runtime_pair(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "anthropic-messages-config",
+                    runtime_sdk="anthropic-python",
+                    runtime_api="messages",
+                    client={"api_key_env": "ANTHROPIC_API_KEY"},
+                    request={"model": "claude-opus-4-6", "max_tokens": 128_000},
+                )
+            ],
+        )
+
+        configs = model_config.load_model_configs()
+
+        assert configs[0]["runtime"] == {
+            "sdk": "anthropic-python",
+            "api": "messages",
+            "state": "manual_rolling",
+        }
+
+    @pytest.mark.parametrize(
+        ("runtime_sdk", "runtime_api"),
+        [
+            ("anthropic-python", "chat_completions"),
+            ("openai-python", "messages"),
+        ],
+    )
+    def test_load_model_configs_rejects_unsupported_runtime_pairs(
+        self,
+        tmp_path,
+        monkeypatch,
+        runtime_sdk,
+        runtime_api,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "bad-runtime-pair",
+                    runtime_sdk=runtime_sdk,
+                    runtime_api=runtime_api,
+                )
+            ],
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            model_config.load_model_configs()
+
+        message = str(exc_info.value)
+        assert (
+            f"Model config 'bad-runtime-pair' uses unsupported runtime "
+            f"(sdk={runtime_sdk!r}, api={runtime_api!r})."
+        ) in message
+        assert "(sdk='anthropic-python', api='messages')" in message
+        assert "(sdk='openai-python', api='chat_completions')" in message
+        assert "(sdk='openai-python', api='responses')" in message
+
+    def test_load_model_configs_rejects_missing_runtime_sdk(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "missing-runtime-sdk",
+                    runtime={
+                        "api": "chat_completions",
+                        "state": "manual_rolling",
+                    },
+                )
+            ],
+        )
+
+        with pytest.raises(ValueError, match="missing runtime.sdk"):
+            model_config.load_model_configs()
+
+    def test_load_model_configs_rejects_missing_runtime_api(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "missing-runtime-api",
+                    runtime={
+                        "sdk": "openai-python",
+                        "state": "manual_rolling",
+                    },
+                )
+            ],
+        )
+
+        with pytest.raises(ValueError, match="missing runtime.api"):
+            model_config.load_model_configs()
+
+    def test_load_model_configs_rejects_invalid_runtime_state(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "bad-runtime-state",
+                    runtime={
+                        "sdk": "openai-python",
+                        "api": "chat_completions",
+                        "state": "previous_response_id",
+                    },
+                )
+            ],
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="uses runtime.state='previous_response_id'",
+        ):
+            model_config.load_model_configs()
 
     def test_load_model_configs_accepts_boolean_analysis_mode(
         self,

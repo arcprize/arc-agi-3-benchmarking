@@ -5,7 +5,13 @@ import yaml
 
 MODEL_CONFIG_PATH = Path(__file__).resolve().parent / "model_configs.yaml"
 REQUIRED_CONFIG_SECTIONS = ("runtime", "client", "request")
-SUPPORTED_RUNTIME_APIS = frozenset({"chat_completions", "responses"})
+SUPPORTED_RUNTIME_PAIRS = frozenset(
+    {
+        ("anthropic-python", "messages"),
+        ("openai-python", "chat_completions"),
+        ("openai-python", "responses"),
+    }
+)
 SUPPORTED_RUNTIME_STATE = "manual_rolling"
 
 
@@ -24,6 +30,13 @@ def _read_raw_model_configs() -> list[dict[str, Any]]:
         raise ValueError(f"Model config file is invalid: {MODEL_CONFIG_PATH}")
 
     return configs
+
+
+def _format_supported_runtime_pairs() -> str:
+    return ", ".join(
+        f"(sdk={sdk!r}, api={api!r})"
+        for sdk, api in sorted(SUPPORTED_RUNTIME_PAIRS)
+    )
 
 
 def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> dict[str, Any]:
@@ -73,11 +86,12 @@ def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> 
         raise ValueError(f"Model config '{config_id}' is missing runtime.sdk.")
     if not isinstance(runtime.get("api"), str) or not runtime["api"].strip():
         raise ValueError(f"Model config '{config_id}' is missing runtime.api.")
-    if runtime["api"] not in SUPPORTED_RUNTIME_APIS:
-        supported_apis = ", ".join(sorted(SUPPORTED_RUNTIME_APIS))
+    runtime_pair = (runtime["sdk"], runtime["api"])
+    if runtime_pair not in SUPPORTED_RUNTIME_PAIRS:
         raise ValueError(
-            f"Model config '{config_id}' uses runtime.api={runtime['api']!r}, "
-            f"but only {supported_apis} are supported."
+            f"Model config '{config_id}' uses unsupported runtime "
+            f"(sdk={runtime['sdk']!r}, api={runtime['api']!r}). "
+            f"Supported runtimes: {_format_supported_runtime_pairs()}."
         )
     if runtime.get("state") != SUPPORTED_RUNTIME_STATE:
         raise ValueError(

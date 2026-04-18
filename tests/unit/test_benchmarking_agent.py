@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-from arcengine import FrameData, GameAction, GameState
 import pytest
+from arcengine import FrameData, GameAction, GameState
 
 from benchmarking.agent import BenchmarkingAgent
 from benchmarking.runtime_adapters import (
@@ -135,6 +135,94 @@ def _responses_response(text: str = "RESET") -> SimpleNamespace:
         ],
         usage=SimpleNamespace(total_tokens=6),
     )
+
+
+@pytest.mark.unit
+class TestBenchmarkingAgentRuntimeClient:
+    def test_init_routes_client_construction_through_runtime_client_factory(
+        self,
+        monkeypatch,
+    ):
+        fake_client = object()
+        fake_adapter = object()
+        calls: dict[str, object] = {}
+
+        def fake_get_model_config(config_id: str) -> dict:
+            calls["config_id"] = config_id
+            return {
+                "agent": {"MAX_CONTEXT_LENGTH": 175_000},
+                "runtime": {
+                    "sdk": "openai-python",
+                    "api": "chat_completions",
+                    "state": "manual_rolling",
+                },
+                "client": {
+                    "base_url": "https://api.openai.com/v1",
+                    "api_key_env": "OPENAI_API_KEY",
+                },
+                "request": {"model": "gpt-5.4", "max_completion_tokens": 128},
+                "pricing": {"input": 2.50, "output": 15.00},
+            }
+
+        def fake_build_client(
+            *,
+            runtime_config: dict,
+            client_config: dict,
+            config_id: str,
+        ) -> object:
+            calls["client_runtime_config"] = runtime_config
+            calls["client_config"] = client_config
+            calls["client_config_id"] = config_id
+            return fake_client
+
+        def fake_build_adapter(
+            *,
+            client: object,
+            runtime_config: dict,
+            config_id: str,
+        ) -> object:
+            calls["adapter_client"] = client
+            calls["adapter_runtime_config"] = runtime_config
+            calls["adapter_config_id"] = config_id
+            return fake_adapter
+
+        monkeypatch.setattr("benchmarking.agent.get_model_config", fake_get_model_config)
+        monkeypatch.setattr(
+            "benchmarking.agent.build_model_runtime_client",
+            fake_build_client,
+        )
+        monkeypatch.setattr(
+            "benchmarking.agent.build_model_runtime_adapter",
+            fake_build_adapter,
+        )
+        monkeypatch.setattr(BenchmarkingAgent, "_write_run_meta", lambda _self: None)
+
+        agent = BenchmarkingAgent(
+            card_id="card-id",
+            game_id="game-id",
+            agent_name="agent-name",
+            ROOT_URL="https://arcprize.org",
+            record=False,
+            arc_env=SimpleNamespace(info=SimpleNamespace(baseline_actions=[])),
+            config="fake-openai-config",
+        )
+
+        assert agent._client is fake_client
+        assert agent._adapter is fake_adapter
+        assert calls["config_id"] == "fake-openai-config"
+        assert calls["client_runtime_config"] == {
+            "sdk": "openai-python",
+            "api": "chat_completions",
+            "state": "manual_rolling",
+        }
+        assert calls["client_config"] == {
+            "base_url": "https://api.openai.com/v1",
+            "api_key_env": "OPENAI_API_KEY",
+        }
+        assert calls["client_config_id"] == "fake-openai-config"
+        assert calls["adapter_client"] is fake_client
+        assert calls["adapter_runtime_config"] == calls["client_runtime_config"]
+        assert calls["adapter_config_id"] == "fake-openai-config"
 
 
 @pytest.mark.unit
