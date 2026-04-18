@@ -18,7 +18,8 @@ class TestMainCliHelpers:
         configs = cli_main.list_model_config_ids()
 
         assert "openai-gpt-5.4-openrouter" in configs
-        assert "anthropic-opus-4-6" in configs
+        assert "anthropic-opus-4-7-low" in configs
+        assert "anthropic-opus-4-7-low-thinking" in configs
 
     def test_validate_required_model_api_key_uses_selected_config_env(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")

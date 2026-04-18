@@ -13,6 +13,14 @@ SUPPORTED_RUNTIME_PAIRS = frozenset(
     }
 )
 SUPPORTED_RUNTIME_STATE = "manual_rolling"
+ANTHROPIC_OPENAI_COMPAT_CLIENT_FIELDS = frozenset({"base_url"})
+ANTHROPIC_OPENAI_COMPAT_REQUEST_FIELDS = frozenset(
+    {
+        "extra_body",
+        "max_completion_tokens",
+        "max_output_tokens",
+    }
+)
 
 
 def _read_raw_model_configs() -> list[dict[str, Any]]:
@@ -37,6 +45,31 @@ def _format_supported_runtime_pairs() -> str:
         f"(sdk={sdk!r}, api={api!r})"
         for sdk, api in sorted(SUPPORTED_RUNTIME_PAIRS)
     )
+
+
+def _validate_anthropic_messages_config(config_id: str, entry: dict[str, Any]) -> None:
+    client = entry["client"]
+    request = entry["request"]
+
+    invalid_client_fields = sorted(
+        ANTHROPIC_OPENAI_COMPAT_CLIENT_FIELDS.intersection(client)
+    )
+    if invalid_client_fields:
+        fields = ", ".join(invalid_client_fields)
+        raise ValueError(
+            f"Model config '{config_id}' uses OpenAI-compatible client field(s) "
+            f"for native Anthropic runtime: {fields}."
+        )
+
+    invalid_request_fields = sorted(
+        ANTHROPIC_OPENAI_COMPAT_REQUEST_FIELDS.intersection(request)
+    )
+    if invalid_request_fields:
+        fields = ", ".join(invalid_request_fields)
+        raise ValueError(
+            f"Model config '{config_id}' uses OpenAI-compatible request field(s) "
+            f"for native Anthropic runtime: {fields}."
+        )
 
 
 def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> dict[str, Any]:
@@ -98,6 +131,8 @@ def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> 
             f"Model config '{config_id}' uses runtime.state={runtime.get('state')!r}, "
             f"but only '{SUPPORTED_RUNTIME_STATE}' is supported."
         )
+    if runtime_pair == ("anthropic-python", "messages"):
+        _validate_anthropic_messages_config(config_id, entry)
 
     return entry
 

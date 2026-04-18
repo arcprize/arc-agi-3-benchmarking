@@ -131,6 +131,81 @@ class TestModelConfig:
         assert "(sdk='openai-python', api='chat_completions')" in message
         assert "(sdk='openai-python', api='responses')" in message
 
+    @pytest.mark.parametrize(
+        "client_field",
+        [
+            "base_url",
+        ],
+    )
+    def test_load_model_configs_rejects_openai_compat_client_fields_for_native_anthropic(
+        self,
+        tmp_path,
+        monkeypatch,
+        client_field,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "bad-anthropic-client-field",
+                    runtime_sdk="anthropic-python",
+                    runtime_api="messages",
+                    client={
+                        "api_key_env": "ANTHROPIC_API_KEY",
+                        client_field: "https://api.anthropic.com/v1/",
+                    },
+                    request={"model": "claude-opus-4-7", "max_tokens": 20_000},
+                )
+            ],
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            model_config.load_model_configs()
+
+        message = str(exc_info.value)
+        assert "OpenAI-compatible client field(s)" in message
+        assert client_field in message
+
+    @pytest.mark.parametrize(
+        "request_field",
+        [
+            "extra_body",
+            "max_completion_tokens",
+            "max_output_tokens",
+        ],
+    )
+    def test_load_model_configs_rejects_openai_compat_request_fields_for_native_anthropic(
+        self,
+        tmp_path,
+        monkeypatch,
+        request_field,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "bad-anthropic-request-field",
+                    runtime_sdk="anthropic-python",
+                    runtime_api="messages",
+                    client={"api_key_env": "ANTHROPIC_API_KEY"},
+                    request={
+                        "model": "claude-opus-4-7",
+                        "max_tokens": 20_000,
+                        request_field: {},
+                    },
+                )
+            ],
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            model_config.load_model_configs()
+
+        message = str(exc_info.value)
+        assert "OpenAI-compatible request field(s)" in message
+        assert request_field in message
+
     def test_load_model_configs_rejects_missing_runtime_sdk(
         self,
         tmp_path,
@@ -404,8 +479,8 @@ class TestModelConfig:
         config_ids = set(model_config.list_model_config_ids())
 
         assert {
-            "anthropic-opus-4-6",
-            "anthropic-opus-4-6-max-effort",
+            "anthropic-opus-4-7-low",
+            "anthropic-opus-4-7-low-thinking",
             "google-gemini-3-1-pro-preview",
             "openai-gpt-5-4-2026-03-05",
             "openai-gpt-5-4-2026-03-05-high",
@@ -416,6 +491,57 @@ class TestModelConfig:
             "openai-gpt-5.4-openrouter",
             "xai-grok-4-20-beta-0309-reasoning",
         } <= config_ids
+
+    @pytest.mark.parametrize(
+        "config_id",
+        [
+            "anthropic-opus-4-7-low",
+            "anthropic-opus-4-7-low-thinking",
+        ],
+    )
+    def test_checked_in_anthropic_configs_use_native_runtime(self, config_id):
+        config = model_config.get_model_config(config_id)
+
+        assert config["id"] == config_id
+        assert config["runtime"] == {
+            "sdk": "anthropic-python",
+            "api": "messages",
+            "state": "manual_rolling",
+        }
+        assert config["client"] == {"api_key_env": "ANTHROPIC_API_KEY"}
+        assert config["request"]["model"] == "claude-opus-4-7"
+        assert isinstance(config["request"]["max_tokens"], int)
+        assert config["request"]["max_tokens"] > 0
+
+    def test_checked_in_anthropic_thinking_config_uses_low_effort_adaptive_thinking(
+        self,
+    ):
+        configs = [
+            model_config.get_model_config("anthropic-opus-4-7-low"),
+            model_config.get_model_config("anthropic-opus-4-7-low-thinking"),
+        ]
+
+        assert all(
+            config["request"]["thinking"] == {"type": "adaptive"}
+            for config in configs
+        )
+        assert all(
+            config["request"]["output_config"] == {"effort": "low"}
+            for config in configs
+        )
+
+    def test_checked_in_anthropic_configs_do_not_use_openai_compat_fields(self):
+        configs = [
+            config
+            for config in model_config.load_model_configs()
+            if config["id"].startswith("anthropic-")
+        ]
+
+        assert configs
+        assert all(config["runtime"]["sdk"] == "anthropic-python" for config in configs)
+        assert all(config["runtime"]["api"] == "messages" for config in configs)
+        assert all("base_url" not in config["client"] for config in configs)
+        assert all("extra_body" not in config["request"] for config in configs)
 
     def test_checked_in_analysis_config_enables_reasoning_summary_replay(self):
         config = model_config.get_model_config(

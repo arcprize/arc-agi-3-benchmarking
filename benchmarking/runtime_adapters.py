@@ -5,6 +5,7 @@ from typing import Any, Protocol
 from .runtime_models import (
     ModelRequest,
     ModelResponse,
+    normalize_anthropic_messages_response,
     normalize_chat_completion_response,
     normalize_responses_response,
 )
@@ -54,6 +55,30 @@ class OpenAIResponsesAdapter:
         return normalize_responses_response(raw_response)
 
 
+class AnthropicMessagesAdapter:
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    @staticmethod
+    def _build_request_kwargs(request: ModelRequest) -> dict[str, Any]:
+        request_kwargs = dict(request.request_config)
+        messages = [message.model_dump() for message in request.messages]
+
+        if request.messages and request.messages[0].role == "system":
+            request_kwargs["system"] = request.messages[0].content
+            request_kwargs["messages"] = messages[1:]
+            return request_kwargs
+
+        request_kwargs["messages"] = messages
+        return request_kwargs
+
+    def invoke(self, request: ModelRequest) -> ModelResponse:
+        raw_response = self._client.messages.create(
+            **self._build_request_kwargs(request),
+        )
+        return normalize_anthropic_messages_response(raw_response)
+
+
 def build_model_runtime_adapter(
     *,
     client: Any,
@@ -72,6 +97,8 @@ def build_model_runtime_adapter(
         return OpenAIChatCompletionsAdapter(client)
     if runtime_key == ("openai-python", "responses"):
         return OpenAIResponsesAdapter(client)
+    if runtime_key == ("anthropic-python", "messages"):
+        return AnthropicMessagesAdapter(client)
 
     raise ValueError(
         f"Model config '{config_id}' uses unsupported runtime "

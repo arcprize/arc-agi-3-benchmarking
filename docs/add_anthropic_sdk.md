@@ -68,7 +68,7 @@ Provider-specific behavior should live below the agent:
 Keep the same config sections already used by OpenAI configs.
 
 ```yaml
-- id: "anthropic-claude-opus-4-6-native"
+- id: "anthropic-opus-4-7-low"
   agent:
     MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
     MAX_CONTEXT_LENGTH: 175_000
@@ -82,8 +82,8 @@ Keep the same config sections already used by OpenAI configs.
     api_key_env: "ANTHROPIC_API_KEY"
 
   request:
-    model: "claude-opus-4-6"
-    max_tokens: 128_000
+    model: "claude-opus-4-7"
+    max_tokens: 20_000
 
   pricing:
     input: 5.00
@@ -95,19 +95,20 @@ OpenAI-compatible wrappers:
 
 ```yaml
   request:
-    model: "claude-opus-4-6"
-    max_tokens: 128_000
+    model: "claude-opus-4-7"
+    max_tokens: 20_000
     thinking:
-      type: "enabled"
-      budget_tokens: 2000
+      type: "adaptive"
+    output_config:
+      effort: "low"
 ```
 
 Notes:
 
 - Native Anthropic configs should not use `extra_body`.
 - Native Anthropic configs should not need `client.base_url` for the first cut.
-- Keep existing OpenAI-compatible Anthropic configs temporarily if they are useful
-  for comparison, but give native configs distinct IDs.
+- Do not keep OpenAI-compatible Anthropic configs unless there is a specific
+  benchmark comparison need.
 
 ## Runtime Compatibility Rules
 
@@ -217,8 +218,8 @@ ModelResponse(
 For native Anthropic responses:
 
 - `output_text`: concatenate text from response content blocks with `type == "text"`
-- `reasoning_text`: concatenate text from content blocks with `type == "thinking"`
-  if present
+- `reasoning_text`: `None` for the first native Anthropic pass; Claude thinking
+  blocks are intentionally deferred until analysis mode is implemented
 - `input_tokens`: `response.usage.input_tokens`
 - `output_tokens`: `response.usage.output_tokens`
 - `total_tokens`: input plus output if no direct total is available
@@ -312,116 +313,132 @@ Tests to implement:
 
 Purpose: route normalized model turns to native Anthropic Messages API.
 
-- [ ] Add `AnthropicMessagesAdapter`.
-- [ ] Add adapter dispatch for `("anthropic-python", "messages")`.
-- [ ] Copy `request.request_config` before modifying request kwargs.
-- [ ] Map the first leading `system` message to Anthropic's top-level `system`
+- [x] Add `AnthropicMessagesAdapter`.
+- [x] Add adapter dispatch for `("anthropic-python", "messages")`.
+- [x] Copy `request.request_config` before modifying request kwargs.
+- [x] Map the first leading `system` message to Anthropic's top-level `system`
   field.
-- [ ] Send remaining `user` and `assistant` turns as Anthropic `messages`.
-- [ ] If there is no leading `system` message, send all messages as Anthropic
+- [x] Send remaining `user` and `assistant` turns as Anthropic `messages`.
+- [x] If there is no leading `system` message, send all messages as Anthropic
   `messages`.
-- [ ] Pass through request config kwargs such as `model`, `max_tokens`, and
+- [x] Pass through request config kwargs such as `model`, `max_tokens`, and
   `thinking`.
-- [ ] Preserve analysis-mode replay content as ordinary assistant message
+- [x] Preserve analysis-mode replay content as ordinary assistant message
   content.
 
 Tests to implement:
 
-- [ ] Adapter dispatch selects `AnthropicMessagesAdapter`.
-- [ ] First system message maps to top-level `system`.
-- [ ] Remaining user/assistant turns map to Anthropic `messages`.
-- [ ] Requests without a leading system message send all turns as `messages`.
-- [ ] Request config kwargs pass through unchanged.
-- [ ] Thinking config passes through unchanged.
-- [ ] Analysis-mode assistant replay content is preserved.
-- [ ] Unsupported runtime state still fails before adapter selection.
+- [x] Adapter dispatch selects `AnthropicMessagesAdapter`.
+- [x] First system message maps to top-level `system`.
+- [x] Remaining user/assistant turns map to Anthropic `messages`.
+- [x] Requests without a leading system message send all turns as `messages`.
+- [x] Request config kwargs pass through unchanged.
+- [x] Thinking config passes through unchanged.
+- [x] Analysis-mode assistant replay content is preserved.
+- [x] Unsupported runtime state still fails before adapter selection.
 
 ### Phase 5: Add Anthropic Response Normalization
 
 Purpose: convert native Anthropic responses into the existing normalized response
 contract.
 
-- [ ] Add `normalize_anthropic_messages_response(...)`.
-- [ ] Extract assistant text from content blocks with `type == "text"`.
-- [ ] Concatenate multiple text blocks in response order.
-- [ ] Extract thinking text from content blocks with `type == "thinking"` when
-  present.
-- [ ] Concatenate multiple thinking blocks in response order.
-- [ ] Normalize Anthropic usage fields into `NormalizedUsage`.
-- [ ] Map provider cache creation tokens to `cache_write_tokens` if present.
-- [ ] Map provider cache read tokens to `cached_tokens` if present.
-- [ ] Raise `EmptyResponseError` for empty or malformed responses.
-- [ ] Attach the raw response to `ModelResponse.raw_response`.
+- [x] Add `normalize_anthropic_messages_response(...)`.
+- [x] Extract assistant text from content blocks with `type == "text"`.
+- [x] Concatenate multiple text blocks in response order.
+- [x] Deferred: extract thinking text from content blocks with `type == "thinking"`
+  when Claude analysis mode is implemented.
+- [x] Deferred: concatenate multiple thinking blocks in response order when Claude
+  analysis mode is implemented.
+- [x] Normalize Anthropic usage fields into `NormalizedUsage`.
+- [x] Map provider cache creation tokens to `cache_write_tokens` if present.
+- [x] Map provider cache read tokens to `cached_tokens` if present.
+- [x] Raise `EmptyResponseError` for empty or malformed responses.
+- [x] Attach the raw response to `ModelResponse.raw_response`.
 
 Tests to implement:
 
-- [ ] Text content block becomes `ModelResponse.output_text`.
-- [ ] Multiple text content blocks are concatenated correctly.
-- [ ] Thinking content block becomes `ModelResponse.reasoning_text`.
-- [ ] Multiple thinking content blocks are concatenated correctly.
-- [ ] Missing thinking content returns `reasoning_text is None`.
-- [ ] Usage input/output/total tokens normalize correctly.
-- [ ] Cache read/write usage fields normalize when present.
-- [ ] Empty content raises `EmptyResponseError`.
-- [ ] Content with no text block raises `EmptyResponseError`.
-- [ ] Raw response is preserved on `ModelResponse.raw_response`.
+- [x] Text content block becomes `ModelResponse.output_text`.
+- [x] Multiple text content blocks are concatenated correctly.
+- [x] Deferred: thinking content block becomes `ModelResponse.reasoning_text` when
+  Claude analysis mode is implemented.
+- [x] Deferred: multiple thinking content blocks are concatenated correctly when
+  Claude analysis mode is implemented.
+- [x] Thinking content is ignored for now and returns `reasoning_text is None`.
+- [x] Usage input/output/total tokens normalize correctly.
+- [x] Cache read/write usage fields normalize when present.
+- [x] Empty content raises `EmptyResponseError`.
+- [x] Content with no text block raises `EmptyResponseError`.
+- [x] Raw response is preserved on `ModelResponse.raw_response`.
+- [x] Anthropic usage projects to pricing metadata without losing input/output
+  tokens.
 
 ### Phase 6: Add Native Anthropic Configs
 
 Purpose: make native Anthropic selectable from `--config`.
 
-- [ ] Add one conservative native Anthropic config first.
-- [ ] Use a clear ID such as `anthropic-claude-opus-4-6-native`.
-- [ ] Set `runtime.sdk: "anthropic-python"`.
-- [ ] Set `runtime.api: "messages"`.
-- [ ] Set `runtime.state: "manual_rolling"`.
-- [ ] Set `client.api_key_env: "ANTHROPIC_API_KEY"`.
-- [ ] Use native request fields such as `model` and `max_tokens`.
-- [ ] Do not use `extra_body` in native Anthropic configs.
-- [ ] Add one optional thinking-enabled config only if needed for benchmark
+- [x] Add one conservative native Anthropic config first.
+- [x] Use the existing ID `anthropic-opus-4-7-low`.
+- [x] Set `runtime.sdk: "anthropic-python"`.
+- [x] Set `runtime.api: "messages"`.
+- [x] Set `runtime.state: "manual_rolling"`.
+- [x] Set `client.api_key_env: "ANTHROPIC_API_KEY"`.
+- [x] Use native request fields such as `model` and `max_tokens`.
+- [x] Do not use `extra_body` in native Anthropic configs.
+- [x] Add one optional thinking-enabled config only if needed for benchmark
   experiments.
-- [ ] Keep existing OpenAI-compatible Anthropic configs temporarily if useful for
-  comparison.
-- [ ] Update README config examples only if the recommended default changes.
+- [x] Remove OpenAI-compatible Anthropic configs now that native Anthropic is the
+  supported route.
+- [x] Update README config examples.
 
 Tests to implement:
 
-- [ ] Checked-in config IDs include the new native Anthropic config.
-- [ ] Config loader accepts the native Anthropic config.
-- [ ] Config loader rejects native Anthropic configs with incompatible
+- [x] Checked-in config IDs include the new native Anthropic config.
+- [x] Config loader accepts the native Anthropic config.
+- [x] Config loader rejects native Anthropic configs with incompatible
   `runtime.sdk`/`runtime.api` pairs.
-- [ ] Config loader rejects native Anthropic configs that use OpenAI-only request
+- [x] Config loader rejects native Anthropic configs that use OpenAI-only request
   fields if strict request validation is added.
-- [ ] `uv run main.py --list-configs` includes the new config.
+- [x] `uv run main.py --list-configs` includes the new config.
+- [x] Checked-in Anthropic configs do not use OpenAI compatibility fields.
 
 ### Phase 7: Smoke Test Against Anthropic
 
 Purpose: verify the native SDK route works outside unit-test fakes.
 
-- [ ] Set `ANTHROPIC_API_KEY`.
-- [ ] Run a one-game smoke test:
+- [x] Set `ANTHROPIC_API_KEY`.
+- [x] Run a one-game smoke test:
 
 ```bash
-ANTHROPIC_API_KEY=... uv run main.py --game=ls20 --config=anthropic-claude-opus-4-6-native
+ANTHROPIC_API_KEY=... uv run main.py --game=ls20 --config=anthropic-opus-4-7-low
 ```
 
-- [ ] Confirm no OpenAI client is constructed for the native Anthropic config.
-- [ ] Confirm the request reaches `client.messages.create(...)`.
-- [ ] Confirm assistant response text parses into a valid game action.
-- [ ] Confirm usage appears in step recordings.
-- [ ] Confirm missing or invalid API key errors mention `ANTHROPIC_API_KEY`.
-- [ ] Confirm at least one benchmark step completes using the native Anthropic
+- [x] Confirm no OpenAI client is constructed for the native Anthropic config.
+- [x] Confirm the request reaches `client.messages.create(...)`.
+- [x] Confirm assistant response text parses into a valid game action.
+- [x] Confirm usage appears in step recordings.
+- [x] Confirm missing or invalid API key errors mention `ANTHROPIC_API_KEY`.
+- [x] Confirm at least one benchmark step completes using the native Anthropic
   SDK.
-- [ ] Confirm generated recording includes normalized response, usage, and
+- [x] Confirm generated recording includes normalized response, usage, and
   selected action.
+
+Manual smoke result:
+
+- `uv run main.py --game=ls20 --config=anthropic-opus-4-7-low` reached
+  `POST https://api.anthropic.com/v1/messages` with `HTTP/1.1 200 OK`.
+- Step 1 returned `ACTION1`, parsed `ACTION1`, recorded `total_tokens=12557`,
+  and saved `step_001.json`.
+- The run was interrupted after one action and the scorecard closed cleanly.
+- `ANTHROPIC_API_KEY=` fails before gameplay with an error naming
+  `ANTHROPIC_API_KEY`.
 
 Tests to implement:
 
-- [ ] Add a small integration-style test or documented manual test for the native
+- [x] Add a small integration-style test or documented manual test for the native
   Anthropic route.
-- [ ] Add a regression test that selecting the native Anthropic config routes to
+- [x] Add a regression test that selecting the native Anthropic config routes to
   `anthropic-python/messages`.
-- [ ] Add a regression test that selecting OpenAI configs still routes to the
+- [x] Add a regression test that selecting OpenAI configs still routes to the
   existing OpenAI adapters.
 
 ## Future Google SDK Extension
@@ -442,13 +459,13 @@ shared abstraction clearer than guessing up front.
 
 ## Final Done Checklist
 
-- [ ] `agent.py` does not import provider SDKs directly.
-- [ ] Runtime client construction is isolated in `runtime_clients.py`.
-- [ ] Runtime adapter selection is keyed by `(runtime.sdk, runtime.api)`.
-- [ ] Config validation rejects unsupported SDK/API combinations.
-- [ ] Anthropic native configs use `anthropic-python/messages`.
-- [ ] Anthropic native configs can be selected with `--config`.
-- [ ] Anthropic native responses normalize into `ModelResponse`.
-- [ ] OpenAI configs still behave as before.
-- [ ] The same pattern is clear enough to add Google later without another agent
+- [x] `agent.py` does not import provider SDKs directly.
+- [x] Runtime client construction is isolated in `runtime_clients.py`.
+- [x] Runtime adapter selection is keyed by `(runtime.sdk, runtime.api)`.
+- [x] Config validation rejects unsupported SDK/API combinations.
+- [x] Anthropic native configs use `anthropic-python/messages`.
+- [x] Anthropic native configs can be selected with `--config`.
+- [x] Anthropic native responses normalize into `ModelResponse`.
+- [x] OpenAI configs still behave as before.
+- [x] The same pattern is clear enough to add Google later without another agent
   refactor.
