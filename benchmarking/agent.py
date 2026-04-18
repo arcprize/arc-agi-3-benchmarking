@@ -101,6 +101,7 @@ class BenchmarkingAgent(Agent):
         self._level_action_counter: int = 0
         self._last_levels_completed: int = 0
         self._level_just_advanced: bool = False
+        self._pending_action_reasoning: dict[str, Any] = {}
 
         # Adapter-specific request kwargs from the selected model config.
         self.MODEL: str = request_cfg["model"]
@@ -389,10 +390,14 @@ class BenchmarkingAgent(Agent):
 
     def do_action_request(self, action: GameAction) -> FrameData:
         data = action.action_data.model_dump()
-        reasoning = getattr(action, "reasoning", {}) or {}
+        reasoning = self._pending_action_reasoning or getattr(action, "reasoning", {}) or {}
+        self._pending_action_reasoning = {}
         raw = self.arc_env.step(action, data=data, reasoning=reasoning)
         self._previous_action = action
-        return self._convert_raw_frame_data(raw)
+        frame = self._convert_raw_frame_data(raw)
+        if reasoning:
+            frame.action_input.reasoning = reasoning
+        return frame
 
     # ── Core loop ────────────────────────────────────────────────────────
 
@@ -491,7 +496,7 @@ class BenchmarkingAgent(Agent):
         )
         if metadata.reasoning:
             metadata.reasoning = metadata.reasoning[:12_000]
-        action.reasoning = metadata.model_dump()
+        self._pending_action_reasoning = metadata.model_dump()
         total_cost = metadata.cost.total_cost
         input_cost = metadata.cost.input_cost
         output_cost = metadata.cost.output_cost

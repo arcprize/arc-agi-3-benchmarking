@@ -162,17 +162,19 @@ class Agent(ABC):
     def _convert_raw_frame_data(self, raw: FrameDataRaw | None) -> FrameData:
         if raw is None:
             raise ValueError("Received None frame data from environment")
-        out = FrameData(
-            game_id=raw.game_id,
-            frame=[arr.tolist() for arr in raw.frame],
-            state=raw.state,
-            levels_completed=raw.levels_completed,
-            win_levels=raw.win_levels,
-            guid=raw.guid,
-            full_reset=raw.full_reset,
-            available_actions=raw.available_actions,
-        )
-        return out
+        frame_kwargs = {
+            "game_id": raw.game_id,
+            "frame": [arr.tolist() for arr in raw.frame],
+            "state": raw.state,
+            "levels_completed": raw.levels_completed,
+            "win_levels": raw.win_levels,
+            "guid": raw.guid,
+            "full_reset": raw.full_reset,
+            "available_actions": raw.available_actions,
+        }
+        if raw.action_input is not None:
+            frame_kwargs["action_input"] = raw.action_input
+        return FrameData(**frame_kwargs)
 
     def take_action(self, action: GameAction) -> Optional[FrameData]:
         """Submits the specific action and gets the next frame."""

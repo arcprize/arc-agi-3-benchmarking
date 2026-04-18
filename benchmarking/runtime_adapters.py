@@ -72,9 +72,92 @@ class AnthropicMessagesAdapter:
         request_kwargs["messages"] = messages
         return request_kwargs
 
+    @staticmethod
+    def _should_stream(request_kwargs: dict[str, Any]) -> bool:
+        stream = request_kwargs.pop("stream", False)
+        if isinstance(stream, str):
+            return stream.strip().lower() == "true"
+        return bool(stream)
+
+    @staticmethod
+    def _stream_text_delta(event: Any) -> str | None:
+        if getattr(event, "type", None) != "content_block_delta":
+            return None
+
+        delta = getattr(event, "delta", None)
+        if getattr(delta, "type", None) != "text_delta":
+            return None
+        return getattr(delta, "text", "") or ""
+
+    @staticmethod
+    def _stream_usage(event: Any) -> Any | None:
+        usage = getattr(event, "usage", None)
+        if usage is not None:
+            return usage
+
+        delta = getattr(event, "delta", None)
+        return getattr(delta, "usage", None)
+
+    @staticmethod
+    def _stream_response(
+        *,
+        final_message: Any,
+        text_parts: list[str],
+        fallback_usage: Any | None,
+    ) -> Any:
+        usage = getattr(final_message, "usage", None) or fallback_usage
+        if text_parts:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "".join(text_parts),
+                    }
+                ],
+                "usage": usage,
+                "stream_final_message": final_message,
+            }
+
+        if fallback_usage is not None and getattr(final_message, "usage", None) is None:
+            return {
+                "content": getattr(final_message, "content", []),
+                "usage": fallback_usage,
+                "stream_final_message": final_message,
+            }
+
+        return final_message
+
+    def _invoke_streaming(self, request_kwargs: dict[str, Any]) -> ModelResponse:
+        text_parts: list[str] = []
+        latest_usage = None
+
+        with self._client.messages.stream(**request_kwargs) as stream:
+            for event in stream:
+                text_delta = self._stream_text_delta(event)
+                if text_delta is not None:
+                    text_parts.append(text_delta)
+
+                event_usage = self._stream_usage(event)
+                if event_usage is not None:
+                    latest_usage = event_usage
+
+            final_message = stream.get_final_message()
+
+        return normalize_anthropic_messages_response(
+            self._stream_response(
+                final_message=final_message,
+                text_parts=text_parts,
+                fallback_usage=latest_usage,
+            )
+        )
+
     def invoke(self, request: ModelRequest) -> ModelResponse:
+        request_kwargs = self._build_request_kwargs(request)
+        if self._should_stream(request_kwargs):
+            return self._invoke_streaming(request_kwargs)
+
         raw_response = self._client.messages.create(
-            **self._build_request_kwargs(request),
+            **request_kwargs,
         )
         return normalize_anthropic_messages_response(raw_response)
 

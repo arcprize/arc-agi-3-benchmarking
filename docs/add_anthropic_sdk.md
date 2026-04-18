@@ -469,3 +469,105 @@ shared abstraction clearer than guessing up front.
 - [x] OpenAI configs still behave as before.
 - [x] The same pattern is clear enough to add Google later without another agent
   refactor.
+
+## Add-On Plan: Native Anthropic Streaming
+
+Purpose: allow a native Anthropic config to opt into streaming with
+`stream: true`, especially for longer adaptive-thinking calls, without changing
+the agent-facing `ModelResponse` contract.
+
+Use the Python SDK streaming API documented in `docs/anthropic_streaming.md`:
+
+```python
+with client.messages.stream(
+    model="claude-opus-4-7",
+    max_tokens=20_000,
+    thinking={"type": "adaptive"},
+    output_config={"effort": "low"},
+    messages=[...],
+) as stream:
+    for event in stream:
+        ...
+```
+
+The config should look like:
+
+```yaml
+request:
+  model: "claude-opus-4-7"
+  max_tokens: 20_000
+  stream: true
+  thinking:
+    type: "adaptive"
+  output_config:
+    effort: "low"
+```
+
+Implementation notes:
+
+- Treat `request.stream` as an app routing flag, not as a normal Anthropic
+  request kwarg.
+- In `AnthropicMessagesAdapter.invoke(...)`, copy request kwargs as today, then
+  remove `stream` before calling the SDK.
+- If `stream` is falsy or absent, keep using `client.messages.create(...)`.
+- If `stream` is true, call `client.messages.stream(...)`.
+- Keep streaming implementation inside `AnthropicMessagesAdapter`; do not expose
+  streaming to `agent.py`.
+- Aggregate streamed `text_delta` chunks into final `output_text`.
+- Ignore streamed `thinking_delta` chunks for now, matching the current
+  non-streaming decision to defer Claude thinking blocks until analysis mode.
+- Preserve token accounting by normalizing the final streamed message or final
+  message-delta usage into the same `NormalizedUsage` contract as non-streaming
+  Anthropic responses.
+- Preserve `raw_response` with the final accumulated message or a small
+  provider-shaped object containing final content and usage.
+- If the stream finishes without any text output, raise `EmptyResponseError`.
+
+### Phase 8: Add Anthropic Streaming Adapter Path
+
+Purpose: make `stream: true` selectable from native Anthropic configs.
+
+- [x] Add `_should_stream(...)` or equivalent helper for Anthropic request kwargs.
+- [x] Pop `stream` before sending kwargs to Anthropic.
+- [x] Keep non-streaming `client.messages.create(...)` behavior unchanged.
+- [x] Add streaming path using `client.messages.stream(...)`.
+- [x] Aggregate `content_block_delta` events where `delta.type == "text_delta"`.
+- [x] Ignore `thinking_delta` events for now.
+- [x] Capture final usage from the streamed response.
+- [x] Return the same `ModelResponse` shape as non-streaming Anthropic calls.
+- [x] Raise `EmptyResponseError` when a stream completes without text.
+- [x] Add `stream: true` to the intended native Anthropic config.
+
+Tests to implement:
+
+- [x] `stream: true` routes to `client.messages.stream(...)`.
+- [x] `stream: false` or missing `stream` routes to `client.messages.create(...)`.
+- [x] `stream` is not forwarded as a provider request kwarg.
+- [x] Streaming text deltas concatenate into `ModelResponse.output_text`.
+- [x] Streaming thinking deltas do not populate `reasoning_text` yet.
+- [x] Final streaming usage maps input/output/total/cache tokens correctly.
+- [x] Final accumulated message usage takes precedence over intermittent event
+  usage when both are present.
+- [x] Empty streaming output raises `EmptyResponseError`.
+- [x] Existing non-streaming Anthropic adapter tests still pass.
+- [x] Checked-in streaming Anthropic config validates.
+
+Manual smoke test:
+
+- [x] Run `uv run main.py --game=ls20 --config=anthropic-opus-4-7-low`.
+- [x] Confirm logs show a successful Anthropic request from the streaming config.
+- [x] Confirm one action parses and records usage.
+- [x] Confirm generated step JSON has the same usage fields as the non-streaming
+  smoke test.
+
+Manual smoke result:
+
+- [x] `anthropic-opus-4-7-low` completed one `ACTION1` step with `stream: true`
+  before the run was interrupted.
+- [x] Step usage normalized as `prompt_tokens=12548`,
+  `completion_tokens=9`, `total_tokens=12557`, `cached_tokens=0`,
+  and `cache_write_tokens=0`.
+- [x] Direct SDK probe with adaptive thinking confirmed
+  `stream.get_final_message().usage` includes the full request totals:
+  `input_tokens=30`, `output_tokens=9`, `cache_creation_input_tokens=0`, and
+  `cache_read_input_tokens=0`.

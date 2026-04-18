@@ -1,7 +1,8 @@
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
-from arcengine import FrameData, GameAction, GameState
+from arcengine import ActionInput, FrameData, FrameDataRaw, GameAction, GameState
 
 from benchmarking.agent import BenchmarkingAgent
 from benchmarking.runtime_adapters import (
@@ -81,6 +82,7 @@ def _agent_for_choose_action(
     agent._level_just_advanced = False
     agent.action_counter = 0
     agent._previous_action = None
+    agent._pending_action_reasoning = {}
     agent.MAX_ANIMATION_FRAMES = 7
     agent._saved_steps = []
     agent._save_step = agent._saved_steps.append
@@ -103,6 +105,25 @@ def _terminal_frame(state: GameState) -> FrameData:
         levels_completed=0,
         available_actions=[GameAction.ACTION1.value],
     )
+
+
+class _CapturingRawEnv:
+    def __init__(self) -> None:
+        self.reasonings: list[dict] = []
+
+    def step(self, action: GameAction, *, data: dict, reasoning: dict) -> FrameDataRaw:
+        self.reasonings.append(reasoning)
+        raw = FrameDataRaw()
+        raw.game_id = "game-id"
+        raw.frame = [np.array([[0, 1]], dtype=np.int8)]
+        raw.state = GameState.NOT_FINISHED
+        raw.levels_completed = 0
+        raw.win_levels = 1
+        raw.action_input = ActionInput(id=action, data=data, reasoning=None)
+        raw.guid = "guid-1"
+        raw.full_reset = False
+        raw.available_actions = [GameAction.ACTION1.value]
+        return raw
 
 
 def _chat_response(text: str = "RESET") -> SimpleNamespace:
@@ -868,6 +889,27 @@ def _agent_with_env(step_frame: FrameData) -> BenchmarkingAgent:
 
 @pytest.mark.unit
 class TestDoubleResetPrevention:
+    def test_do_action_request_sends_and_records_pending_action_reasoning(self):
+        env = _CapturingRawEnv()
+        agent = _agent_for_choose_action(analysis_mode=False, responses=[])
+        agent.arc_env = env
+        reasoning = {
+            "output": "ACTION1",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "total_tokens": 12,
+            },
+        }
+        agent._pending_action_reasoning = reasoning
+
+        frame = agent.do_action_request(GameAction.ACTION1)
+
+        assert env.reasonings == [reasoning]
+        assert frame.action_input.id is GameAction.ACTION1
+        assert frame.action_input.reasoning == reasoning
+        assert agent._pending_action_reasoning == {}
+
     def test_do_action_request_sets_previous_action(self):
         agent = _agent_with_env(_playable_frame())
 

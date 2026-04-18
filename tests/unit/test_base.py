@@ -1,5 +1,6 @@
-from arcengine import FrameData, GameAction, GameState
+import numpy as np
 import pytest
+from arcengine import ActionInput, FrameData, FrameDataRaw, GameAction, GameState
 
 from benchmarking.base import Agent
 
@@ -107,3 +108,30 @@ class TestAgentForcedReset:
         ]
         assert agent.forced_observations == []
         assert arc_env.actions == [GameAction.ACTION1]
+
+    def test_convert_raw_frame_data_preserves_action_input_reasoning(self):
+        arc_env = _FakeEnv(
+            observation_space=_frame(GameState.NOT_FINISHED),
+            step_frame=_frame(GameState.NOT_FINISHED),
+        )
+        agent = _TestAgent(arc_env)
+        raw = FrameDataRaw()
+        raw.game_id = "game-1"
+        raw.frame = [np.array([[0, 1]], dtype=np.int8)]
+        raw.state = GameState.NOT_FINISHED
+        raw.levels_completed = 0
+        raw.win_levels = 1
+        raw.action_input = ActionInput(
+            id=GameAction.ACTION1,
+            data={"x": 1},
+            reasoning={"usage": {"total_tokens": 5}},
+        )
+        raw.guid = "guid-1"
+        raw.full_reset = False
+        raw.available_actions = [GameAction.ACTION1.value]
+
+        frame = agent._convert_raw_frame_data(raw)
+
+        assert frame.action_input.id is GameAction.ACTION1
+        assert frame.action_input.data == {"x": 1}
+        assert frame.action_input.reasoning == {"usage": {"total_tokens": 5}}

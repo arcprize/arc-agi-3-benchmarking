@@ -14,9 +14,9 @@
     max_completion_tokens: 1_000_000
   pricing: {}
 
-- id: "anthropic-opus-4-7-low"
+- id: "anthropic-opus-4-7-medium"
   agent:
-    MAX_ACTIONS_BASELINE_MULTIPLIER: 0.5
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
     MAX_CONTEXT_LENGTH: 175_000
   runtime:
     sdk: "anthropic-python"
@@ -26,11 +26,12 @@
     api_key_env: "ANTHROPIC_API_KEY"
   request:
     model: "claude-opus-4-7"
-    max_tokens: 20000
+    max_tokens: 120000
+    stream: true
     thinking:
       type: "adaptive"
     output_config:
-      effort: "low"
+      effort: "medium"
   pricing:
     input: 5.00
     output: 25.00

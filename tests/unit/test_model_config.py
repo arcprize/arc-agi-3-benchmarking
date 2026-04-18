@@ -479,7 +479,7 @@ class TestModelConfig:
         config_ids = set(model_config.list_model_config_ids())
 
         assert {
-            "anthropic-opus-4-7-low",
+            "anthropic-opus-4-7-medium",
             "anthropic-opus-4-7-low-thinking",
             "google-gemini-3-1-pro-preview",
             "openai-gpt-5-4-2026-03-05",
@@ -495,7 +495,7 @@ class TestModelConfig:
     @pytest.mark.parametrize(
         "config_id",
         [
-            "anthropic-opus-4-7-low",
+            "anthropic-opus-4-7-medium",
             "anthropic-opus-4-7-low-thinking",
         ],
     )
@@ -513,11 +513,11 @@ class TestModelConfig:
         assert isinstance(config["request"]["max_tokens"], int)
         assert config["request"]["max_tokens"] > 0
 
-    def test_checked_in_anthropic_thinking_config_uses_low_effort_adaptive_thinking(
+    def test_checked_in_anthropic_configs_use_adaptive_thinking(
         self,
     ):
         configs = [
-            model_config.get_model_config("anthropic-opus-4-7-low"),
+            model_config.get_model_config("anthropic-opus-4-7-medium"),
             model_config.get_model_config("anthropic-opus-4-7-low-thinking"),
         ]
 
@@ -525,10 +525,13 @@ class TestModelConfig:
             config["request"]["thinking"] == {"type": "adaptive"}
             for config in configs
         )
-        assert all(
-            config["request"]["output_config"] == {"effort": "low"}
-            for config in configs
-        )
+        assert configs[0]["request"]["output_config"] == {"effort": "medium"}
+        assert configs[1]["request"]["output_config"] == {"effort": "low"}
+
+    def test_checked_in_primary_anthropic_config_enables_streaming(self):
+        config = model_config.get_model_config("anthropic-opus-4-7-medium")
+
+        assert config["request"]["stream"] is True
 
     def test_checked_in_anthropic_configs_do_not_use_openai_compat_fields(self):
         configs = [

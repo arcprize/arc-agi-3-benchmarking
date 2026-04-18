@@ -34,13 +34,37 @@ class _FakeResponses:
 
 
 class _FakeAnthropicMessages:
-    def __init__(self, response: object) -> None:
+    def __init__(self, response: object, stream_response: object | None = None) -> None:
         self._response = response
+        self._stream_response = stream_response
         self.calls: list[dict] = []
+        self.stream_calls: list[dict] = []
 
     def create(self, **kwargs: object) -> object:
         self.calls.append(kwargs)
         return self._response
+
+    def stream(self, **kwargs: object) -> object:
+        self.stream_calls.append(kwargs)
+        return self._stream_response
+
+
+class _FakeAnthropicStream:
+    def __init__(self, events: list[object], final_message: object) -> None:
+        self._events = events
+        self._final_message = final_message
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        return None
+
+    def __iter__(self):
+        return iter(self._events)
+
+    def get_final_message(self) -> object:
+        return self._final_message
 
 
 class _FakeChatOpenAIClient:
@@ -54,8 +78,8 @@ class _FakeResponsesOpenAIClient:
 
 
 class _FakeAnthropicClient:
-    def __init__(self, response: object) -> None:
-        self.messages = _FakeAnthropicMessages(response)
+    def __init__(self, response: object, stream_response: object | None = None) -> None:
+        self.messages = _FakeAnthropicMessages(response, stream_response)
 
 
 def _chat_response(
@@ -159,6 +183,31 @@ def _anthropic_response(
             cache_read_input_tokens=cache_read_input_tokens,
         ),
     )
+
+
+def _anthropic_stream(
+    *,
+    events: list[object] | None = None,
+    final_message: object | None = None,
+) -> _FakeAnthropicStream:
+    if events is None:
+        events = [
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="text_delta", text="MOVE"),
+            ),
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="thinking_delta", thinking="inspect"),
+            ),
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="text_delta", text="_LEFT"),
+            ),
+        ]
+    if final_message is None:
+        final_message = _anthropic_response(text="", input_tokens=11, output_tokens=7)
+    return _FakeAnthropicStream(events, final_message)
 
 
 def _chat_request() -> ModelRequest:
@@ -557,6 +606,202 @@ class TestAnthropicMessagesAdapter:
         assert response.usage.total_tokens == 168
         assert response.usage.cached_tokens == 7
         assert response.usage.cache_write_tokens == 3
+
+    def test_stream_true_invokes_messages_stream_and_returns_normalized_response(self):
+        client = _FakeAnthropicClient(
+            _anthropic_response(),
+            stream_response=_anthropic_stream(
+                final_message=_anthropic_response(
+                    text="",
+                    input_tokens=123,
+                    output_tokens=45,
+                    cache_creation_input_tokens=3,
+                    cache_read_input_tokens=7,
+                )
+            ),
+        )
+        adapter = AnthropicMessagesAdapter(client)
+
+        response = adapter.invoke(
+            ModelRequest(
+                messages=_anthropic_request().messages,
+                request_config={
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 128,
+                    "stream": True,
+                    "thinking": {"type": "adaptive"},
+                },
+            )
+        )
+
+        assert client.messages.calls == []
+        assert client.messages.stream_calls == [
+            {
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 128,
+                "thinking": {"type": "adaptive"},
+                "system": "You are playing a game.",
+                "messages": [
+                    {"role": "user", "content": "frame 1"},
+                    {"role": "assistant", "content": "MOVE_LEFT"},
+                    {"role": "user", "content": "frame 2"},
+                ],
+            }
+        ]
+        assert response.output_text == "MOVE_LEFT"
+        assert response.reasoning_text is None
+        assert response.usage.input_tokens == 123
+        assert response.usage.output_tokens == 45
+        assert response.usage.total_tokens == 168
+        assert response.usage.cached_tokens == 7
+        assert response.usage.cache_write_tokens == 3
+
+    def test_stream_false_uses_create_and_does_not_forward_stream_kwarg(self):
+        client = _FakeAnthropicClient(_anthropic_response(text="RESET"))
+        adapter = AnthropicMessagesAdapter(client)
+
+        response = adapter.invoke(
+            ModelRequest(
+                messages=[Message(role="user", content="frame")],
+                request_config={
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 128,
+                    "stream": False,
+                },
+            )
+        )
+
+        assert client.messages.stream_calls == []
+        assert client.messages.calls == [
+            {
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 128,
+                "messages": [{"role": "user", "content": "frame"}],
+            }
+        ]
+        assert response.output_text == "RESET"
+
+    def test_streaming_usage_can_come_from_message_delta_event(self):
+        usage = SimpleNamespace(
+            input_tokens=50,
+            output_tokens=12,
+            cache_creation_input_tokens=4,
+            cache_read_input_tokens=6,
+        )
+        client = _FakeAnthropicClient(
+            _anthropic_response(),
+            stream_response=_anthropic_stream(
+                events=[
+                    SimpleNamespace(
+                        type="message_delta",
+                        delta=SimpleNamespace(usage=usage),
+                    ),
+                    SimpleNamespace(
+                        type="content_block_delta",
+                        delta=SimpleNamespace(type="text_delta", text="ACTION1"),
+                    ),
+                ],
+                final_message=SimpleNamespace(content=[]),
+            ),
+        )
+        adapter = AnthropicMessagesAdapter(client)
+
+        response = adapter.invoke(
+            ModelRequest(
+                messages=[Message(role="user", content="frame")],
+                request_config={
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 128,
+                    "stream": True,
+                },
+            )
+        )
+
+        assert response.output_text == "ACTION1"
+        assert response.usage.input_tokens == 50
+        assert response.usage.output_tokens == 12
+        assert response.usage.total_tokens == 62
+        assert response.usage.cached_tokens == 6
+        assert response.usage.cache_write_tokens == 4
+
+    def test_streaming_final_message_usage_takes_precedence_over_event_usage(self):
+        event_usage = SimpleNamespace(
+            input_tokens=1,
+            output_tokens=2,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        )
+        client = _FakeAnthropicClient(
+            _anthropic_response(),
+            stream_response=_anthropic_stream(
+                events=[
+                    SimpleNamespace(
+                        type="message_delta",
+                        delta=SimpleNamespace(usage=event_usage),
+                    ),
+                    SimpleNamespace(
+                        type="content_block_delta",
+                        delta=SimpleNamespace(type="text_delta", text="ACTION1"),
+                    ),
+                ],
+                final_message=_anthropic_response(
+                    text="",
+                    input_tokens=101,
+                    output_tokens=13,
+                    cache_creation_input_tokens=5,
+                    cache_read_input_tokens=7,
+                ),
+            ),
+        )
+        adapter = AnthropicMessagesAdapter(client)
+
+        response = adapter.invoke(
+            ModelRequest(
+                messages=[Message(role="user", content="frame")],
+                request_config={
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 128,
+                    "stream": True,
+                },
+            )
+        )
+
+        assert response.output_text == "ACTION1"
+        assert response.usage.input_tokens == 101
+        assert response.usage.output_tokens == 13
+        assert response.usage.total_tokens == 114
+        assert response.usage.cached_tokens == 7
+        assert response.usage.cache_write_tokens == 5
+
+    def test_empty_streaming_output_raises_empty_response_error(self):
+        client = _FakeAnthropicClient(
+            _anthropic_response(),
+            stream_response=_anthropic_stream(
+                events=[
+                    SimpleNamespace(
+                        type="content_block_delta",
+                        delta=SimpleNamespace(type="thinking_delta", thinking="inspect"),
+                    )
+                ],
+                final_message=SimpleNamespace(content=[]),
+            ),
+        )
+        adapter = AnthropicMessagesAdapter(client)
+
+        with pytest.raises(EmptyResponseError) as exc_info:
+            adapter.invoke(
+                ModelRequest(
+                    messages=[Message(role="user", content="frame")],
+                    request_config={
+                        "model": "claude-sonnet-4-6",
+                        "max_tokens": 128,
+                        "stream": True,
+                    },
+                )
+            )
+
+        assert str(exc_info.value) == "API returned 200 with empty output."
+        assert exc_info.value.response is not None
 
     def test_maps_first_system_message_to_top_level_system(self):
         request_kwargs = AnthropicMessagesAdapter._build_request_kwargs(
