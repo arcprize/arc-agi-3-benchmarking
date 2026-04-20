@@ -10,13 +10,13 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from arcengine import FrameData, GameAction, GameState
-from openai import OpenAI as OpenAIClient
 
 from .base import Agent
 from .exceptions import EmptyResponseError
 from .model_config import get_model_config
 from .recording import RunRecord, StepRecord, StepUsage
 from .runtime_adapters import build_model_runtime_adapter
+from .runtime_clients import build_model_runtime_client
 from .runtime_models import (
     Message,
     ModelRequest,
@@ -29,7 +29,7 @@ logger = logging.getLogger()
 
 
 class BenchmarkingAgent(Agent):
-    """An agent that maintains a growing conversation with an OpenAI model.
+    """An agent that maintains a growing conversation with a model runtime.
 
     Each turn appends a user message (frame data as text) and an assistant
     message (reasoning + chosen action). On context overflow, the oldest
@@ -46,10 +46,6 @@ class BenchmarkingAgent(Agent):
     # Empirically, rendered ARC grid payloads are close to 1 char per token.
     # Using 1.0 is intentionally conservative relative to observed runs.
     ESTIMATED_CHARS_PER_TOKEN: float = 1.0
-
-    # Defaults used when the YAML entry is missing client fields
-    _DEFAULT_BASE_URL: str = "https://openrouter.ai/api/v1"
-    _DEFAULT_API_KEY_ENV: str = "OPENROUTER_API_KEY"
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -105,25 +101,16 @@ class BenchmarkingAgent(Agent):
         self._level_action_counter: int = 0
         self._last_levels_completed: int = 0
         self._level_just_advanced: bool = False
+        self._pending_action_reasoning: dict[str, Any] = {}
 
         # Adapter-specific request kwargs from the selected model config.
         self.MODEL: str = request_cfg["model"]
         self._request_kwargs: dict[str, Any] = request_cfg
 
-        # Validate that the required API key is set before attempting any requests
-        api_key_env = client_cfg["api_key_env"]
-        api_key = os.environ.get(api_key_env, "")
-        if not api_key:
-            raise ValueError(
-                f"No {api_key_env} set. "
-                f"The selected model config '{self.MODEL_CONFIG_ID}' requires "
-                f"the {api_key_env} environment variable to be set in your .env file."
-            )
-
-        # Client
-        self._client = OpenAIClient(
-            base_url=client_cfg["base_url"],
-            api_key=api_key,
+        self._client = build_model_runtime_client(
+            runtime_config=runtime_cfg,
+            client_config=client_cfg,
+            config_id=self.MODEL_CONFIG_ID,
         )
         self._adapter = build_model_runtime_adapter(
             client=self._client,
@@ -161,7 +148,7 @@ class BenchmarkingAgent(Agent):
         - agent_cfg:    agent-level settings
                         (MAX_ACTIONS_BASELINE_MULTIPLIER, MAX_CONTEXT_LENGTH, …)
         - runtime_cfg:  execution profile (sdk, api)
-        - client_cfg:   OpenAI client constructor args (base_url, api_key_env)
+        - client_cfg:   SDK client constructor args (base_url, api_key_env)
         - request_cfg:  kwargs passed to the selected runtime adapter
                         (model, max_completion_tokens, reasoning_effort, ...)
         - pricing_cfg:  per-million-token pricing (input, output)
@@ -175,9 +162,6 @@ class BenchmarkingAgent(Agent):
         client_cfg: dict[str, Any] = dict(raw.get("client", {}))
         request_cfg: dict[str, Any] = dict(raw.get("request", {}))
         pricing_cfg: dict[str, float] = dict(raw.get("pricing", {}))
-
-        client_cfg.setdefault("base_url", self._DEFAULT_BASE_URL)
-        client_cfg.setdefault("api_key_env", self._DEFAULT_API_KEY_ENV)
 
         return agent_cfg, runtime_cfg, client_cfg, request_cfg, pricing_cfg
 
@@ -406,10 +390,14 @@ class BenchmarkingAgent(Agent):
 
     def do_action_request(self, action: GameAction) -> FrameData:
         data = action.action_data.model_dump()
-        reasoning = getattr(action, "reasoning", {}) or {}
+        reasoning = self._pending_action_reasoning or getattr(action, "reasoning", {}) or {}
+        self._pending_action_reasoning = {}
         raw = self.arc_env.step(action, data=data, reasoning=reasoning)
         self._previous_action = action
-        return self._convert_raw_frame_data(raw)
+        frame = self._convert_raw_frame_data(raw)
+        if reasoning:
+            frame.action_input.reasoning = reasoning
+        return frame
 
     # ── Core loop ────────────────────────────────────────────────────────
 
@@ -508,7 +496,7 @@ class BenchmarkingAgent(Agent):
         )
         if metadata.reasoning:
             metadata.reasoning = metadata.reasoning[:12_000]
-        action.reasoning = metadata.model_dump()
+        self._pending_action_reasoning = metadata.model_dump()
         total_cost = metadata.cost.total_cost
         input_cost = metadata.cost.input_cost
         output_cost = metadata.cost.output_cost

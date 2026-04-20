@@ -3,7 +3,9 @@ from types import SimpleNamespace
 import pytest
 
 from benchmarking.exceptions import EmptyResponseError
+from benchmarking.model_config import get_model_config
 from benchmarking.runtime_adapters import (
+    AnthropicMessagesAdapter,
     OpenAIChatCompletionsAdapter,
     OpenAIResponsesAdapter,
     build_model_runtime_adapter,
@@ -31,6 +33,40 @@ class _FakeResponses:
         return self._response
 
 
+class _FakeAnthropicMessages:
+    def __init__(self, response: object, stream_response: object | None = None) -> None:
+        self._response = response
+        self._stream_response = stream_response
+        self.calls: list[dict] = []
+        self.stream_calls: list[dict] = []
+
+    def create(self, **kwargs: object) -> object:
+        self.calls.append(kwargs)
+        return self._response
+
+    def stream(self, **kwargs: object) -> object:
+        self.stream_calls.append(kwargs)
+        return self._stream_response
+
+
+class _FakeAnthropicStream:
+    def __init__(self, events: list[object], final_message: object) -> None:
+        self._events = events
+        self._final_message = final_message
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        return None
+
+    def __iter__(self):
+        return iter(self._events)
+
+    def get_final_message(self) -> object:
+        return self._final_message
+
+
 class _FakeChatOpenAIClient:
     def __init__(self, response: object) -> None:
         self.chat = SimpleNamespace(completions=_FakeChatCompletions(response))
@@ -39,6 +75,11 @@ class _FakeChatOpenAIClient:
 class _FakeResponsesOpenAIClient:
     def __init__(self, response: object) -> None:
         self.responses = _FakeResponses(response)
+
+
+class _FakeAnthropicClient:
+    def __init__(self, response: object, stream_response: object | None = None) -> None:
+        self.messages = _FakeAnthropicMessages(response, stream_response)
 
 
 def _chat_response(
@@ -125,6 +166,50 @@ def _responses_output(
     )
 
 
+def _anthropic_response(
+    *,
+    text: str = "MOVE_LEFT",
+    input_tokens: int = 11,
+    output_tokens: int = 7,
+    cache_creation_input_tokens: int = 2,
+    cache_read_input_tokens: int = 5,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        content=[SimpleNamespace(type="text", text=text)],
+        usage=SimpleNamespace(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
+        ),
+    )
+
+
+def _anthropic_stream(
+    *,
+    events: list[object] | None = None,
+    final_message: object | None = None,
+) -> _FakeAnthropicStream:
+    if events is None:
+        events = [
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="text_delta", text="MOVE"),
+            ),
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="thinking_delta", thinking="inspect"),
+            ),
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="text_delta", text="_LEFT"),
+            ),
+        ]
+    if final_message is None:
+        final_message = _anthropic_response(text="", input_tokens=11, output_tokens=7)
+    return _FakeAnthropicStream(events, final_message)
+
+
 def _chat_request() -> ModelRequest:
     return ModelRequest(
         messages=[
@@ -144,6 +229,18 @@ def _responses_request() -> ModelRequest:
             Message(role="user", content="frame 2"),
         ],
         request_config={"model": "gpt-5.4", "max_output_tokens": 128},
+    )
+
+
+def _anthropic_request() -> ModelRequest:
+    return ModelRequest(
+        messages=[
+            Message(role="system", content="You are playing a game."),
+            Message(role="user", content="frame 1"),
+            Message(role="assistant", content="MOVE_LEFT"),
+            Message(role="user", content="frame 2"),
+        ],
+        request_config={"model": "claude-sonnet-4-6", "max_tokens": 128},
     )
 
 
@@ -475,6 +572,348 @@ class TestOpenAIResponsesAdapter:
 
 
 @pytest.mark.unit
+class TestAnthropicMessagesAdapter:
+    def test_invokes_messages_create_and_returns_normalized_response(self):
+        client = _FakeAnthropicClient(
+            _anthropic_response(
+                text="RESET",
+                input_tokens=123,
+                output_tokens=45,
+                cache_creation_input_tokens=3,
+                cache_read_input_tokens=7,
+            )
+        )
+        adapter = AnthropicMessagesAdapter(client)
+
+        response = adapter.invoke(_anthropic_request())
+
+        assert client.messages.calls == [
+            {
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 128,
+                "system": "You are playing a game.",
+                "messages": [
+                    {"role": "user", "content": "frame 1"},
+                    {"role": "assistant", "content": "MOVE_LEFT"},
+                    {"role": "user", "content": "frame 2"},
+                ],
+            }
+        ]
+        assert response.output_text == "RESET"
+        assert response.reasoning_text is None
+        assert response.usage.input_tokens == 123
+        assert response.usage.output_tokens == 45
+        assert response.usage.total_tokens == 168
+        assert response.usage.cached_tokens == 7
+        assert response.usage.cache_write_tokens == 3
+
+    def test_stream_true_invokes_messages_stream_and_returns_normalized_response(self):
+        client = _FakeAnthropicClient(
+            _anthropic_response(),
+            stream_response=_anthropic_stream(
+                final_message=_anthropic_response(
+                    text="",
+                    input_tokens=123,
+                    output_tokens=45,
+                    cache_creation_input_tokens=3,
+                    cache_read_input_tokens=7,
+                )
+            ),
+        )
+        adapter = AnthropicMessagesAdapter(client)
+
+        response = adapter.invoke(
+            ModelRequest(
+                messages=_anthropic_request().messages,
+                request_config={
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 128,
+                    "stream": True,
+                    "thinking": {"type": "adaptive"},
+                },
+            )
+        )
+
+        assert client.messages.calls == []
+        assert client.messages.stream_calls == [
+            {
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 128,
+                "thinking": {"type": "adaptive"},
+                "system": "You are playing a game.",
+                "messages": [
+                    {"role": "user", "content": "frame 1"},
+                    {"role": "assistant", "content": "MOVE_LEFT"},
+                    {"role": "user", "content": "frame 2"},
+                ],
+            }
+        ]
+        assert response.output_text == "MOVE_LEFT"
+        assert response.reasoning_text is None
+        assert response.usage.input_tokens == 123
+        assert response.usage.output_tokens == 45
+        assert response.usage.total_tokens == 168
+        assert response.usage.cached_tokens == 7
+        assert response.usage.cache_write_tokens == 3
+
+    def test_stream_false_uses_create_and_does_not_forward_stream_kwarg(self):
+        client = _FakeAnthropicClient(_anthropic_response(text="RESET"))
+        adapter = AnthropicMessagesAdapter(client)
+
+        response = adapter.invoke(
+            ModelRequest(
+                messages=[Message(role="user", content="frame")],
+                request_config={
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 128,
+                    "stream": False,
+                },
+            )
+        )
+
+        assert client.messages.stream_calls == []
+        assert client.messages.calls == [
+            {
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 128,
+                "messages": [{"role": "user", "content": "frame"}],
+            }
+        ]
+        assert response.output_text == "RESET"
+
+    def test_streaming_usage_can_come_from_message_delta_event(self):
+        usage = SimpleNamespace(
+            input_tokens=50,
+            output_tokens=12,
+            cache_creation_input_tokens=4,
+            cache_read_input_tokens=6,
+        )
+        client = _FakeAnthropicClient(
+            _anthropic_response(),
+            stream_response=_anthropic_stream(
+                events=[
+                    SimpleNamespace(
+                        type="message_delta",
+                        delta=SimpleNamespace(usage=usage),
+                    ),
+                    SimpleNamespace(
+                        type="content_block_delta",
+                        delta=SimpleNamespace(type="text_delta", text="ACTION1"),
+                    ),
+                ],
+                final_message=SimpleNamespace(content=[]),
+            ),
+        )
+        adapter = AnthropicMessagesAdapter(client)
+
+        response = adapter.invoke(
+            ModelRequest(
+                messages=[Message(role="user", content="frame")],
+                request_config={
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 128,
+                    "stream": True,
+                },
+            )
+        )
+
+        assert response.output_text == "ACTION1"
+        assert response.usage.input_tokens == 50
+        assert response.usage.output_tokens == 12
+        assert response.usage.total_tokens == 62
+        assert response.usage.cached_tokens == 6
+        assert response.usage.cache_write_tokens == 4
+
+    def test_streaming_final_message_usage_takes_precedence_over_event_usage(self):
+        event_usage = SimpleNamespace(
+            input_tokens=1,
+            output_tokens=2,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        )
+        client = _FakeAnthropicClient(
+            _anthropic_response(),
+            stream_response=_anthropic_stream(
+                events=[
+                    SimpleNamespace(
+                        type="message_delta",
+                        delta=SimpleNamespace(usage=event_usage),
+                    ),
+                    SimpleNamespace(
+                        type="content_block_delta",
+                        delta=SimpleNamespace(type="text_delta", text="ACTION1"),
+                    ),
+                ],
+                final_message=_anthropic_response(
+                    text="",
+                    input_tokens=101,
+                    output_tokens=13,
+                    cache_creation_input_tokens=5,
+                    cache_read_input_tokens=7,
+                ),
+            ),
+        )
+        adapter = AnthropicMessagesAdapter(client)
+
+        response = adapter.invoke(
+            ModelRequest(
+                messages=[Message(role="user", content="frame")],
+                request_config={
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 128,
+                    "stream": True,
+                },
+            )
+        )
+
+        assert response.output_text == "ACTION1"
+        assert response.usage.input_tokens == 101
+        assert response.usage.output_tokens == 13
+        assert response.usage.total_tokens == 114
+        assert response.usage.cached_tokens == 7
+        assert response.usage.cache_write_tokens == 5
+
+    def test_empty_streaming_output_raises_empty_response_error(self):
+        client = _FakeAnthropicClient(
+            _anthropic_response(),
+            stream_response=_anthropic_stream(
+                events=[
+                    SimpleNamespace(
+                        type="content_block_delta",
+                        delta=SimpleNamespace(type="thinking_delta", thinking="inspect"),
+                    )
+                ],
+                final_message=SimpleNamespace(content=[]),
+            ),
+        )
+        adapter = AnthropicMessagesAdapter(client)
+
+        with pytest.raises(EmptyResponseError) as exc_info:
+            adapter.invoke(
+                ModelRequest(
+                    messages=[Message(role="user", content="frame")],
+                    request_config={
+                        "model": "claude-sonnet-4-6",
+                        "max_tokens": 128,
+                        "stream": True,
+                    },
+                )
+            )
+
+        assert str(exc_info.value) == "API returned 200 with empty output."
+        assert exc_info.value.response is not None
+
+    def test_maps_first_system_message_to_top_level_system(self):
+        request_kwargs = AnthropicMessagesAdapter._build_request_kwargs(
+            _anthropic_request()
+        )
+
+        assert request_kwargs["system"] == "You are playing a game."
+
+    def test_sends_remaining_user_assistant_turns_as_messages(self):
+        request_kwargs = AnthropicMessagesAdapter._build_request_kwargs(
+            _anthropic_request()
+        )
+
+        assert request_kwargs["messages"] == [
+            {"role": "user", "content": "frame 1"},
+            {"role": "assistant", "content": "MOVE_LEFT"},
+            {"role": "user", "content": "frame 2"},
+        ]
+
+    def test_sends_all_turns_as_messages_without_leading_system_message(self):
+        request_kwargs = AnthropicMessagesAdapter._build_request_kwargs(
+            ModelRequest(
+                messages=[
+                    Message(role="user", content="frame 1"),
+                    Message(role="assistant", content="MOVE_LEFT"),
+                    Message(role="user", content="frame 2"),
+                ],
+                request_config={"model": "claude-sonnet-4-6", "max_tokens": 128},
+            )
+        )
+
+        assert "system" not in request_kwargs
+        assert request_kwargs["messages"] == [
+            {"role": "user", "content": "frame 1"},
+            {"role": "assistant", "content": "MOVE_LEFT"},
+            {"role": "user", "content": "frame 2"},
+        ]
+
+    def test_passes_request_config_kwargs_unchanged(self):
+        request_kwargs = AnthropicMessagesAdapter._build_request_kwargs(
+            ModelRequest(
+                messages=[Message(role="user", content="frame")],
+                request_config={
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 99,
+                    "metadata": {"run_id": "run_123"},
+                },
+            )
+        )
+
+        assert request_kwargs["model"] == "claude-sonnet-4-6"
+        assert request_kwargs["max_tokens"] == 99
+        assert request_kwargs["metadata"] == {"run_id": "run_123"}
+
+    def test_passes_thinking_config_unchanged(self):
+        request_kwargs = AnthropicMessagesAdapter._build_request_kwargs(
+            ModelRequest(
+                messages=[Message(role="user", content="frame")],
+                request_config={
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 128,
+                    "thinking": {"type": "adaptive"},
+                    "output_config": {"effort": "high"},
+                },
+            )
+        )
+
+        assert request_kwargs["thinking"] == {"type": "adaptive"}
+        assert request_kwargs["output_config"] == {"effort": "high"}
+
+    def test_preserves_analysis_mode_replay_content_in_messages(self):
+        replay_content = (
+            "<reasoning_summary>\n"
+            "inspect the top row\n"
+            "</reasoning_summary>\n\n"
+            "MOVE_LEFT"
+        )
+
+        request_kwargs = AnthropicMessagesAdapter._build_request_kwargs(
+            ModelRequest(
+                messages=[
+                    Message(role="system", content="Use replay context."),
+                    Message(role="user", content="frame 1"),
+                    Message(role="assistant", content=replay_content),
+                    Message(role="user", content="frame 2"),
+                ],
+                request_config={"model": "claude-sonnet-4-6", "max_tokens": 128},
+            )
+        )
+
+        assert request_kwargs["messages"] == [
+            {"role": "user", "content": "frame 1"},
+            {"role": "assistant", "content": replay_content},
+            {"role": "user", "content": "frame 2"},
+        ]
+
+    def test_does_not_mutate_original_request_config(self):
+        request_config = {"model": "claude-sonnet-4-6", "max_tokens": 128}
+        request = ModelRequest(
+            messages=[Message(role="system", content="System prompt")],
+            request_config=request_config,
+        )
+
+        request_kwargs = AnthropicMessagesAdapter._build_request_kwargs(request)
+
+        assert request.request_config == request_config
+        assert "system" not in request.request_config
+        assert "messages" not in request.request_config
+        assert request_kwargs is not request.request_config
+
+
+@pytest.mark.unit
 class TestBuildModelRuntimeAdapter:
     def test_selects_chat_completions_adapter_from_runtime_tuple(self):
         adapter = build_model_runtime_adapter(
@@ -501,6 +940,37 @@ class TestBuildModelRuntimeAdapter:
         )
 
         assert isinstance(adapter, OpenAIResponsesAdapter)
+
+    def test_selects_anthropic_messages_adapter_from_runtime_tuple(self):
+        adapter = build_model_runtime_adapter(
+            client=_FakeAnthropicClient(SimpleNamespace()),
+            runtime_config={
+                "sdk": "anthropic-python",
+                "api": "messages",
+                "state": "manual_rolling",
+            },
+            config_id="anthropic-config",
+        )
+
+        assert isinstance(adapter, AnthropicMessagesAdapter)
+
+    def test_checked_in_openai_configs_select_existing_openai_adapters(self):
+        chat_config = get_model_config("openai-gpt-5-4-2026-03-05")
+        responses_config = get_model_config("openai-gpt-5-4-2026-03-05-responses")
+
+        chat_adapter = build_model_runtime_adapter(
+            client=_FakeChatOpenAIClient(_chat_response()),
+            runtime_config=chat_config["runtime"],
+            config_id=chat_config["id"],
+        )
+        responses_adapter = build_model_runtime_adapter(
+            client=_FakeResponsesOpenAIClient(_responses_output()),
+            runtime_config=responses_config["runtime"],
+            config_id=responses_config["id"],
+        )
+
+        assert isinstance(chat_adapter, OpenAIChatCompletionsAdapter)
+        assert isinstance(responses_adapter, OpenAIResponsesAdapter)
 
     def test_unsupported_runtime_state_fails_clearly(self):
         with pytest.raises(

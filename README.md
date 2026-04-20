@@ -84,6 +84,13 @@ uv run main.py --list-configs
 uv run main.py --game=ls20 --config=openai-gpt-5-4-2026-03-05
 ```
 
+Native Anthropic configs are also available:
+
+```bash
+uv run main.py --game=ls20 --config=anthropic-opus-4-7-low
+uv run main.py --game=ls20 --config=anthropic-opus-4-7-low-thinking
+```
+
 6. Or on all games:
 
 ```bash

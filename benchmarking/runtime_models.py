@@ -139,6 +139,25 @@ def _normalize_responses_usage(usage: Any) -> dict[str, Any]:
     return normalized_usage_kwargs
 
 
+def _normalize_anthropic_messages_usage(usage: Any) -> dict[str, Any]:
+    if not usage:
+        return {}
+
+    input_tokens = _value_from_response_object(usage, "input_tokens", 0) or 0
+    output_tokens = _value_from_response_object(usage, "output_tokens", 0) or 0
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+        "cached_tokens": (
+            _value_from_response_object(usage, "cache_read_input_tokens", 0) or 0
+        ),
+        "cache_write_tokens": (
+            _value_from_response_object(usage, "cache_creation_input_tokens", 0) or 0
+        ),
+    }
+
+
 def _extract_responses_output_text(response: Any) -> str:
     helper_text = _value_from_response_object(response, "output_text")
     if helper_text is not None:
@@ -166,6 +185,29 @@ def _extract_responses_output_text(response: Any) -> str:
             text_parts.append(_value_from_response_object(content_item, "text", "") or "")
 
     if not found_message_item:
+        raise EmptyResponseError(
+            "API returned 200 with empty output.",
+            response=response,
+        )
+
+    return "".join(text_parts)
+
+
+def _extract_anthropic_messages_output_text(response: Any) -> str:
+    content_blocks = _value_from_response_object(response, "content", []) or []
+    if not content_blocks:
+        raise EmptyResponseError(
+            "API returned 200 with empty output.",
+            response=response,
+        )
+
+    text_parts: list[str] = []
+    for content_block in content_blocks:
+        if _value_from_response_object(content_block, "type") != "text":
+            continue
+        text_parts.append(_value_from_response_object(content_block, "text", "") or "")
+
+    if not text_parts:
         raise EmptyResponseError(
             "API returned 200 with empty output.",
             response=response,
@@ -231,6 +273,19 @@ def normalize_responses_response(response: Any) -> ModelResponse:
         reasoning_text=_extract_responses_reasoning_text(response),
         usage=NormalizedUsage(
             **_normalize_responses_usage(
+                _value_from_response_object(response, "usage"),
+            )
+        ),
+        raw_response=response,
+    )
+
+
+def normalize_anthropic_messages_response(response: Any) -> ModelResponse:
+    return ModelResponse(
+        output_text=_extract_anthropic_messages_output_text(response),
+        reasoning_text=None,
+        usage=NormalizedUsage(
+            **_normalize_anthropic_messages_usage(
                 _value_from_response_object(response, "usage"),
             )
         ),

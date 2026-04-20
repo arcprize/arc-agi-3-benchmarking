@@ -14,41 +14,45 @@
     max_completion_tokens: 1_000_000
   pricing: {}
 
-- id: "anthropic-opus-4-6"
+- id: "anthropic-opus-4-7-medium"
   agent:
     MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
     MAX_CONTEXT_LENGTH: 175_000
   runtime:
-    sdk: "openai-python"
-    api: "chat_completions"
+    sdk: "anthropic-python"
+    api: "messages"
     state: "manual_rolling"
   client:
-    base_url: "https://api.anthropic.com/v1/"
     api_key_env: "ANTHROPIC_API_KEY"
   request:
-    model: "claude-opus-4-6"
-    max_tokens: 128_000
+    model: "claude-opus-4-7"
+    max_tokens: 120000
+    stream: true
+    thinking:
+      type: "adaptive"
+    output_config:
+      effort: "medium"
   pricing:
     input: 5.00
     output: 25.00
 
-- id: "anthropic-opus-4-6-max-effort"
+- id: "anthropic-opus-4-7-low-thinking"
   agent:
     MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
     MAX_CONTEXT_LENGTH: 175_000
   runtime:
-    sdk: "openai-python"
-    api: "chat_completions"
+    sdk: "anthropic-python"
+    api: "messages"
     state: "manual_rolling"
   client:
-    base_url: "https://api.anthropic.com/v1/"
     api_key_env: "ANTHROPIC_API_KEY"
   request:
-    model: "claude-opus-4-6"
+    model: "claude-opus-4-7"
     max_tokens: 128_000
-    extra_body:
-      output_config:
-        effort: "max"
+    thinking:
+      type: "adaptive"
+    output_config:
+      effort: "low"
   pricing:
     input: 5.00
     output: 25.00

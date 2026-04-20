@@ -1,14 +1,16 @@
 from types import SimpleNamespace
 
-from pydantic import ValidationError
 import pytest
+from pydantic import ValidationError
 
+from benchmarking.exceptions import EmptyResponseError
 from benchmarking.runtime_models import (
     Message,
     ModelRequest,
     ModelResponse,
     NormalizedUsage,
     action_metadata_from_model_response,
+    normalize_anthropic_messages_response,
     normalize_chat_completion_response,
     normalize_responses_response,
 )
@@ -76,6 +78,27 @@ def _responses_response() -> SimpleNamespace:
             ),
             output_tokens_details=SimpleNamespace(reasoning_tokens=3),
             model_extra={"cost": 0.42, "cost_details": {"provider_cost": 0.42}},
+        ),
+    )
+
+
+def _anthropic_response(
+    *,
+    content: list[object] | None = None,
+    input_tokens: int = 15,
+    output_tokens: int = 7,
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
+) -> SimpleNamespace:
+    if content is None:
+        content = [SimpleNamespace(type="text", text="TOKEN_PROBE")]
+    return SimpleNamespace(
+        content=content,
+        usage=SimpleNamespace(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
         ),
     )
 
@@ -332,3 +355,134 @@ class TestRuntimeModels:
         assert metadata.cost.input_cost == pytest.approx(0.00009)
         assert metadata.cost.output_cost == pytest.approx(0.001305)
         assert metadata.cost.total_cost == pytest.approx(0.001395)
+
+    def test_anthropic_messages_normalizer_extracts_text_content_block(self):
+        model_response = normalize_anthropic_messages_response(
+            _anthropic_response(
+                content=[SimpleNamespace(type="text", text="MOVE_LEFT")]
+            )
+        )
+
+        assert model_response.output_text == "MOVE_LEFT"
+
+    def test_anthropic_messages_normalizer_concatenates_multiple_text_blocks(self):
+        model_response = normalize_anthropic_messages_response(
+            _anthropic_response(
+                content=[
+                    SimpleNamespace(type="text", text="MOVE"),
+                    SimpleNamespace(type="text", text="_LEFT"),
+                ]
+            )
+        )
+
+        assert model_response.output_text == "MOVE_LEFT"
+
+    def test_anthropic_messages_normalizer_ignores_thinking_blocks_for_now(self):
+        model_response = normalize_anthropic_messages_response(
+            _anthropic_response(
+                content=[
+                    SimpleNamespace(type="thinking", thinking="inspect the top row"),
+                    SimpleNamespace(type="text", text="RESET"),
+                ]
+            )
+        )
+
+        assert model_response.output_text == "RESET"
+        assert model_response.reasoning_text is None
+        assert model_response.usage.reasoning_tokens == 0
+
+    def test_anthropic_messages_usage_total_matches_input_plus_output_tokens(self):
+        model_response = normalize_anthropic_messages_response(
+            _anthropic_response(input_tokens=27, output_tokens=48)
+        )
+
+        assert model_response.usage.input_tokens == 27
+        assert model_response.usage.output_tokens == 48
+        assert model_response.usage.total_tokens == 75
+
+    def test_anthropic_messages_usage_maps_cache_read_and_write_tokens(self):
+        model_response = normalize_anthropic_messages_response(
+            _anthropic_response(
+                input_tokens=100,
+                output_tokens=20,
+                cache_creation_input_tokens=31,
+                cache_read_input_tokens=47,
+            )
+        )
+
+        assert model_response.usage.cached_tokens == 47
+        assert model_response.usage.cache_write_tokens == 31
+
+    def test_anthropic_messages_normalizer_maps_dict_response_and_usage_schema(self):
+        raw_response = {
+            "content": [
+                {
+                    "citations": None,
+                    "text": "TOKEN_PROBE",
+                    "type": "text",
+                }
+            ],
+            "usage": {
+                "input_tokens": 15,
+                "output_tokens": 7,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            },
+        }
+
+        model_response = normalize_anthropic_messages_response(raw_response)
+
+        assert model_response.output_text == "TOKEN_PROBE"
+        assert model_response.usage.input_tokens == 15
+        assert model_response.usage.output_tokens == 7
+        assert model_response.usage.total_tokens == 22
+        assert model_response.usage.cached_tokens == 0
+        assert model_response.usage.cache_write_tokens == 0
+
+    def test_anthropic_messages_empty_content_raises_empty_response_error(self):
+        raw_response = _anthropic_response(content=[])
+
+        with pytest.raises(EmptyResponseError) as exc_info:
+            normalize_anthropic_messages_response(raw_response)
+
+        assert str(exc_info.value) == "API returned 200 with empty output."
+        assert exc_info.value.response is raw_response
+
+    def test_anthropic_messages_content_without_text_raises_empty_response_error(self):
+        raw_response = _anthropic_response(
+            content=[SimpleNamespace(type="thinking", thinking="inspect")]
+        )
+
+        with pytest.raises(EmptyResponseError) as exc_info:
+            normalize_anthropic_messages_response(raw_response)
+
+        assert str(exc_info.value) == "API returned 200 with empty output."
+        assert exc_info.value.response is raw_response
+
+    def test_anthropic_messages_raw_response_is_preserved(self):
+        raw_response = _anthropic_response()
+
+        model_response = normalize_anthropic_messages_response(raw_response)
+
+        assert model_response.raw_response is raw_response
+
+    def test_anthropic_messages_metadata_projection_maps_usage_and_cost(self):
+        raw_response = _anthropic_response(
+            content=[SimpleNamespace(type="text", text="PUSH")],
+            input_tokens=1_000,
+            output_tokens=200,
+        )
+
+        metadata = action_metadata_from_model_response(
+            normalize_anthropic_messages_response(raw_response),
+            pricing={"input": 5.00, "output": 25.00},
+        )
+
+        assert metadata.output == "PUSH"
+        assert metadata.reasoning is None
+        assert metadata.usage.input_tokens == 1_000
+        assert metadata.usage.output_tokens == 200
+        assert metadata.usage.total_tokens == 1_200
+        assert metadata.cost.input_cost == pytest.approx(0.005)
+        assert metadata.cost.output_cost == pytest.approx(0.005)
+        assert metadata.cost.total_cost == pytest.approx(0.01)
