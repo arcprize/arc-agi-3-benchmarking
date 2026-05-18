@@ -139,6 +139,46 @@ def _normalize_responses_usage(usage: Any) -> dict[str, Any]:
     return normalized_usage_kwargs
 
 
+def _normalize_google_genai_usage(usage: Any) -> dict[str, Any]:
+    """Normalize Gemini `usage_metadata` into our common token-accounting shape.
+
+    Gemini reports tokens with these fields (any of which may be missing or
+    ``None`` when the value is zero):
+
+    - ``prompt_token_count``: input tokens, INCLUDING any cached prompt tokens.
+    - ``candidates_token_count``: visible output tokens (assistant text).
+    - ``thoughts_token_count``: hidden reasoning tokens. Gemini bills these at
+      the *output* rate.
+    - ``cached_content_token_count``: subset of the prompt served from cache.
+    - ``total_token_count``: prompt + candidates + thoughts (+ tool tokens).
+
+    To keep cost math consistent with the other adapters (where
+    ``output_cost = output_tokens * output_price`` already covers reasoning),
+    we fold ``thoughts_token_count`` into ``output_tokens`` and keep it
+    separately under ``reasoning_tokens`` for reporting.
+    """
+    if not usage:
+        return {}
+
+    prompt_tokens = _value_from_response_object(usage, "prompt_token_count", 0) or 0
+    candidates_tokens = (
+        _value_from_response_object(usage, "candidates_token_count", 0) or 0
+    )
+    thoughts_tokens = (
+        _value_from_response_object(usage, "thoughts_token_count", 0) or 0
+    )
+    cached_tokens = (
+        _value_from_response_object(usage, "cached_content_token_count", 0) or 0
+    )
+    return {
+        "input_tokens": prompt_tokens,
+        "output_tokens": candidates_tokens + thoughts_tokens,
+        "total_tokens": prompt_tokens + candidates_tokens + thoughts_tokens,
+        "reasoning_tokens": thoughts_tokens,
+        "cached_tokens": cached_tokens,
+    }
+
+
 def _normalize_anthropic_messages_usage(usage: Any) -> dict[str, Any]:
     if not usage:
         return {}
@@ -216,6 +256,55 @@ def _extract_anthropic_messages_output_text(response: Any) -> str:
     return "".join(text_parts)
 
 
+def _google_genai_part_text(part: Any) -> str:
+    text = _value_from_response_object(part, "text")
+    if not text:
+        return ""
+    return text
+
+
+def _google_genai_message_parts(response: Any) -> list[Any]:
+    candidates = _value_from_response_object(response, "candidates", []) or []
+    if not candidates:
+        return []
+
+    content = _value_from_response_object(candidates[0], "content")
+    if content is None:
+        return []
+
+    return _value_from_response_object(content, "parts", []) or []
+
+
+def _extract_google_genai_output_text(response: Any) -> str:
+    text_parts: list[str] = []
+    for part in _google_genai_message_parts(response):
+        if _value_from_response_object(part, "thought", False):
+            continue
+        text_parts.append(_google_genai_part_text(part))
+
+    output_text = "".join(text_parts)
+    if not output_text:
+        raise EmptyResponseError(
+            "API returned 200 with empty output.",
+            response=response,
+        )
+    return output_text
+
+
+def _extract_google_genai_reasoning_text(response: Any) -> str | None:
+    reasoning_parts: list[str] = []
+    for part in _google_genai_message_parts(response):
+        if not _value_from_response_object(part, "thought", False):
+            continue
+        text = _google_genai_part_text(part)
+        if text:
+            reasoning_parts.append(text)
+
+    if not reasoning_parts:
+        return None
+    return "\n".join(reasoning_parts)
+
+
 def _extract_reasoning_text_fragment(item: Any) -> str | None:
     if isinstance(item, str):
         return item
@@ -274,6 +363,19 @@ def normalize_responses_response(response: Any) -> ModelResponse:
         usage=NormalizedUsage(
             **_normalize_responses_usage(
                 _value_from_response_object(response, "usage"),
+            )
+        ),
+        raw_response=response,
+    )
+
+
+def normalize_google_genai_response(response: Any) -> ModelResponse:
+    return ModelResponse(
+        output_text=_extract_google_genai_output_text(response),
+        reasoning_text=_extract_google_genai_reasoning_text(response),
+        usage=NormalizedUsage(
+            **_normalize_google_genai_usage(
+                _value_from_response_object(response, "usage_metadata"),
             )
         ),
         raw_response=response,
