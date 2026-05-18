@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from google.genai import types as google_genai_types
+
 from .runtime_models import (
     ModelRequest,
     ModelResponse,
     normalize_anthropic_messages_response,
     normalize_chat_completion_response,
+    normalize_google_genai_response,
     normalize_responses_response,
 )
 
@@ -162,6 +165,61 @@ class AnthropicMessagesAdapter:
         return normalize_anthropic_messages_response(raw_response)
 
 
+class GoogleGenAIGenerateContentAdapter:
+    """Adapter for the native Google `google-genai` SDK.
+
+    Translates our common ``Message`` schema into Gemini's ``Contents`` shape:
+    a leading ``system`` message becomes ``GenerateContentConfig.system_instruction``,
+    ``assistant`` is renamed to ``model``, and everything else flows through as
+    text ``Part``s on the matching role.
+    """
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    @staticmethod
+    def _build_call_kwargs(request: ModelRequest) -> dict[str, Any]:
+        request_config = dict(request.request_config)
+        model = request_config.pop("model", None)
+        if not model:
+            raise ValueError(
+                "Google GenAI request_config is missing required 'model'."
+            )
+
+        system_instruction: str | None = None
+        messages = list(request.messages)
+        if messages and messages[0].role == "system":
+            system_instruction = messages[0].content
+            messages = messages[1:]
+
+        contents: list[google_genai_types.Content] = []
+        for message in messages:
+            role = "model" if message.role == "assistant" else message.role
+            contents.append(
+                google_genai_types.Content(
+                    role=role,
+                    parts=[google_genai_types.Part(text=message.content)],
+                )
+            )
+
+        config_kwargs: dict[str, Any] = dict(request_config)
+        if system_instruction is not None:
+            config_kwargs.setdefault("system_instruction", system_instruction)
+
+        config = google_genai_types.GenerateContentConfig(**config_kwargs)
+        return {
+            "model": model,
+            "contents": contents,
+            "config": config,
+        }
+
+    def invoke(self, request: ModelRequest) -> ModelResponse:
+        raw_response = self._client.models.generate_content(
+            **self._build_call_kwargs(request),
+        )
+        return normalize_google_genai_response(raw_response)
+
+
 def build_model_runtime_adapter(
     *,
     client: Any,
@@ -182,6 +240,8 @@ def build_model_runtime_adapter(
         return OpenAIResponsesAdapter(client)
     if runtime_key == ("anthropic-python", "messages"):
         return AnthropicMessagesAdapter(client)
+    if runtime_key == ("google-genai", "generate_content"):
+        return GoogleGenAIGenerateContentAdapter(client)
 
     raise ValueError(
         f"Model config '{config_id}' uses unsupported runtime "

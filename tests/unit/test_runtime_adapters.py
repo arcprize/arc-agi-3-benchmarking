@@ -6,6 +6,7 @@ from benchmarking.exceptions import EmptyResponseError
 from benchmarking.model_config import get_model_config
 from benchmarking.runtime_adapters import (
     AnthropicMessagesAdapter,
+    GoogleGenAIGenerateContentAdapter,
     OpenAIChatCompletionsAdapter,
     OpenAIResponsesAdapter,
     build_model_runtime_adapter,
@@ -913,6 +914,213 @@ class TestAnthropicMessagesAdapter:
         assert request_kwargs is not request.request_config
 
 
+class _FakeGoogleGenAIModels:
+    def __init__(self, response: object) -> None:
+        self._response = response
+        self.calls: list[dict] = []
+
+    def generate_content(self, **kwargs: object) -> object:
+        self.calls.append(kwargs)
+        return self._response
+
+
+class _FakeGoogleGenAIClient:
+    def __init__(self, response: object) -> None:
+        self.models = _FakeGoogleGenAIModels(response)
+
+
+def _google_genai_response(
+    *,
+    text: str = "MOVE_LEFT",
+    reasoning: str | None = None,
+    prompt_token_count: int = 11,
+    candidates_token_count: int = 7,
+    thoughts_token_count: int = 0,
+    cached_content_token_count: int = 0,
+) -> SimpleNamespace:
+    parts: list[SimpleNamespace] = []
+    if reasoning is not None:
+        parts.append(SimpleNamespace(text=reasoning, thought=True))
+    parts.append(SimpleNamespace(text=text, thought=False))
+
+    return SimpleNamespace(
+        candidates=[
+            SimpleNamespace(content=SimpleNamespace(role="model", parts=parts))
+        ],
+        usage_metadata=SimpleNamespace(
+            prompt_token_count=prompt_token_count,
+            candidates_token_count=candidates_token_count,
+            thoughts_token_count=thoughts_token_count,
+            cached_content_token_count=cached_content_token_count,
+            total_token_count=(
+                prompt_token_count + candidates_token_count + thoughts_token_count
+            ),
+        ),
+    )
+
+
+def _google_genai_request() -> ModelRequest:
+    return ModelRequest(
+        messages=[
+            Message(role="system", content="You are playing a game."),
+            Message(role="user", content="frame 1"),
+            Message(role="assistant", content="MOVE_LEFT"),
+            Message(role="user", content="frame 2"),
+        ],
+        request_config={
+            "model": "models/gemini-test",
+            "max_output_tokens": 128,
+            "thinking_config": {"thinking_level": "minimal"},
+        },
+    )
+
+
+@pytest.mark.unit
+class TestGoogleGenAIGenerateContentAdapter:
+    def test_calls_models_generate_content_with_model_contents_and_config(self):
+        client = _FakeGoogleGenAIClient(_google_genai_response())
+        adapter = GoogleGenAIGenerateContentAdapter(client)
+
+        adapter.invoke(_google_genai_request())
+
+        assert len(client.models.calls) == 1
+        call = client.models.calls[0]
+        assert set(call.keys()) == {"model", "contents", "config"}
+        assert call["model"] == "models/gemini-test"
+
+    def test_maps_leading_system_message_to_config_system_instruction(self):
+        call_kwargs = GoogleGenAIGenerateContentAdapter._build_call_kwargs(
+            _google_genai_request()
+        )
+
+        assert call_kwargs["config"].system_instruction == "You are playing a game."
+
+    def test_translates_remaining_messages_into_user_and_model_contents(self):
+        call_kwargs = GoogleGenAIGenerateContentAdapter._build_call_kwargs(
+            _google_genai_request()
+        )
+
+        contents = call_kwargs["contents"]
+        assert [content.role for content in contents] == ["user", "model", "user"]
+        assert [content.parts[0].text for content in contents] == [
+            "frame 1",
+            "MOVE_LEFT",
+            "frame 2",
+        ]
+
+    def test_keeps_user_only_conversation_without_system_instruction(self):
+        call_kwargs = GoogleGenAIGenerateContentAdapter._build_call_kwargs(
+            ModelRequest(
+                messages=[Message(role="user", content="frame")],
+                request_config={
+                    "model": "models/gemini-test",
+                    "max_output_tokens": 64,
+                },
+            )
+        )
+
+        assert call_kwargs["config"].system_instruction is None
+        assert [content.role for content in call_kwargs["contents"]] == ["user"]
+
+    def test_forwards_thinking_config_into_generate_content_config(self):
+        call_kwargs = GoogleGenAIGenerateContentAdapter._build_call_kwargs(
+            _google_genai_request()
+        )
+
+        thinking_config = call_kwargs["config"].thinking_config
+        assert thinking_config is not None
+        assert thinking_config.thinking_level.value == "MINIMAL"
+
+    def test_forwards_max_output_tokens_into_generate_content_config(self):
+        call_kwargs = GoogleGenAIGenerateContentAdapter._build_call_kwargs(
+            _google_genai_request()
+        )
+
+        assert call_kwargs["config"].max_output_tokens == 128
+
+    def test_does_not_mutate_original_request_config(self):
+        request_config = {
+            "model": "models/gemini-test",
+            "max_output_tokens": 64,
+            "thinking_config": {"thinking_level": "minimal"},
+        }
+        request = ModelRequest(
+            messages=[
+                Message(role="system", content="System prompt"),
+                Message(role="user", content="frame"),
+            ],
+            request_config=request_config,
+        )
+
+        GoogleGenAIGenerateContentAdapter._build_call_kwargs(request)
+
+        assert request.request_config == {
+            "model": "models/gemini-test",
+            "max_output_tokens": 64,
+            "thinking_config": {"thinking_level": "minimal"},
+        }
+
+    def test_raises_when_model_missing_from_request_config(self):
+        request = ModelRequest(
+            messages=[Message(role="user", content="frame")],
+            request_config={"max_output_tokens": 64},
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="Google GenAI request_config is missing required 'model'.",
+        ):
+            GoogleGenAIGenerateContentAdapter._build_call_kwargs(request)
+
+    def test_normalizes_response_output_text_reasoning_and_usage(self):
+        client = _FakeGoogleGenAIClient(
+            _google_genai_response(
+                text="RESET",
+                reasoning="thinking",
+                prompt_token_count=100,
+                candidates_token_count=20,
+                thoughts_token_count=50,
+            )
+        )
+        adapter = GoogleGenAIGenerateContentAdapter(client)
+
+        response = adapter.invoke(_google_genai_request())
+
+        assert response.output_text == "RESET"
+        assert response.reasoning_text == "thinking"
+        assert response.usage.input_tokens == 100
+        assert response.usage.output_tokens == 70
+        assert response.usage.reasoning_tokens == 50
+        assert response.usage.total_tokens == 170
+
+    def test_raises_empty_response_error_when_only_thought_parts_returned(self):
+        client = _FakeGoogleGenAIClient(
+            SimpleNamespace(
+                candidates=[
+                    SimpleNamespace(
+                        content=SimpleNamespace(
+                            role="model",
+                            parts=[SimpleNamespace(text="thinking", thought=True)],
+                        )
+                    )
+                ],
+                usage_metadata=SimpleNamespace(
+                    prompt_token_count=10,
+                    candidates_token_count=0,
+                    thoughts_token_count=5,
+                    cached_content_token_count=0,
+                    total_token_count=15,
+                ),
+            )
+        )
+        adapter = GoogleGenAIGenerateContentAdapter(client)
+
+        with pytest.raises(EmptyResponseError) as exc_info:
+            adapter.invoke(_google_genai_request())
+
+        assert str(exc_info.value) == "API returned 200 with empty output."
+
+
 @pytest.mark.unit
 class TestBuildModelRuntimeAdapter:
     def test_selects_chat_completions_adapter_from_runtime_tuple(self):
@@ -953,6 +1161,19 @@ class TestBuildModelRuntimeAdapter:
         )
 
         assert isinstance(adapter, AnthropicMessagesAdapter)
+
+    def test_selects_google_genai_adapter_from_runtime_tuple(self):
+        adapter = build_model_runtime_adapter(
+            client=_FakeGoogleGenAIClient(_google_genai_response()),
+            runtime_config={
+                "sdk": "google-genai",
+                "api": "generate_content",
+                "state": "manual_rolling",
+            },
+            config_id="google-config",
+        )
+
+        assert isinstance(adapter, GoogleGenAIGenerateContentAdapter)
 
     def test_checked_in_openai_configs_select_existing_openai_adapters(self):
         chat_config = get_model_config("openai-gpt-5-4-2026-03-05")
