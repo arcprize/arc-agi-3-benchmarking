@@ -1,3 +1,21 @@
+- id: "xai-grok-4-3"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 0.2
+    MAX_CONTEXT_LENGTH: 300_000
+  runtime:
+    sdk: "openai-python"
+    api: "chat_completions"
+    state: "manual_rolling"
+  client:
+    base_url: "https://api.x.ai/v1"
+    api_key_env: "XAI_API_KEY"
+  request:
+    model: "grok-4.3"
+    max_completion_tokens: 50_000
+  pricing:
+    input: 1.25
+    output: 2.50
+
 - id: "openai-gpt-5.4-openrouter"
   agent:
     MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
@@ -13,6 +31,28 @@
     model: "openai/gpt-5.4"
     max_completion_tokens: 1_000_000
   pricing: {}
+
+- id: "anthropic-opus-4-7-high"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
+    MAX_CONTEXT_LENGTH: 175_000
+  runtime:
+    sdk: "anthropic-python"
+    api: "messages"
+    state: "manual_rolling"
+  client:
+    api_key_env: "ANTHROPIC_API_KEY"
+  request:
+    model: "claude-opus-4-7"
+    max_tokens: 120000
+    stream: true
+    thinking:
+      type: "adaptive"
+    output_config:
+      effort: "high"
+  pricing:
+    input: 5.00
+    output: 25.00
 
 - id: "anthropic-opus-4-7-medium"
   agent:
@@ -207,3 +247,41 @@
   pricing:
     input: 2.00
     output: 12.00
+
+- id: "gemini-3-5-pro-ajax-minimal"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 1.0
+    MAX_CONTEXT_LENGTH: 175_000
+  runtime:
+    sdk: "google-genai"
+    api: "generate_content"
+    state: "manual_rolling"
+  client:
+    api_key_env: "GOOGLE_API_KEY"
+  request:
+    model: "models/ajax"
+    max_output_tokens: 128_000
+    thinking_config:
+      thinking_level: "minimal"
+  pricing:
+    input: 1.50
+    output: 9.00
+
+- id: "gemini-3-5-pro-ajax-high"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 0.1
+    MAX_CONTEXT_LENGTH: 175_000
+  runtime:
+    sdk: "google-genai"
+    api: "generate_content"
+    state: "manual_rolling"
+  client:
+    api_key_env: "GOOGLE_API_KEY"
+  request:
+    model: "models/ajax"
+    max_output_tokens: 128_000
+    thinking_config:
+      thinking_level: "high"
+  pricing:
+    input: 1.50
+    output: 9.00

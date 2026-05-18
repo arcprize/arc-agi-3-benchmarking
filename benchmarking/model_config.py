@@ -8,6 +8,7 @@ REQUIRED_CONFIG_SECTIONS = ("runtime", "client", "request")
 SUPPORTED_RUNTIME_PAIRS = frozenset(
     {
         ("anthropic-python", "messages"),
+        ("google-genai", "generate_content"),
         ("openai-python", "chat_completions"),
         ("openai-python", "responses"),
     }

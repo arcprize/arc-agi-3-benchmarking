@@ -13,6 +13,16 @@ class _FakeAnthropicClient:
         self.kwargs = kwargs
 
 
+class _FakeGoogleGenAIClient:
+    def __init__(self, **kwargs: object) -> None:
+        self.kwargs = kwargs
+
+
+class _FakeGoogleGenAIModule:
+    def __init__(self) -> None:
+        self.Client = _FakeGoogleGenAIClient
+
+
 @pytest.mark.unit
 class TestBuildModelRuntimeClient:
     def test_builds_openai_client_from_runtime_sdk(self, monkeypatch):
@@ -137,7 +147,42 @@ class TestBuildModelRuntimeClient:
             "the ANTHROPIC_API_KEY environment variable to be set in your .env file."
         )
 
-    def test_unsupported_runtime_sdk_raises_clear_error(self):
+    def test_builds_google_genai_client_from_runtime_sdk(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
+        monkeypatch.setattr(
+            runtime_clients,
+            "google_genai",
+            _FakeGoogleGenAIModule(),
+        )
+
+        client = runtime_clients.build_model_runtime_client(
+            runtime_config={"sdk": "google-genai"},
+            client_config={"api_key_env": "GOOGLE_API_KEY"},
+            config_id="google-config",
+        )
+
+        assert isinstance(client, _FakeGoogleGenAIClient)
+        assert client.kwargs == {"api_key": "test-google-key"}
+
+    def test_google_genai_client_uses_default_google_api_key_env(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
+        monkeypatch.setattr(
+            runtime_clients,
+            "google_genai",
+            _FakeGoogleGenAIModule(),
+        )
+
+        client = runtime_clients.build_model_runtime_client(
+            runtime_config={"sdk": "google-genai"},
+            client_config={},
+            config_id="google-config",
+        )
+
+        assert client.kwargs == {"api_key": "test-google-key"}
+
+    def test_missing_google_api_key_raises_config_specific_error(self, monkeypatch):
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
         with pytest.raises(ValueError) as exc_info:
             runtime_clients.build_model_runtime_client(
                 runtime_config={"sdk": "google-genai"},
@@ -146,6 +191,20 @@ class TestBuildModelRuntimeClient:
             )
 
         assert str(exc_info.value) == (
-            "Model config 'google-config' uses unsupported runtime "
-            "(sdk='google-genai')."
+            "No GOOGLE_API_KEY set. "
+            "The selected model config 'google-config' requires "
+            "the GOOGLE_API_KEY environment variable to be set in your .env file."
+        )
+
+    def test_unsupported_runtime_sdk_raises_clear_error(self):
+        with pytest.raises(ValueError) as exc_info:
+            runtime_clients.build_model_runtime_client(
+                runtime_config={"sdk": "made-up-sdk"},
+                client_config={"api_key_env": "MADE_UP_API_KEY"},
+                config_id="made-up-config",
+            )
+
+        assert str(exc_info.value) == (
+            "Model config 'made-up-config' uses unsupported runtime "
+            "(sdk='made-up-sdk')."
         )

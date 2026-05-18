@@ -12,6 +12,7 @@ from benchmarking.runtime_models import (
     action_metadata_from_model_response,
     normalize_anthropic_messages_response,
     normalize_chat_completion_response,
+    normalize_google_genai_response,
     normalize_responses_response,
 )
 
@@ -78,6 +79,45 @@ def _responses_response() -> SimpleNamespace:
             ),
             output_tokens_details=SimpleNamespace(reasoning_tokens=3),
             model_extra={"cost": 0.42, "cost_details": {"provider_cost": 0.42}},
+        ),
+    )
+
+
+def _google_genai_part(
+    *,
+    text: str = "",
+    thought: bool = False,
+) -> SimpleNamespace:
+    return SimpleNamespace(text=text, thought=thought)
+
+
+def _google_genai_response(
+    *,
+    parts: list[SimpleNamespace] | None = None,
+    prompt_token_count: int = 11,
+    candidates_token_count: int = 7,
+    thoughts_token_count: int = 0,
+    cached_content_token_count: int = 0,
+    total_token_count: int | None = None,
+) -> SimpleNamespace:
+    if parts is None:
+        parts = [_google_genai_part(text="MOVE_LEFT")]
+    if total_token_count is None:
+        total_token_count = (
+            prompt_token_count + candidates_token_count + thoughts_token_count
+        )
+    return SimpleNamespace(
+        candidates=[
+            SimpleNamespace(
+                content=SimpleNamespace(role="model", parts=parts),
+            )
+        ],
+        usage_metadata=SimpleNamespace(
+            prompt_token_count=prompt_token_count,
+            candidates_token_count=candidates_token_count,
+            thoughts_token_count=thoughts_token_count,
+            cached_content_token_count=cached_content_token_count,
+            total_token_count=total_token_count,
         ),
     )
 
@@ -465,6 +505,276 @@ class TestRuntimeModels:
         model_response = normalize_anthropic_messages_response(raw_response)
 
         assert model_response.raw_response is raw_response
+
+    def test_google_genai_normalizer_extracts_text_from_visible_parts(self):
+        response = _google_genai_response(
+            parts=[
+                _google_genai_part(text="MOVE", thought=False),
+                _google_genai_part(text="_LEFT", thought=False),
+            ]
+        )
+
+        model_response = normalize_google_genai_response(response)
+
+        assert model_response.output_text == "MOVE_LEFT"
+
+    def test_google_genai_normalizer_skips_thought_parts_in_output_text(self):
+        response = _google_genai_response(
+            parts=[
+                _google_genai_part(text="inspect the board", thought=True),
+                _google_genai_part(text="RESET", thought=False),
+            ]
+        )
+
+        model_response = normalize_google_genai_response(response)
+
+        assert model_response.output_text == "RESET"
+        assert model_response.reasoning_text == "inspect the board"
+
+    def test_google_genai_normalizer_concatenates_multiple_thought_parts(self):
+        response = _google_genai_response(
+            parts=[
+                _google_genai_part(text="first thought", thought=True),
+                _google_genai_part(text="second thought", thought=True),
+                _google_genai_part(text="ANSWER", thought=False),
+            ]
+        )
+
+        model_response = normalize_google_genai_response(response)
+
+        assert model_response.output_text == "ANSWER"
+        assert model_response.reasoning_text == "first thought\nsecond thought"
+
+    def test_google_genai_normalizer_returns_none_reasoning_when_no_thought_parts(self):
+        response = _google_genai_response(
+            parts=[_google_genai_part(text="MOVE_LEFT", thought=False)]
+        )
+
+        model_response = normalize_google_genai_response(response)
+
+        assert model_response.reasoning_text is None
+
+    def test_google_genai_normalizer_raises_when_no_visible_text_parts(self):
+        response = _google_genai_response(
+            parts=[_google_genai_part(text="hidden thought", thought=True)]
+        )
+
+        with pytest.raises(EmptyResponseError) as exc_info:
+            normalize_google_genai_response(response)
+
+        assert str(exc_info.value) == "API returned 200 with empty output."
+        assert exc_info.value.response is response
+
+    def test_google_genai_normalizer_raises_when_no_candidates(self):
+        response = SimpleNamespace(
+            candidates=[],
+            usage_metadata=SimpleNamespace(
+                prompt_token_count=5,
+                candidates_token_count=0,
+                thoughts_token_count=0,
+                cached_content_token_count=0,
+                total_token_count=5,
+            ),
+        )
+
+        with pytest.raises(EmptyResponseError):
+            normalize_google_genai_response(response)
+
+    def test_google_genai_normalizer_maps_prompt_to_input_tokens(self):
+        model_response = normalize_google_genai_response(
+            _google_genai_response(
+                prompt_token_count=120,
+                candidates_token_count=30,
+                thoughts_token_count=0,
+            )
+        )
+
+        assert model_response.usage.input_tokens == 120
+
+    def test_google_genai_normalizer_folds_thoughts_into_output_tokens(self):
+        """Critical for cost: Gemini bills (candidates + thoughts) at the output
+        rate, so output_tokens must include thoughts so that
+        output_cost = output_tokens * output_price matches Gemini billing.
+        """
+        model_response = normalize_google_genai_response(
+            _google_genai_response(
+                prompt_token_count=100,
+                candidates_token_count=30,
+                thoughts_token_count=200,
+            )
+        )
+
+        assert model_response.usage.output_tokens == 230
+        assert model_response.usage.reasoning_tokens == 200
+
+    def test_google_genai_normalizer_total_tokens_equals_prompt_plus_output_tokens(
+        self,
+    ):
+        model_response = normalize_google_genai_response(
+            _google_genai_response(
+                prompt_token_count=100,
+                candidates_token_count=30,
+                thoughts_token_count=200,
+            )
+        )
+
+        assert model_response.usage.total_tokens == (
+            model_response.usage.input_tokens + model_response.usage.output_tokens
+        )
+        assert model_response.usage.total_tokens == 330
+
+    def test_google_genai_normalizer_maps_cached_content_to_cached_tokens(self):
+        model_response = normalize_google_genai_response(
+            _google_genai_response(
+                prompt_token_count=500,
+                candidates_token_count=20,
+                cached_content_token_count=400,
+            )
+        )
+
+        assert model_response.usage.cached_tokens == 400
+        assert model_response.usage.cache_write_tokens == 0
+
+    def test_google_genai_normalizer_treats_missing_usage_fields_as_zero(self):
+        response = SimpleNamespace(
+            candidates=[
+                SimpleNamespace(
+                    content=SimpleNamespace(
+                        role="model",
+                        parts=[_google_genai_part(text="HI")],
+                    )
+                )
+            ],
+            usage_metadata=SimpleNamespace(
+                prompt_token_count=None,
+                candidates_token_count=None,
+                thoughts_token_count=None,
+                cached_content_token_count=None,
+                total_token_count=None,
+            ),
+        )
+
+        model_response = normalize_google_genai_response(response)
+
+        assert model_response.usage.input_tokens == 0
+        assert model_response.usage.output_tokens == 0
+        assert model_response.usage.total_tokens == 0
+        assert model_response.usage.reasoning_tokens == 0
+        assert model_response.usage.cached_tokens == 0
+
+    def test_google_genai_normalizer_maps_dict_response_and_usage_schema(self):
+        raw_response = {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {"text": "thinking through", "thought": True},
+                            {"text": "TOKEN_PROBE", "thought": False},
+                        ],
+                    }
+                }
+            ],
+            "usage_metadata": {
+                "prompt_token_count": 50,
+                "candidates_token_count": 7,
+                "thoughts_token_count": 13,
+                "cached_content_token_count": 5,
+                "total_token_count": 70,
+            },
+        }
+
+        model_response = normalize_google_genai_response(raw_response)
+
+        assert model_response.output_text == "TOKEN_PROBE"
+        assert model_response.reasoning_text == "thinking through"
+        assert model_response.usage.input_tokens == 50
+        assert model_response.usage.output_tokens == 20
+        assert model_response.usage.reasoning_tokens == 13
+        assert model_response.usage.cached_tokens == 5
+        assert model_response.usage.total_tokens == 70
+
+    def test_google_genai_raw_response_is_preserved(self):
+        raw_response = _google_genai_response()
+
+        model_response = normalize_google_genai_response(raw_response)
+
+        assert model_response.raw_response is raw_response
+
+    def test_google_genai_metadata_projection_costs_match_gemini_billing(self):
+        """End-to-end check: with `input=$2/M` and `output=$10/M`, a response
+        with 1,000 prompt / 200 candidate / 300 thought tokens must price out
+        as ``1_000*2e-6 + (200+300)*10e-6 = $0.007``.
+        """
+        raw_response = _google_genai_response(
+            parts=[_google_genai_part(text="PUSH")],
+            prompt_token_count=1_000,
+            candidates_token_count=200,
+            thoughts_token_count=300,
+        )
+
+        metadata = action_metadata_from_model_response(
+            normalize_google_genai_response(raw_response),
+            pricing={"input": 2.00, "output": 10.00},
+        )
+
+        assert metadata.output == "PUSH"
+        assert metadata.usage.input_tokens == 1_000
+        assert metadata.usage.output_tokens == 500
+        assert metadata.usage.total_tokens == 1_500
+        assert metadata.usage.output_tokens_details.reasoning_tokens == 300
+        assert metadata.cost.input_cost == pytest.approx(0.002)
+        assert metadata.cost.output_cost == pytest.approx(0.005)
+        assert metadata.cost.total_cost == pytest.approx(0.007)
+
+    def test_google_genai_reasoning_tokens_billed_at_output_price(self):
+        """Cost regression: thinking tokens with no visible output must still
+        be billed at the output rate, otherwise we under-report Gemini cost."""
+        raw_response = _google_genai_response(
+            parts=[_google_genai_part(text="X")],
+            prompt_token_count=0,
+            candidates_token_count=0,
+            thoughts_token_count=1_000_000,
+        )
+
+        metadata = action_metadata_from_model_response(
+            normalize_google_genai_response(raw_response),
+            pricing={"input": 2.00, "output": 9.00},
+        )
+
+        assert metadata.usage.output_tokens == 1_000_000
+        assert metadata.cost.output_cost == pytest.approx(9.00)
+        assert metadata.cost.total_cost == pytest.approx(9.00)
+
+    def test_google_genai_metadata_projection_matches_anthropic_metadata_schema(
+        self,
+    ):
+        gemini_metadata = action_metadata_from_model_response(
+            normalize_google_genai_response(
+                _google_genai_response(
+                    parts=[_google_genai_part(text="PUSH")],
+                    prompt_token_count=1_000,
+                    candidates_token_count=200,
+                    thoughts_token_count=0,
+                )
+            ),
+            pricing={"input": 5.00, "output": 25.00},
+        )
+        anthropic_metadata = action_metadata_from_model_response(
+            normalize_anthropic_messages_response(
+                _anthropic_response(
+                    content=[SimpleNamespace(type="text", text="PUSH")],
+                    input_tokens=1_000,
+                    output_tokens=200,
+                )
+            ),
+            pricing={"input": 5.00, "output": 25.00},
+        )
+
+        assert gemini_metadata.cost.model_dump() == anthropic_metadata.cost.model_dump()
+        assert gemini_metadata.usage.input_tokens == anthropic_metadata.usage.input_tokens
+        assert gemini_metadata.usage.output_tokens == anthropic_metadata.usage.output_tokens
+        assert gemini_metadata.usage.total_tokens == anthropic_metadata.usage.total_tokens
 
     def test_anthropic_messages_metadata_projection_maps_usage_and_cost(self):
         raw_response = _anthropic_response(

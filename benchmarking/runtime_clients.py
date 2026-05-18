@@ -4,11 +4,13 @@ import os
 from typing import Any
 
 from anthropic import Anthropic as AnthropicClient
+from google import genai as google_genai
 from openai import OpenAI as OpenAIClient
 
 DEFAULT_ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
 DEFAULT_OPENAI_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_OPENAI_API_KEY_ENV = "OPENROUTER_API_KEY"
+DEFAULT_GOOGLE_API_KEY_ENV = "GOOGLE_API_KEY"
 
 
 def _read_required_api_key(
@@ -60,6 +62,14 @@ def build_model_runtime_client(
             default_api_key_env=DEFAULT_ANTHROPIC_API_KEY_ENV,
         )
         return AnthropicClient(api_key=api_key)
+
+    if sdk == "google-genai":
+        api_key = _read_required_api_key(
+            client_config=client_config,
+            config_id=config_id,
+            default_api_key_env=DEFAULT_GOOGLE_API_KEY_ENV,
+        )
+        return google_genai.Client(api_key=api_key)
 
     raise ValueError(
         f"Model config '{config_id}' uses unsupported runtime "

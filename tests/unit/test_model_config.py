@@ -481,6 +481,7 @@ class TestModelConfig:
         assert {
             "anthropic-opus-4-7-medium",
             "anthropic-opus-4-7-low-thinking",
+            "gemini-3-5-pro-ajax-minimal",
             "google-gemini-3-1-pro-preview",
             "openai-gpt-5-4-2026-03-05",
             "openai-gpt-5-4-2026-03-05-high",
@@ -491,6 +492,23 @@ class TestModelConfig:
             "openai-gpt-5.4-openrouter",
             "xai-grok-4-20-beta-0309-reasoning",
         } <= config_ids
+
+    def test_checked_in_gemini_minimal_config_uses_native_google_genai_runtime(self):
+        config = model_config.get_model_config("gemini-3-5-pro-ajax-minimal")
+
+        assert config["runtime"] == {
+            "sdk": "google-genai",
+            "api": "generate_content",
+            "state": "manual_rolling",
+        }
+        assert "base_url" not in config["client"]
+        assert config["client"]["api_key_env"] == "GOOGLE_API_KEY"
+        assert config["request"]["model"] == "models/ajax"
+        assert config["request"]["max_output_tokens"] == 128_000
+        assert config["request"]["thinking_config"] == {"thinking_level": "minimal"}
+        assert "extra_body" not in config["request"]
+        assert "max_tokens" not in config["request"]
+        assert config["pricing"] == {"input": 1.50, "output": 9.00}
 
     @pytest.mark.parametrize(
         "config_id",

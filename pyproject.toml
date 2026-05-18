@@ -8,6 +8,7 @@ dependencies = [
     "anthropic==0.95.0",
     "arc-agi>=0.9.8",
     "dotenv>=0.9.9",
+    "google-genai>=2.4.0",
     "langchain[openai]>=0.3.27",
     "langgraph>=0.6.3",
     "langgraph-checkpoint-sqlite>=2.0.11",
