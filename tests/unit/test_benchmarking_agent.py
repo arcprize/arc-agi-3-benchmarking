@@ -299,6 +299,32 @@ class TestBenchmarkingAgentModelRequests:
 
         assert agent._build_assistant_turn_content("RESET", reasoning_text) == "RESET"
 
+    def test_build_assistant_turn_content_strips_model_emitted_reasoning_summary(self):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+        agent.analysis_mode = True
+
+        # The model imitated the replayed format and emitted its own block.
+        output_with_mimicked_block = (
+            "<reasoning_summary>\n"
+            "I should keep probing the controls.\n"
+            "</reasoning_summary>\n\n"
+            "Context: still mapping controls.\n\n"
+            "ACTION3"
+        )
+
+        result = agent._build_assistant_turn_content(
+            output_with_mimicked_block,
+            "harness summary text",
+        )
+
+        # Only the harness-injected summary survives, not a stacked duplicate.
+        assert result.count("<reasoning_summary>") == 1
+        assert "harness summary text" in result
+        assert "I should keep probing the controls." not in result
+        # The chosen action and remaining context are preserved.
+        assert "ACTION3" in result
+        assert "Context: still mapping controls." in result
+
     def test_builds_model_request_from_conversation_state(self):
         agent = _agent_for_request_kwargs(
             {"model": "gpt-5.4", "max_completion_tokens": 128}

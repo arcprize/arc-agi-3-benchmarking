@@ -27,6 +27,13 @@ from .runtime_models import (
 
 logger = logging.getLogger()
 
+# Matches a <reasoning_summary>…</reasoning_summary> block (any case, multiline).
+# Used to drop blocks the model emits by imitation in analysis mode.
+_REASONING_SUMMARY_BLOCK_RE = re.compile(
+    r"<reasoning_summary>.*?</reasoning_summary>\s*",
+    re.DOTALL | re.IGNORECASE,
+)
+
 
 class BenchmarkingAgent(Agent):
     """An agent that maintains a growing conversation with a model runtime.
@@ -190,6 +197,9 @@ class BenchmarkingAgent(Agent):
     ) -> str:
         if not self.analysis_mode or not reasoning_text:
             return output_text
+        # The model sometimes imitates the replayed <reasoning_summary> format in
+        # its own output; strip it so the stored turn keeps only the harness summary.
+        output_text = self._strip_reasoning_summary_blocks(output_text)
         return textwrap.dedent(f"""\
             <reasoning_summary>
             {reasoning_text}
@@ -197,6 +207,16 @@ class BenchmarkingAgent(Agent):
 
             {output_text}
         """)
+
+    @staticmethod
+    def _strip_reasoning_summary_blocks(text: str) -> str:
+        """Remove any <reasoning_summary>…</reasoning_summary> blocks from text.
+
+        Drops blocks the model emits by imitation in analysis mode so they do
+        not stack with the harness-injected summary. Returns the remaining text
+        with surrounding whitespace trimmed.
+        """
+        return _REASONING_SUMMARY_BLOCK_RE.sub("", text).strip()
 
     def _get_actions(self, latest_frame: FrameData) -> list[GameAction]:
         """Convert frame's available_actions (list[int]) to GameAction objects.
