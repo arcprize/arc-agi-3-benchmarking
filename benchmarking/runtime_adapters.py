@@ -13,7 +13,15 @@ from .runtime_models import (
     normalize_responses_response,
 )
 
-SUPPORTED_RUNTIME_STATE = "manual_rolling"
+DEFAULT_RUNTIME_STATE = "manual_rolling"
+SERVER_RUNTIME_STATE = "previous_response_id"
+# Backwards-compatible alias for the default (client-managed) state.
+SUPPORTED_RUNTIME_STATE = DEFAULT_RUNTIME_STATE
+SUPPORTED_RUNTIME_STATES = frozenset(
+    {DEFAULT_RUNTIME_STATE, SERVER_RUNTIME_STATE}
+)
+# Server-managed state is only available on the OpenAI Responses runtime.
+SERVER_STATE_RUNTIME_KEYS = frozenset({("openai-python", "responses")})
 
 
 class ModelRuntimeAdapter(Protocol):
@@ -41,6 +49,60 @@ class OpenAIResponsesAdapter:
         request_kwargs = dict(request.request_config)
         request_kwargs.pop("previous_response_id", None)
         request_kwargs.pop("conversation", None)
+
+        messages = [message.model_dump() for message in request.messages]
+        if request.messages and request.messages[0].role == "system":
+            request_kwargs["instructions"] = request.messages[0].content
+            request_kwargs["input"] = messages[1:]
+            return request_kwargs
+
+        request_kwargs["input"] = messages
+        return request_kwargs
+
+    def invoke(self, request: ModelRequest) -> ModelResponse:
+        raw_response = self._client.responses.create(
+            **self._build_request_kwargs(request),
+        )
+        return normalize_responses_response(raw_response)
+
+
+class OpenAIResponsesServerStateAdapter:
+    """OpenAI Responses adapter using server-managed conversation state.
+
+    Instead of resending the whole transcript, the caller sends only the new
+    message(s) for this turn plus a ``previous_response_id`` (in the request
+    config). OpenAI holds the conversation state, and long runs are kept in
+    budget by server-side compaction (``context_management`` /
+    ``compact_threshold``).
+
+    Requires ``store=true`` so the response chain resolves server-side; this
+    runtime therefore needs a non-ZDR key.
+    """
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    @staticmethod
+    def _build_request_kwargs(request: ModelRequest) -> dict[str, Any]:
+        request_kwargs = dict(request.request_config)
+
+        # store=true is required for previous_response_id chaining.
+        request_kwargs.setdefault("store", True)
+
+        # Translate our compaction knob into the API's structured parameter.
+        # `context_management` is newer than the pinned SDK's typed signature, so
+        # send it via extra_body to avoid an SDK version bump.
+        compact_threshold = request_kwargs.pop("compact_threshold", None)
+        if compact_threshold is not None:
+            extra_body = dict(request_kwargs.pop("extra_body", {}) or {})
+            extra_body["context_management"] = [
+                {"type": "compaction", "compact_threshold": compact_threshold}
+            ]
+            request_kwargs["extra_body"] = extra_body
+
+        # Drop a null previous_response_id on the first turn so we never send it.
+        if request_kwargs.get("previous_response_id") is None:
+            request_kwargs.pop("previous_response_id", None)
 
         messages = [message.model_dump() for message in request.messages]
         if request.messages and request.messages[0].role == "system":
@@ -227,13 +289,24 @@ def build_model_runtime_adapter(
     config_id: str,
 ) -> ModelRuntimeAdapter:
     runtime_state = runtime_config.get("state")
-    if runtime_state != SUPPORTED_RUNTIME_STATE:
+    if runtime_state not in SUPPORTED_RUNTIME_STATES:
+        supported = ", ".join(repr(s) for s in sorted(SUPPORTED_RUNTIME_STATES))
         raise ValueError(
             f"Model config '{config_id}' uses runtime.state={runtime_state!r}, "
-            f"but only '{SUPPORTED_RUNTIME_STATE}' is supported in phase 3."
+            f"but only {supported} are supported."
         )
 
     runtime_key = (runtime_config.get("sdk"), runtime_config.get("api"))
+
+    if runtime_state == SERVER_RUNTIME_STATE:
+        if runtime_key not in SERVER_STATE_RUNTIME_KEYS:
+            raise ValueError(
+                f"Model config '{config_id}' uses runtime.state={SERVER_RUNTIME_STATE!r}, "
+                f"which is only supported on the OpenAI Responses runtime "
+                f"(sdk='openai-python', api='responses')."
+            )
+        return OpenAIResponsesServerStateAdapter(client)
+
     if runtime_key == ("openai-python", "chat_completions"):
         return OpenAIChatCompletionsAdapter(client)
     if runtime_key == ("openai-python", "responses"):

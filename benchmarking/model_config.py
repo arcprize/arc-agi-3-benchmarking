@@ -13,7 +13,16 @@ SUPPORTED_RUNTIME_PAIRS = frozenset(
         ("openai-python", "responses"),
     }
 )
-SUPPORTED_RUNTIME_STATE = "manual_rolling"
+DEFAULT_RUNTIME_STATE = "manual_rolling"
+SERVER_RUNTIME_STATE = "previous_response_id"
+# Backwards-compatible alias: most call sites and tests reference the default.
+SUPPORTED_RUNTIME_STATE = DEFAULT_RUNTIME_STATE
+SUPPORTED_RUNTIME_STATES = frozenset(
+    {DEFAULT_RUNTIME_STATE, SERVER_RUNTIME_STATE}
+)
+# Server-managed conversation state (previous_response_id + compaction) is only
+# available on the OpenAI Responses runtime.
+SERVER_STATE_RUNTIME_PAIRS = frozenset({("openai-python", "responses")})
 ANTHROPIC_OPENAI_COMPAT_CLIENT_FIELDS = frozenset({"base_url"})
 ANTHROPIC_OPENAI_COMPAT_REQUEST_FIELDS = frozenset(
     {
@@ -127,10 +136,21 @@ def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> 
             f"(sdk={runtime['sdk']!r}, api={runtime['api']!r}). "
             f"Supported runtimes: {_format_supported_runtime_pairs()}."
         )
-    if runtime.get("state") != SUPPORTED_RUNTIME_STATE:
+    runtime_state = runtime.get("state")
+    if runtime_state not in SUPPORTED_RUNTIME_STATES:
+        supported = ", ".join(repr(s) for s in sorted(SUPPORTED_RUNTIME_STATES))
         raise ValueError(
-            f"Model config '{config_id}' uses runtime.state={runtime.get('state')!r}, "
-            f"but only '{SUPPORTED_RUNTIME_STATE}' is supported."
+            f"Model config '{config_id}' uses runtime.state={runtime_state!r}, "
+            f"but only {supported} are supported."
+        )
+    if (
+        runtime_state == SERVER_RUNTIME_STATE
+        and runtime_pair not in SERVER_STATE_RUNTIME_PAIRS
+    ):
+        raise ValueError(
+            f"Model config '{config_id}' uses runtime.state={SERVER_RUNTIME_STATE!r}, "
+            f"which is only supported on the OpenAI Responses runtime "
+            f"(sdk='openai-python', api='responses')."
         )
     if runtime_pair == ("anthropic-python", "messages"):
         _validate_anthropic_messages_config(config_id, entry)

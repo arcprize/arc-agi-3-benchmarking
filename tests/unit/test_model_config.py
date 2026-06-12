@@ -276,6 +276,56 @@ class TestModelConfig:
         ):
             model_config.load_model_configs()
 
+    def test_load_model_configs_accepts_server_state_for_responses_runtime(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "responses-server-state",
+                    runtime={
+                        "sdk": "openai-python",
+                        "api": "responses",
+                        "state": "previous_response_id",
+                    },
+                )
+            ],
+        )
+
+        configs = model_config.load_model_configs()
+
+        assert configs[0]["runtime"]["state"] == "previous_response_id"
+
+    def test_load_model_configs_rejects_unknown_runtime_state(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "bad-state",
+                    runtime={
+                        "sdk": "openai-python",
+                        "api": "responses",
+                        "state": "totally_made_up",
+                    },
+                )
+            ],
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="uses runtime.state='totally_made_up'",
+        ):
+            model_config.load_model_configs()
+
     def test_load_model_configs_accepts_boolean_analysis_mode(
         self,
         tmp_path,

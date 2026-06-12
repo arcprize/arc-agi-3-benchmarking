@@ -62,6 +62,9 @@ def _agent_for_request_kwargs(request_kwargs: dict) -> BenchmarkingAgent:
     agent.MAX_RETRIES = 2
     agent.analysis_mode = False
     agent.token_counter = 0
+    agent._server_state = False
+    agent._previous_response_id = None
+    agent._pending_user_messages = []
     return agent
 
 
@@ -877,6 +880,201 @@ class TestBenchmarkingAgentAnalysisReplayIntegration:
             {"role": "assistant", "content": "ACTION1"},
             {"role": "user", "content": agent.build_frame_content(second_frame)},
         ]
+
+
+def _server_state_agent(
+    responses: list[ModelResponse],
+) -> BenchmarkingAgent:
+    agent = _agent_for_choose_action(analysis_mode=False, responses=responses)
+    agent._server_state = True
+    agent._previous_response_id = None
+    agent._pending_user_messages = []
+    return agent
+
+
+@pytest.mark.unit
+class TestBenchmarkingAgentServerState:
+    def test_first_turn_sends_system_and_frame_without_previous_response_id(self):
+        agent = _server_state_agent(
+            [
+                ModelResponse(
+                    output_text="ACTION1",
+                    usage=NormalizedUsage(total_tokens=9),
+                    response_id="resp_1",
+                )
+            ]
+        )
+        frame = _playable_frame()
+
+        action = agent.choose_action([], frame)
+
+        assert action == GameAction.ACTION1
+        request = agent._adapter.requests[0]
+        assert [m.model_dump() for m in request.messages] == [
+            {"role": "system", "content": agent._build_system_prompt()},
+            {"role": "user", "content": agent.build_frame_content(frame)},
+        ]
+        assert "previous_response_id" not in request.request_config
+        # Successful turn advances server-side state and flushes the buffer.
+        assert agent._previous_response_id == "resp_1"
+        assert agent._pending_user_messages == []
+
+    def test_second_turn_sends_only_new_frame_with_previous_response_id(self):
+        agent = _server_state_agent(
+            [
+                ModelResponse(
+                    output_text="ACTION1",
+                    usage=NormalizedUsage(total_tokens=9),
+                    response_id="resp_1",
+                ),
+                ModelResponse(
+                    output_text="ACTION1",
+                    usage=NormalizedUsage(total_tokens=11),
+                    response_id="resp_2",
+                ),
+            ]
+        )
+        first_frame = _playable_frame()
+        second_frame = _playable_frame()
+
+        agent.choose_action([], first_frame)
+        agent.choose_action([first_frame], second_frame)
+
+        second_request = agent._adapter.requests[1]
+        assert [m.model_dump() for m in second_request.messages] == [
+            {"role": "user", "content": agent.build_frame_content(second_frame)},
+        ]
+        assert second_request.request_config["previous_response_id"] == "resp_1"
+        assert agent._previous_response_id == "resp_2"
+        # messages_sent records only what was actually sent that turn.
+        assert agent._saved_steps[1].messages_sent == [
+            {"role": "user", "content": agent.build_frame_content(second_frame)},
+        ]
+
+    def test_conversation_mirror_still_records_full_transcript(self):
+        agent = _server_state_agent(
+            [
+                ModelResponse(
+                    output_text="ACTION1",
+                    usage=NormalizedUsage(total_tokens=9),
+                    response_id="resp_1",
+                ),
+                ModelResponse(
+                    output_text="ACTION1",
+                    usage=NormalizedUsage(total_tokens=11),
+                    response_id="resp_2",
+                ),
+            ]
+        )
+        first_frame = _playable_frame()
+        second_frame = _playable_frame()
+
+        agent.choose_action([], first_frame)
+        agent.choose_action([first_frame], second_frame)
+
+        assert agent.conversation == [
+            {"role": "system", "content": agent._build_system_prompt()},
+            {"role": "user", "content": agent.build_frame_content(first_frame)},
+            {"role": "assistant", "content": "ACTION1"},
+            {"role": "user", "content": agent.build_frame_content(second_frame)},
+            {"role": "assistant", "content": "ACTION1"},
+        ]
+
+    def test_forced_reset_observation_is_buffered_into_next_real_turn(self):
+        agent = _server_state_agent(
+            [
+                ModelResponse(
+                    output_text="ACTION1",
+                    usage=NormalizedUsage(total_tokens=9),
+                    response_id="resp_1",
+                ),
+                ModelResponse(
+                    output_text="ACTION1",
+                    usage=NormalizedUsage(total_tokens=11),
+                    response_id="resp_2",
+                ),
+            ]
+        )
+        agent.action_counter = 1
+        game_over_frame = _terminal_frame(GameState.GAME_OVER)
+
+        # Forced RESET: records an observation but makes no API call.
+        forced = agent._resolve_action([], game_over_frame)
+        assert forced == GameAction.RESET
+        assert agent._adapter.requests == []
+        assert len(agent._pending_user_messages) == 1
+
+        # Next real turn must include the buffered GAME_OVER observation first.
+        next_frame = _playable_frame()
+        agent.choose_action([], next_frame)
+
+        first_request = agent._adapter.requests[0]
+        assert [m.model_dump() for m in first_request.messages] == [
+            {"role": "system", "content": agent._build_system_prompt()},
+            {"role": "user", "content": agent.build_frame_content(game_over_frame)},
+            {"role": "user", "content": agent.build_frame_content(next_frame)},
+        ]
+        assert agent._pending_user_messages == []
+
+    def test_retries_do_not_advance_previous_response_id(self):
+        agent = _server_state_agent(
+            [
+                ModelResponse(
+                    output_text="ACTION1",
+                    usage=NormalizedUsage(total_tokens=9),
+                    response_id="resp_1",
+                ),
+                # Turn 2, attempt 1: no parseable action -> retried.
+                ModelResponse(
+                    output_text="no action here",
+                    usage=NormalizedUsage(total_tokens=5),
+                    response_id="resp_orphan",
+                ),
+                # Turn 2, attempt 2: valid action.
+                ModelResponse(
+                    output_text="ACTION1",
+                    usage=NormalizedUsage(total_tokens=11),
+                    response_id="resp_2",
+                ),
+            ]
+        )
+        first_frame = _playable_frame()
+        second_frame = _playable_frame()
+
+        agent.choose_action([], first_frame)
+        agent.choose_action([first_frame], second_frame)
+
+        # Both turn-2 attempts chain off turn 1, not off the orphaned attempt.
+        retry_requests = agent._adapter.requests[1:]
+        assert len(retry_requests) == 2
+        for request in retry_requests:
+            assert request.request_config["previous_response_id"] == "resp_1"
+            assert [m.model_dump() for m in request.messages] == [
+                {"role": "user", "content": agent.build_frame_content(second_frame)},
+            ]
+        # Only the successful response advances the chain.
+        assert agent._previous_response_id == "resp_2"
+
+    def test_server_state_skips_client_side_trimming(self):
+        agent = _server_state_agent(
+            [
+                ModelResponse(
+                    output_text="ACTION1",
+                    usage=NormalizedUsage(total_tokens=9),
+                    response_id="resp_1",
+                )
+            ]
+        )
+        agent.MAX_CONTEXT_LENGTH = 1  # Would force trimming if it were applied.
+
+        def _fail_if_called() -> None:
+            raise AssertionError("client-side trimming must not run in server state")
+
+        agent._trim_to_fit_context = _fail_if_called
+
+        action = agent.choose_action([], _playable_frame())
+
+        assert action == GameAction.ACTION1
 
 
 def _agent_with_env(step_frame: FrameData) -> BenchmarkingAgent:

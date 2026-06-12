@@ -9,6 +9,7 @@ from benchmarking.runtime_adapters import (
     GoogleGenAIGenerateContentAdapter,
     OpenAIChatCompletionsAdapter,
     OpenAIResponsesAdapter,
+    OpenAIResponsesServerStateAdapter,
     build_model_runtime_adapter,
 )
 from benchmarking.runtime_models import Message, ModelRequest
@@ -570,6 +571,141 @@ class TestOpenAIResponsesAdapter:
 
         assert "previous_response_id" not in client.responses.calls[0]
         assert "conversation" not in client.responses.calls[0]
+
+
+@pytest.mark.unit
+class TestOpenAIResponsesServerStateAdapter:
+    def test_first_turn_sends_system_as_instructions_and_only_new_message(self):
+        client = _FakeResponsesOpenAIClient(_responses_output())
+        adapter = OpenAIResponsesServerStateAdapter(client)
+
+        adapter.invoke(
+            ModelRequest(
+                messages=[
+                    Message(role="system", content="System prompt"),
+                    Message(role="user", content="frame 1"),
+                ],
+                request_config={"model": "gpt-5.4"},
+            )
+        )
+
+        call = client.responses.calls[0]
+        assert call["instructions"] == "System prompt"
+        assert call["input"] == [{"role": "user", "content": "frame 1"}]
+        # No prior response yet, so previous_response_id must not be sent.
+        assert "previous_response_id" not in call
+
+    def test_subsequent_turn_sends_previous_response_id_and_only_new_message(self):
+        client = _FakeResponsesOpenAIClient(_responses_output())
+        adapter = OpenAIResponsesServerStateAdapter(client)
+
+        adapter.invoke(
+            ModelRequest(
+                messages=[Message(role="user", content="frame 2")],
+                request_config={
+                    "model": "gpt-5.4",
+                    "previous_response_id": "resp_123",
+                },
+            )
+        )
+
+        call = client.responses.calls[0]
+        assert call["previous_response_id"] == "resp_123"
+        assert call["input"] == [{"role": "user", "content": "frame 2"}]
+        assert "instructions" not in call
+
+    def test_defaults_store_to_true(self):
+        client = _FakeResponsesOpenAIClient(_responses_output())
+        adapter = OpenAIResponsesServerStateAdapter(client)
+
+        adapter.invoke(
+            ModelRequest(
+                messages=[Message(role="user", content="frame")],
+                request_config={"model": "gpt-5.4"},
+            )
+        )
+
+        assert client.responses.calls[0]["store"] is True
+
+    def test_preserves_explicit_store_value(self):
+        client = _FakeResponsesOpenAIClient(_responses_output())
+        adapter = OpenAIResponsesServerStateAdapter(client)
+
+        adapter.invoke(
+            ModelRequest(
+                messages=[Message(role="user", content="frame")],
+                request_config={"model": "gpt-5.4", "store": False},
+            )
+        )
+
+        assert client.responses.calls[0]["store"] is False
+
+    def test_translates_compact_threshold_to_context_management(self):
+        client = _FakeResponsesOpenAIClient(_responses_output())
+        adapter = OpenAIResponsesServerStateAdapter(client)
+
+        adapter.invoke(
+            ModelRequest(
+                messages=[Message(role="user", content="frame")],
+                request_config={"model": "gpt-5.4", "compact_threshold": 200_000},
+            )
+        )
+
+        call = client.responses.calls[0]
+        # context_management ships via extra_body (newer than the pinned SDK sig).
+        assert call["extra_body"]["context_management"] == [
+            {"type": "compaction", "compact_threshold": 200_000}
+        ]
+        # The raw knob must not leak through to the API call.
+        assert "compact_threshold" not in call
+
+    def test_compaction_merges_with_existing_extra_body(self):
+        client = _FakeResponsesOpenAIClient(_responses_output())
+        adapter = OpenAIResponsesServerStateAdapter(client)
+
+        adapter.invoke(
+            ModelRequest(
+                messages=[Message(role="user", content="frame")],
+                request_config={
+                    "model": "gpt-5.4",
+                    "compact_threshold": 200_000,
+                    "extra_body": {"foo": "bar"},
+                },
+            )
+        )
+
+        extra_body = client.responses.calls[0]["extra_body"]
+        assert extra_body["foo"] == "bar"
+        assert extra_body["context_management"] == [
+            {"type": "compaction", "compact_threshold": 200_000}
+        ]
+
+    def test_omits_compaction_when_no_threshold_configured(self):
+        client = _FakeResponsesOpenAIClient(_responses_output())
+        adapter = OpenAIResponsesServerStateAdapter(client)
+
+        adapter.invoke(
+            ModelRequest(
+                messages=[Message(role="user", content="frame")],
+                request_config={"model": "gpt-5.4"},
+            )
+        )
+
+        assert "context_management" not in client.responses.calls[0]
+        assert "extra_body" not in client.responses.calls[0]
+
+    def test_drops_null_previous_response_id(self):
+        client = _FakeResponsesOpenAIClient(_responses_output())
+        adapter = OpenAIResponsesServerStateAdapter(client)
+
+        adapter.invoke(
+            ModelRequest(
+                messages=[Message(role="user", content="frame")],
+                request_config={"model": "gpt-5.4", "previous_response_id": None},
+            )
+        )
+
+        assert "previous_response_id" not in client.responses.calls[0]
 
 
 @pytest.mark.unit
@@ -1193,12 +1329,30 @@ class TestBuildModelRuntimeAdapter:
         assert isinstance(chat_adapter, OpenAIChatCompletionsAdapter)
         assert isinstance(responses_adapter, OpenAIResponsesAdapter)
 
-    def test_unsupported_runtime_state_fails_clearly(self):
+    def test_unknown_runtime_state_fails_clearly(self):
+        with pytest.raises(
+            ValueError,
+            match=(
+                "Model config 'chat-config' uses runtime.state='bogus_state', "
+                "but only"
+            ),
+        ):
+            build_model_runtime_adapter(
+                client=_FakeChatOpenAIClient(_chat_response()),
+                runtime_config={
+                    "sdk": "openai-python",
+                    "api": "chat_completions",
+                    "state": "bogus_state",
+                },
+                config_id="chat-config",
+            )
+
+    def test_server_state_rejected_for_non_responses_runtime(self):
         with pytest.raises(
             ValueError,
             match=(
                 "Model config 'chat-config' uses runtime.state='previous_response_id', "
-                "but only 'manual_rolling' is supported in phase 3."
+                "which is only supported on the OpenAI Responses runtime"
             ),
         ):
             build_model_runtime_adapter(
@@ -1210,3 +1364,16 @@ class TestBuildModelRuntimeAdapter:
                 },
                 config_id="chat-config",
             )
+
+    def test_selects_server_state_adapter_for_responses_runtime(self):
+        adapter = build_model_runtime_adapter(
+            client=_FakeResponsesOpenAIClient(_responses_output()),
+            runtime_config={
+                "sdk": "openai-python",
+                "api": "responses",
+                "state": "previous_response_id",
+            },
+            config_id="responses-server-state-config",
+        )
+
+        assert isinstance(adapter, OpenAIResponsesServerStateAdapter)
