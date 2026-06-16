@@ -60,6 +60,9 @@ class ModelResponse(BaseModel):
     reasoning_text: str | None = None
     usage: NormalizedUsage
     raw_response: Any | None = None
+    # Server-side response identifier (OpenAI Responses API). Used to chain
+    # turns via previous_response_id when runtime.state == "previous_response_id".
+    response_id: str | None = None
 
 
 def _value_from_response_object(item: Any, key: str, default: Any = None) -> Any:
@@ -366,6 +369,7 @@ def normalize_responses_response(response: Any) -> ModelResponse:
             )
         ),
         raw_response=response,
+        response_id=_value_from_response_object(response, "id"),
     )
 
 

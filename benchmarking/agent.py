@@ -13,7 +13,7 @@ from arcengine import FrameData, GameAction, GameState
 
 from .base import Agent
 from .exceptions import EmptyResponseError
-from .model_config import get_model_config
+from .model_config import SERVER_RUNTIME_STATE, get_model_config
 from .recording import RunRecord, StepRecord, StepUsage
 from .runtime_adapters import build_model_runtime_adapter
 from .runtime_clients import build_model_runtime_client
@@ -62,6 +62,16 @@ class BenchmarkingAgent(Agent):
             self._load_model_config()
         )
         self._pricing: dict[str, float] = pricing_cfg
+
+        # Server-managed conversation state (OpenAI Responses previous_response_id
+        # + compaction). When enabled, we send only the new message(s) each turn
+        # and let OpenAI hold the transcript; `self.conversation` becomes a
+        # recording-only mirror and client-side trimming is disabled.
+        self._server_state: bool = (
+            runtime_cfg.get("state") == SERVER_RUNTIME_STATE
+        )
+        self._previous_response_id: str | None = None
+        self._pending_user_messages: list[dict[str, Any]] = []
 
         # Agent-level overrides
         self.MAX_ACTIONS_BASELINE_MULTIPLIER = agent_cfg.get(
@@ -353,9 +363,32 @@ class BenchmarkingAgent(Agent):
         logger.info(f"Saved step {self.step_counter} to {filename}")
 
     def _build_model_request(self) -> ModelRequest:
+        if self._server_state:
+            return self._build_server_state_request()
         return ModelRequest(
             messages=[Message.model_validate(message) for message in self.conversation],
             request_config=dict(self._request_kwargs),
+        )
+
+    def _build_server_state_request(self) -> ModelRequest:
+        """Build a request that sends only the new turn(s) to OpenAI.
+
+        On the first turn (no prior response id) the system prompt is sent as a
+        leading system message; thereafter only the buffered user message(s) are
+        sent, with ``previous_response_id`` carrying the server-side state.
+        """
+        request_config = dict(self._request_kwargs)
+        messages: list[dict[str, Any]] = []
+        if self._previous_response_id is None:
+            messages.append(
+                {"role": "system", "content": self._build_system_prompt()}
+            )
+        else:
+            request_config["previous_response_id"] = self._previous_response_id
+        messages.extend(self._pending_user_messages)
+        return ModelRequest(
+            messages=[Message.model_validate(message) for message in messages],
+            request_config=request_config,
         )
 
     def _record_forced_action_observation(
@@ -368,12 +401,15 @@ class BenchmarkingAgent(Agent):
         self._level_action_counter += 1
 
         if forced_action == GameAction.RESET and latest_frame.state is GameState.GAME_OVER:
-            self.conversation.append(
-                {
-                    "role": "user",
-                    "content": self.build_frame_content(latest_frame),
-                }
-            )
+            frame_message = {
+                "role": "user",
+                "content": self.build_frame_content(latest_frame),
+            }
+            self.conversation.append(frame_message)
+            # This observation reaches the model only on the next real API call,
+            # so buffer it for server-managed state too.
+            if self._server_state:
+                self._pending_user_messages.append(frame_message)
 
         self._save_step(
             StepRecord(
@@ -451,9 +487,13 @@ class BenchmarkingAgent(Agent):
             )
 
         # Normal turn: append frame, call the model, parse action
-        self.conversation.append(
-            {"role": "user", "content": self.build_frame_content(latest_frame)}
-        )
+        frame_message = {
+            "role": "user",
+            "content": self.build_frame_content(latest_frame),
+        }
+        self.conversation.append(frame_message)
+        if self._server_state:
+            self._pending_user_messages.append(frame_message)
 
         actions = self._get_actions(latest_frame)
         start = time.monotonic()
@@ -462,6 +502,12 @@ class BenchmarkingAgent(Agent):
         )
         duration = round(time.monotonic() - start, 3)
         step_usage = StepUsage.from_normalized_usage(model_response.usage)
+
+        # On success, advance server-side state and flush the pending buffer so
+        # the next turn sends only its new message(s).
+        if self._server_state:
+            self._previous_response_id = model_response.response_id
+            self._pending_user_messages = []
 
         self.conversation.append(
             {
@@ -545,7 +591,10 @@ class BenchmarkingAgent(Agent):
         accumulated_usage = NormalizedUsage()
         for attempt in range(self.MAX_RETRIES + 1):
             try:
-                self._trim_to_fit_context()
+                # Server-managed state compacts on OpenAI's side; the docs say not
+                # to manually prune when chaining via previous_response_id.
+                if not self._server_state:
+                    self._trim_to_fit_context()
                 model_request = self._build_model_request()
                 model_response = self._call_api(model_request)
             except EmptyResponseError as e:

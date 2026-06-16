@@ -257,6 +257,19 @@ class TestRuntimeModels:
         )
         assert model_response.usage.total_tokens == 18
 
+    def test_responses_normalizer_extracts_response_id_when_present(self):
+        raw_response = _responses_response()
+        raw_response.id = "resp_abc123"
+
+        model_response = normalize_responses_response(raw_response)
+
+        assert model_response.response_id == "resp_abc123"
+
+    def test_responses_normalizer_response_id_is_none_when_absent(self):
+        model_response = normalize_responses_response(_responses_response())
+
+        assert model_response.response_id is None
+
     def test_responses_metadata_projection_maps_reasoning_usage_and_cost(self):
         raw_response = SimpleNamespace(
             output=[
