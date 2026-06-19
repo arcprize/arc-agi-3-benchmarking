@@ -383,6 +383,70 @@ class TestModelConfig:
         ):
             model_config.load_model_configs()
 
+    def test_load_model_configs_accepts_positive_max_runtime_seconds(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "runtime-config",
+                    agent={"MAX_RUNTIME_SECONDS": 3600},
+                )
+            ],
+        )
+
+        configs = model_config.load_model_configs()
+
+        assert configs[0]["agent"]["MAX_RUNTIME_SECONDS"] == 3600
+
+    def test_load_model_configs_rejects_non_positive_max_runtime_seconds(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "bad-runtime-config",
+                    agent={"MAX_RUNTIME_SECONDS": 0},
+                )
+            ],
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="agent.MAX_RUNTIME_SECONDS must be a positive number",
+        ):
+            model_config.load_model_configs()
+
+    def test_load_model_configs_rejects_non_numeric_max_runtime_seconds(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "bad-runtime-config",
+                    agent={"MAX_RUNTIME_SECONDS": "12h"},
+                )
+            ],
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="agent.MAX_RUNTIME_SECONDS must be a positive number",
+        ):
+            model_config.load_model_configs()
+
     def test_load_model_configs_rejects_non_mapping_agent_section(
         self,
         tmp_path,

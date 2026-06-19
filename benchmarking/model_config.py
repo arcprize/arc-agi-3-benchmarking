@@ -123,6 +123,17 @@ def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> 
             raise ValueError(
                 f"Model config '{config_id}' agent.analysis_mode must be a boolean."
             )
+    if isinstance(agent, dict) and "MAX_RUNTIME_SECONDS" in agent:
+        max_runtime = agent["MAX_RUNTIME_SECONDS"]
+        if (
+            isinstance(max_runtime, bool)
+            or not isinstance(max_runtime, (int, float))
+            or max_runtime <= 0
+        ):
+            raise ValueError(
+                f"Model config '{config_id}' agent.MAX_RUNTIME_SECONDS must be "
+                f"a positive number (seconds)."
+            )
 
     runtime = entry["runtime"]
     if not isinstance(runtime.get("sdk"), str) or not runtime["sdk"].strip():

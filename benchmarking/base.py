@@ -19,9 +19,13 @@ class Agent(ABC):
     """Interface for an agent that plays one ARC-AGI-3 game."""
 
     MAX_ACTIONS: int = 80  # to avoid looping forever if agent doesnt exit
+    # Wall-clock budget for a single run. Defaults to 12 hours; override per
+    # model via the agent config's MAX_RUNTIME_SECONDS field.
+    MAX_RUNTIME_SECONDS: float = 12 * 60 * 60
     ROOT_URL: str
 
     action_counter: int = 0
+    _timed_out: bool = False
 
     timer: float = 0
     agent_name: str
@@ -69,6 +73,14 @@ class Agent(ABC):
             not self.is_done(self.frames, self.frames[-1])
             and self.action_counter <= self.MAX_ACTIONS
         ):
+            if (time.time() - self.timer) >= self.MAX_RUNTIME_SECONDS:
+                self._timed_out = True
+                logger.info(
+                    f"{self.game_id} - Exiting: agent reached "
+                    f"MAX_RUNTIME_SECONDS of {self.MAX_RUNTIME_SECONDS}, "
+                    f"took {self.seconds} seconds ({self.fps} average fps)"
+                )
+                break
             latest_frame = self._convert_raw_frame_data(
                 self.arc_env.observation_space if self.arc_env else None
             )
