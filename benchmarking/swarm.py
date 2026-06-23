@@ -6,7 +6,7 @@ import os
 from threading import Thread
 from typing import TYPE_CHECKING, Optional, Type
 
-from arc_agi import Arcade, OperationMode
+from arc_agi import Arcade, OperationMode, RemoteEnvironmentWrapper
 from arc_agi.scorecard import EnvironmentScorecard
 
 from .agent import BenchmarkingAgent
@@ -90,6 +90,12 @@ class Swarm:
         # wait for all agent to finish
         for t in self.threads:
             t.join()
+
+        # Refresh arcade cookies with the last agent's cookies
+        if len(self.agents) == 1:
+            cookie_agent: Agent = self.agents[-1]
+            if isinstance(cookie_agent.arc_env, RemoteEnvironmentWrapper):
+                self._arc._master_cookie_jar.update(cookie_agent.arc_env._master_cookie_jar)
 
         # all agents are now done
         card_id = self.card_id
