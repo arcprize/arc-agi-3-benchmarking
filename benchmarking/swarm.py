@@ -92,7 +92,7 @@ class Swarm:
             t.join()
 
         # Refresh arcade cookies with the last agent's cookies
-        if len(self.agents) == 1:
+        if self.agents:
             cookie_agent: Agent = self.agents[-1]
             if isinstance(cookie_agent.arc_env, RemoteEnvironmentWrapper):
                 self._arc._master_cookie_jar.update(cookie_agent.arc_env._master_cookie_jar)
