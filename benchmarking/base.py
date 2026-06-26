@@ -3,6 +3,7 @@ import logging
 import os
 import time
 from abc import ABC, abstractmethod
+from enum import Enum
 from typing import Optional
 
 from arc_agi import EnvironmentWrapper
@@ -14,6 +15,14 @@ from .recorder import Recorder
 
 logger = logging.getLogger()
 
+class ExitReason(str, Enum):
+    UNKNOWN              = "UNKNOWN"
+    GAME_WIN             = "GAME_WIN"
+    ACTION_BUDGET        = "ACTION_BUDGET"
+    SCORECARD_IDLE_LIMIT = "SCORECARD_IDLE_LIMIT"
+    SCORECARD_TIME_LIMIT = "SCORECARD_TIME_LIMIT"
+    API_ERROR            = "API_ERROR"
+    AGENT_ERROR          = "AGENT_ERROR"
 
 class Agent(ABC):
     """Interface for an agent that plays one ARC-AGI-3 game."""
@@ -34,6 +43,8 @@ class Agent(ABC):
     headers: dict[str, str]
     arc_env: EnvironmentWrapper
     _previous_action: Optional[GameAction]
+
+    exit_reason: ExitReason = ExitReason.UNKNOWN
 
     def __init__(
         self,
@@ -65,20 +76,33 @@ class Agent(ABC):
     def main(self) -> None:
         """The main agent loop. Play the game_id until finished, then exits."""
         self.timer = time.time()
-        while (
-            not self.is_done(self.frames, self.frames[-1])
-            and self.action_counter <= self.MAX_ACTIONS
-        ):
-            latest_frame = self._convert_raw_frame_data(
-                self.arc_env.observation_space if self.arc_env else None
-            )
-            action = self._resolve_action(self.frames, latest_frame)
-            if frame := self.take_action(action):
-                self.append_frame(frame)
-                logger.info(
-                    f"{self.game_id} - {action.name}: count {self.action_counter}, levels completed {frame.levels_completed}, avg fps {self.fps})"
+        resolving_action = False
+        try:
+            while (
+                not self.is_done(self.frames, self.frames[-1])
+                and self.action_counter <= self.MAX_ACTIONS
+            ):
+                latest_frame = self._convert_raw_frame_data(
+                    self.arc_env.observation_space if self.arc_env else None
                 )
-            self.action_counter += 1
+
+                # Agent specific implementation
+                resolving_action = True
+                action = self._resolve_action(self.frames, latest_frame)
+                resolving_action = False
+                if frame := self.take_action(action):
+                    self.append_frame(frame)
+                    logger.info(
+                        f"{self.game_id} - {action.name}: count {self.action_counter}, levels completed {frame.levels_completed}, avg fps {self.fps})"
+                    )
+                self.action_counter += 1
+
+        except Exception as e:
+            self.exit_reason =  ExitReason.AGENT_ERROR if resolving_action else ExitReason.API_ERROR
+            raise e
+
+        if self.action_counter >= self.MAX_ACTIONS:
+            self.exit_reason = ExitReason.ACTION_BUDGET
 
         self.cleanup()
 
