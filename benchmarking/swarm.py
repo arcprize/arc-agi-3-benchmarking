@@ -102,6 +102,11 @@ class Swarm:
         # all agents are now done
         card_id = self.card_id
         scorecard = self.close_scorecard(card_id)
+
+        # Log agent exit reasons
+        for a in self.agents:
+            logger.info(f"AGENT EXIT REASON -- Agent: [{a.agent_name}] Game: [{a.game_id}] Reason: [{a.exit_reason}]")
+
         if scorecard:
             logger.info("--- FINAL SCORECARD REPORT ---")
             logger.info(json.dumps(scorecard.model_dump(), indent=2))
@@ -127,10 +132,10 @@ class Swarm:
         try:
             with requests.Session() as session:
                 session.headers.update(self.headers)
-                response = session.get(f"{self.ROOT_URL}//api/v3/scorecards/{card_id}", timeout=10)
+                response = session.get(f"{self.ROOT_URL}/api/v3/scorecards/{card_id}", timeout=10)
                 return 199 < response.status_code < 300
         except HTTPError as ex:
-            logger.error(ex)
+            logger.exception("HTTPError encountered on check for closed scorecard.")
 
         return False
 
@@ -142,14 +147,14 @@ class Swarm:
         try:
             _scorecard = self._arc.close_scorecard(card_id)
         except HTTPError as ex:
-            # IF 404 on request - check the API to see if the scorecard was already recorded,
-            # then resolve agent exit reasons
+
+            # Check if scorecard closed due to idle/total time limit
             if ex.response.status_code == 404 and self._scorecard_exists(card_id):
                 for agent in self.agents:
                     if agent.exit_reason == ExitReason.API_ERROR:
                         agent.exit_reason = ExitReason.SCORECARD_CLOSED
             else:
-                print("Real error encountered on scorecard close") # TODO error log
+                logger.error("Exception encountered on scorecard close. Swarm exit reason API_ERROR.")
                 raise ex
 
         return _scorecard
