@@ -7,14 +7,15 @@ from threading import Thread
 from typing import TYPE_CHECKING, Optional, Type
 
 import requests
-from arc_agi import Arcade, OperationMode, RemoteEnvironmentWrapper, scorecard
+from arc_agi import Arcade, OperationMode, RemoteEnvironmentWrapper
 from arc_agi.scorecard import EnvironmentScorecard
 from requests import HTTPError
 
 from .agent import BenchmarkingAgent
+from .base import ExitReason
 
 if TYPE_CHECKING:
-    from .base import Agent, ExitReason
+    from .base import Agent
 
 logger = logging.getLogger()
 DEFAULT_AGENT_NAME = BenchmarkingAgent.__name__.lower()
@@ -134,7 +135,7 @@ class Swarm:
                 session.headers.update(self.headers)
                 response = session.get(f"{self.ROOT_URL}/api/v3/scorecards/{card_id}", timeout=10)
                 return 199 < response.status_code < 300
-        except HTTPError as ex:
+        except requests.RequestException:
             logger.exception("HTTPError encountered on check for closed scorecard.")
 
         return False
@@ -149,7 +150,7 @@ class Swarm:
         except HTTPError as ex:
 
             # Check if scorecard closed due to idle/total time limit
-            if ex.response.status_code == 404 and self._scorecard_exists(card_id):
+            if ex.response and ex.response.status_code == 404 and self._scorecard_exists(card_id):
                 for agent in self.agents:
                     if agent.exit_reason == ExitReason.API_ERROR:
                         agent.exit_reason = ExitReason.SCORECARD_CLOSED

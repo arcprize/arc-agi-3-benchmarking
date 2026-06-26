@@ -19,7 +19,7 @@ class ExitReason(str, Enum):
     UNKNOWN          = "UNKNOWN"
     GAME_WIN         = "GAME_WIN"
     ACTION_BUDGET    = "ACTION_BUDGET"
-    SCORECARD_CLOSED = "SCORECARD_IDLE_LIMIT"
+    SCORECARD_CLOSED = "SCORECARD_CLOSED"
     API_ERROR        = "API_ERROR"
     AGENT_ERROR      = "AGENT_ERROR"
 
@@ -43,7 +43,7 @@ class Agent(ABC):
     arc_env: EnvironmentWrapper
     _previous_action: Optional[GameAction]
 
-    exit_reason: ExitReason = ExitReason.UNKNOWN
+    exit_reason: ExitReason
 
     def __init__(
         self,
@@ -71,6 +71,7 @@ class Agent(ABC):
         }
         self.arc_env = arc_env
         self._previous_action = None
+        self.exit_reason = ExitReason.UNKNOWN
 
     def main(self) -> None:
         """The main agent loop. Play the game_id until finished, then exits."""
@@ -97,10 +98,10 @@ class Agent(ABC):
                 self.action_counter += 1
 
         except Exception as e:
-            self.exit_reason =  ExitReason.AGENT_ERROR if resolving_action else ExitReason.API_ERROR
+            self.exit_reason = ExitReason.AGENT_ERROR if resolving_action else ExitReason.API_ERROR
             raise e
 
-        if self.action_counter >= self.MAX_ACTIONS:
+        if self.exit_reason == ExitReason.UNKNOWN and self.action_counter >= self.MAX_ACTIONS:
             self.exit_reason = ExitReason.ACTION_BUDGET
 
         self.cleanup()
