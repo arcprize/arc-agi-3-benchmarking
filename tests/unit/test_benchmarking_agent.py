@@ -5,6 +5,7 @@ import pytest
 from arcengine import ActionInput, FrameData, FrameDataRaw, GameAction, GameState
 
 from benchmarking.agent import BenchmarkingAgent
+from benchmarking.base import ExitReason
 from benchmarking.runtime_adapters import (
     OpenAIChatCompletionsAdapter,
     OpenAIResponsesAdapter,
@@ -1083,6 +1084,42 @@ def _agent_with_env(step_frame: FrameData) -> BenchmarkingAgent:
     agent.arc_env = SimpleNamespace(step=lambda action, *, data, reasoning: step_frame)
     agent._convert_raw_frame_data = lambda raw: raw
     return agent
+
+
+def _is_done_agent() -> BenchmarkingAgent:
+    agent = BenchmarkingAgent.__new__(BenchmarkingAgent)
+    agent.game_id = "game-id"
+    agent.exit_reason = ExitReason.UNKNOWN
+    agent._level_action_budgets = []
+    agent._level_action_counter = 0
+    agent._last_levels_completed = 0
+    agent._level_just_advanced = False
+    return agent
+
+
+@pytest.mark.unit
+class TestBenchmarkingAgentExitReason:
+    def test_is_done_sets_game_win_on_win_state(self):
+        agent = _is_done_agent()
+
+        assert agent.is_done([], _terminal_frame(GameState.WIN)) is True
+        assert agent.exit_reason is ExitReason.GAME_WIN
+
+    def test_is_done_sets_action_budget_when_level_budget_exhausted(self):
+        agent = _is_done_agent()
+        agent._level_action_budgets = [3]
+        agent._level_action_counter = 3
+
+        assert agent.is_done([], _playable_frame()) is True
+        assert agent.exit_reason is ExitReason.ACTION_BUDGET
+
+    def test_is_done_leaves_reason_unknown_while_under_budget(self):
+        agent = _is_done_agent()
+        agent._level_action_budgets = [10]
+        agent._level_action_counter = 2
+
+        assert agent.is_done([], _playable_frame()) is False
+        assert agent.exit_reason is ExitReason.UNKNOWN
 
 
 @pytest.mark.unit
