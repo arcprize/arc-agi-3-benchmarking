@@ -76,7 +76,7 @@ class Agent(ABC):
     def main(self) -> None:
         """The main agent loop. Play the game_id until finished, then exits."""
         self.timer = time.time()
-        resolving_action = False
+        taking_action = False
         try:
             while (
                 not self.is_done(self.frames, self.frames[-1])
@@ -87,19 +87,19 @@ class Agent(ABC):
                 )
 
                 # Agent specific implementation
-                resolving_action = True
                 action = self._resolve_action(self.frames, latest_frame)
-                resolving_action = False
+                taking_action = True
                 if frame := self.take_action(action):
                     self.append_frame(frame)
                     logger.info(
                         f"{self.game_id} - {action.name}: count {self.action_counter}, levels completed {frame.levels_completed}, avg fps {self.fps})"
                     )
+                taking_action = False
                 self.action_counter += 1
 
-        except Exception as e:
-            self.exit_reason = ExitReason.AGENT_ERROR if resolving_action else ExitReason.API_ERROR
-            raise e
+        except Exception:
+            self.exit_reason = ExitReason.API_ERROR if taking_action else ExitReason.AGENT_ERROR
+            raise
 
         if self.exit_reason == ExitReason.UNKNOWN and self.action_counter >= self.MAX_ACTIONS:
             self.exit_reason = ExitReason.ACTION_BUDGET
