@@ -80,6 +80,9 @@ class BenchmarkingAgent(Agent):
         self.MAX_CONTEXT_LENGTH = agent_cfg.get(
             "MAX_CONTEXT_LENGTH", self.MAX_CONTEXT_LENGTH
         )
+        self.MAX_RUNTIME_SECONDS = agent_cfg.get(
+            "MAX_RUNTIME_SECONDS", self.MAX_RUNTIME_SECONDS
+        )
         self.MAX_ANIMATION_FRAMES = agent_cfg.get(
             "MAX_ANIMATION_FRAMES", self.MAX_ANIMATION_FRAMES
         )
@@ -694,6 +697,8 @@ class BenchmarkingAgent(Agent):
                 self.run_record.outcome = "WIN"
             elif self.state is GameState.GAME_OVER:
                 self.run_record.outcome = "GAME_OVER"
+            elif self._timed_out:
+                self.run_record.outcome = "TIMEOUT"
             elif self.action_counter >= self.MAX_ACTIONS:
                 self.run_record.outcome = "MAX_ACTIONS"
             self._write_run_meta()
