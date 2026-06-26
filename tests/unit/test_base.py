@@ -109,6 +109,48 @@ class TestAgentForcedReset:
         assert agent.forced_observations == []
         assert arc_env.actions == [GameAction.ACTION1]
 
+    def test_main_stops_when_runtime_budget_exceeded(self, monkeypatch):
+        arc_env = _FakeEnv(
+            observation_space=_frame(GameState.NOT_FINISHED),
+            step_frame=_frame(GameState.NOT_FINISHED),
+        )
+        agent = _TestAgent(arc_env)
+        # Allow several actions so the runtime budget is the limiting factor.
+        agent.MAX_ACTIONS = 100
+        agent.MAX_RUNTIME_SECONDS = 5
+
+        # First call sets the timer (start); the next call (first loop check)
+        # already exceeds the budget, so the loop exits before any action.
+        times = iter([1000.0, 2000.0])
+        monkeypatch.setattr(
+            "benchmarking.base.time.time",
+            lambda: next(times, 2000.0),
+        )
+
+        agent.main()
+
+        assert agent._timed_out is True
+        assert agent.choose_action_calls == []
+        assert arc_env.actions == []
+
+    def test_main_does_not_time_out_within_budget(self, monkeypatch):
+        arc_env = _FakeEnv(
+            observation_space=_frame(GameState.NOT_FINISHED),
+            step_frame=_frame(GameState.NOT_FINISHED),
+        )
+        agent = _TestAgent(arc_env)
+        agent.MAX_RUNTIME_SECONDS = 10_000
+
+        monkeypatch.setattr("benchmarking.base.time.time", lambda: 1000.0)
+
+        agent.main()
+
+        assert agent._timed_out is False
+        assert arc_env.actions == [GameAction.ACTION1]
+
+    def test_default_runtime_budget_is_twelve_hours(self):
+        assert Agent.MAX_RUNTIME_SECONDS == 12 * 60 * 60
+
     def test_convert_raw_frame_data_preserves_action_input_reasoning(self):
         arc_env = _FakeEnv(
             observation_space=_frame(GameState.NOT_FINISHED),
