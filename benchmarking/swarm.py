@@ -6,13 +6,14 @@ import os
 from threading import Thread
 from typing import TYPE_CHECKING, Optional, Type
 
-from arc_agi import Arcade, OperationMode, RemoteEnvironmentWrapper
+from arc_agi import Arcade, OperationMode, RemoteEnvironmentWrapper, scorecard
 from arc_agi.scorecard import EnvironmentScorecard
+from requests import HTTPError
 
 from .agent import BenchmarkingAgent
 
 if TYPE_CHECKING:
-    from .base import Agent
+    from .base import Agent, ExitReason
 
 logger = logging.getLogger()
 DEFAULT_AGENT_NAME = BenchmarkingAgent.__name__.lower()
@@ -124,7 +125,27 @@ class Swarm:
     def close_scorecard(self, card_id: str) -> Optional[EnvironmentScorecard]:
         self.card_id = None
 
-        return self._arc.close_scorecard(card_id)
+        # Close scorecard gracefully, determine if scorecard automatically closed on initial failure
+        scorecard: Optional[EnvironmentScorecard] = None
+        try:
+            scorecard = self._arc.close_scorecard(card_id)
+        except HTTPError as ex:
+            # IF 404 on request - check the API to see if the scorecard was already recorded,
+            # then resolve agent exit reasons
+            if ex.response.status_code == 404:
+                # TODO check if scorecard exists in API
+                scorecard_recorded = True
+
+                if scorecard_recorded:
+                    for agent in self.agents:
+                        if agent.exit_reason == ExitReason.API_ERROR:
+                            # TODO check times
+                            agent.exit_reason = ExitReason.SCORECARD_IDLE_LIMIT
+            else:
+                print("Real error encountered on scorecard close")
+                raise ex
+
+        return scorecard
 
     def cleanup(self, scorecard: Optional[EnvironmentScorecard] = None) -> None:
         """Cleanup all agents."""
