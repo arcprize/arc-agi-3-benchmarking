@@ -16,13 +16,12 @@ from .recorder import Recorder
 logger = logging.getLogger()
 
 class ExitReason(str, Enum):
-    UNKNOWN              = "UNKNOWN"
-    GAME_WIN             = "GAME_WIN"
-    ACTION_BUDGET        = "ACTION_BUDGET"
-    SCORECARD_IDLE_LIMIT = "SCORECARD_IDLE_LIMIT"
-    SCORECARD_TIME_LIMIT = "SCORECARD_TIME_LIMIT"
-    API_ERROR            = "API_ERROR"
-    AGENT_ERROR          = "AGENT_ERROR"
+    UNKNOWN          = "UNKNOWN"
+    GAME_WIN         = "GAME_WIN"
+    ACTION_BUDGET    = "ACTION_BUDGET"
+    SCORECARD_CLOSED = "SCORECARD_IDLE_LIMIT"
+    API_ERROR        = "API_ERROR"
+    AGENT_ERROR      = "AGENT_ERROR"
 
 class Agent(ABC):
     """Interface for an agent that plays one ARC-AGI-3 game."""

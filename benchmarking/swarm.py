@@ -6,6 +6,7 @@ import os
 from threading import Thread
 from typing import TYPE_CHECKING, Optional, Type
 
+import requests
 from arc_agi import Arcade, OperationMode, RemoteEnvironmentWrapper, scorecard
 from arc_agi.scorecard import EnvironmentScorecard
 from requests import HTTPError
@@ -122,30 +123,36 @@ class Swarm:
     def open_scorecard(self) -> str:
         return self._arc.open_scorecard(tags=self.tags)  # type: ignore[no-any-return]
 
+    def _scorecard_exists(self, card_id: str) -> bool:
+        try:
+            with requests.Session() as session:
+                session.headers.update(self.headers)
+                response = session.get(f"{self.ROOT_URL}//api/v3/scorecards/{card_id}", timeout=10)
+                return 199 < response.status_code < 300
+        except HTTPError as ex:
+            logger.error(ex)
+
+        return False
+
     def close_scorecard(self, card_id: str) -> Optional[EnvironmentScorecard]:
         self.card_id = None
 
         # Close scorecard gracefully, determine if scorecard automatically closed on initial failure
-        scorecard: Optional[EnvironmentScorecard] = None
+        _scorecard: Optional[EnvironmentScorecard] = None
         try:
-            scorecard = self._arc.close_scorecard(card_id)
+            _scorecard = self._arc.close_scorecard(card_id)
         except HTTPError as ex:
             # IF 404 on request - check the API to see if the scorecard was already recorded,
             # then resolve agent exit reasons
-            if ex.response.status_code == 404:
-                # TODO check if scorecard exists in API
-                scorecard_recorded = True
-
-                if scorecard_recorded:
-                    for agent in self.agents:
-                        if agent.exit_reason == ExitReason.API_ERROR:
-                            # TODO check times
-                            agent.exit_reason = ExitReason.SCORECARD_IDLE_LIMIT
+            if ex.response.status_code == 404 and self._scorecard_exists(card_id):
+                for agent in self.agents:
+                    if agent.exit_reason == ExitReason.API_ERROR:
+                        agent.exit_reason = ExitReason.SCORECARD_CLOSED
             else:
-                print("Real error encountered on scorecard close")
+                print("Real error encountered on scorecard close") # TODO error log
                 raise ex
 
-        return scorecard
+        return _scorecard
 
     def cleanup(self, scorecard: Optional[EnvironmentScorecard] = None) -> None:
         """Cleanup all agents."""
