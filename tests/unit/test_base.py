@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from arcengine import ActionInput, FrameData, FrameDataRaw, GameAction, GameState
 
-from benchmarking.base import Agent
+from benchmarking.base import Agent, ExitReason
 
 
 class _FakeEnv:
@@ -21,6 +21,13 @@ class _FakeEnv:
         self.actions.append(action)
         self.reasonings.append(reasoning)
         return self.step_frame
+
+
+class _FailingStepEnv(_FakeEnv):
+    """Env whose step() (the ARC API boundary) raises, as on an API error."""
+
+    def step(self, action: GameAction, data: dict, reasoning: dict) -> FrameData:
+        raise RuntimeError("api issue")
 
 
 class _TestAgent(Agent):
@@ -177,3 +184,64 @@ class TestAgentForcedReset:
         assert frame.action_input.id is GameAction.ACTION1
         assert frame.action_input.data == {"x": 1}
         assert frame.action_input.reasoning == {"usage": {"total_tokens": 5}}
+
+
+class _BudgetAgent(_TestAgent):
+    """Never reports done, so main() runs until MAX_ACTIONS is exhausted."""
+
+    MAX_ACTIONS = 2
+
+
+class _ResolveFailsAgent(_TestAgent):
+    """Agent whose action selection (not the API call) raises."""
+
+    MAX_ACTIONS = 5
+
+    def choose_action(
+        self,
+        frames: list[FrameData],
+        latest_frame: FrameData,
+    ) -> GameAction:
+        raise RuntimeError("model issue")
+
+
+@pytest.mark.unit
+class TestAgentExitReason:
+    def test_main_sets_action_budget_when_max_actions_reached(self):
+        arc_env = _FakeEnv(
+            observation_space=_frame(GameState.NOT_FINISHED),
+            step_frame=_frame(GameState.NOT_FINISHED),
+        )
+        agent = _BudgetAgent(arc_env)
+
+        agent.main()
+
+        assert agent.action_counter >= agent.MAX_ACTIONS
+        assert agent.exit_reason is ExitReason.ACTION_BUDGET
+
+    def test_main_sets_agent_error_when_resolve_action_raises(self):
+        arc_env = _FakeEnv(
+            observation_space=_frame(GameState.NOT_FINISHED),
+            step_frame=_frame(GameState.NOT_FINISHED),
+        )
+        agent = _ResolveFailsAgent(arc_env)
+
+        with pytest.raises(RuntimeError, match="model issue"):
+            agent.main()
+
+        # Failure happened before the API call, so it is the agent's fault.
+        assert agent.exit_reason is ExitReason.AGENT_ERROR
+        assert arc_env.actions == []
+
+    def test_main_sets_api_error_when_take_action_raises(self):
+        arc_env = _FailingStepEnv(
+            observation_space=_frame(GameState.NOT_FINISHED),
+            step_frame=_frame(GameState.NOT_FINISHED),
+        )
+        agent = _TestAgent(arc_env)
+
+        with pytest.raises(RuntimeError, match="api issue"):
+            agent.main()
+
+        # Failure happened while submitting the action to the ARC API.
+        assert agent.exit_reason is ExitReason.API_ERROR

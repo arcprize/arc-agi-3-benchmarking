@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from arcengine import FrameData, GameAction, GameState
 
-from .base import Agent
+from .base import Agent, ExitReason
 from .exceptions import EmptyResponseError
 from .model_config import SERVER_RUNTIME_STATE, get_model_config
 from .recording import RunRecord, StepRecord, StepUsage
@@ -453,6 +453,7 @@ class BenchmarkingAgent(Agent):
 
     def is_done(self, frames: list[FrameData], latest_frame: FrameData) -> bool:
         if latest_frame.state is GameState.WIN:
+            self.exit_reason = ExitReason.GAME_WIN
             return True
         # Check per-level action budget
         if self._level_action_budgets:
@@ -465,6 +466,7 @@ class BenchmarkingAgent(Agent):
                         f"{self.game_id} - Exceeded action budget for level {level}: "
                         f"{self._level_action_counter}/{budget}. Stopping."
                     )
+                    self.exit_reason = ExitReason.ACTION_BUDGET
                     return True
         return False
 

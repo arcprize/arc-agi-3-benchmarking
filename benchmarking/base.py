@@ -3,6 +3,7 @@ import logging
 import os
 import time
 from abc import ABC, abstractmethod
+from enum import Enum
 from typing import Optional
 
 from arc_agi import EnvironmentWrapper
@@ -14,6 +15,14 @@ from .recorder import Recorder
 
 logger = logging.getLogger()
 
+class ExitReason(str, Enum):
+    UNKNOWN          = "UNKNOWN"
+    GAME_WIN         = "GAME_WIN"
+    ACTION_BUDGET    = "ACTION_BUDGET"
+    TIME_BUDGET      = "TIME_BUDGET"
+    SCORECARD_CLOSED = "SCORECARD_CLOSED"
+    API_ERROR        = "API_ERROR"
+    AGENT_ERROR      = "AGENT_ERROR"
 
 class Agent(ABC):
     """Interface for an agent that plays one ARC-AGI-3 game."""
@@ -38,6 +47,8 @@ class Agent(ABC):
     headers: dict[str, str]
     arc_env: EnvironmentWrapper
     _previous_action: Optional[GameAction]
+
+    exit_reason: ExitReason
 
     def __init__(
         self,
@@ -65,32 +76,45 @@ class Agent(ABC):
         }
         self.arc_env = arc_env
         self._previous_action = None
+        self.exit_reason = ExitReason.UNKNOWN
 
     def main(self) -> None:
         """The main agent loop. Play the game_id until finished, then exits."""
         self.timer = time.time()
-        while (
-            not self.is_done(self.frames, self.frames[-1])
-            and self.action_counter <= self.MAX_ACTIONS
-        ):
-            if (time.time() - self.timer) >= self.MAX_RUNTIME_SECONDS:
-                self._timed_out = True
-                logger.info(
-                    f"{self.game_id} - Exiting: agent reached "
-                    f"MAX_RUNTIME_SECONDS of {self.MAX_RUNTIME_SECONDS}, "
-                    f"took {self.seconds} seconds ({self.fps} average fps)"
+        taking_action = False
+        try:
+            while (
+                not self.is_done(self.frames, self.frames[-1])
+                and self.action_counter <= self.MAX_ACTIONS
+            ):
+                if (time.time() - self.timer) >= self.MAX_RUNTIME_SECONDS:
+                    self._timed_out = True
+                    logger.info(
+                        f"{self.game_id} - Exiting: agent reached "
+                        f"MAX_RUNTIME_SECONDS of {self.MAX_RUNTIME_SECONDS}, "
+                        f"took {self.seconds} seconds ({self.fps} average fps)"
+                    )
+                    self.exit_reason = ExitReason.TIME_BUDGET
+                    break
+                latest_frame = self._convert_raw_frame_data(
+                    self.arc_env.observation_space if self.arc_env else None
                 )
-                break
-            latest_frame = self._convert_raw_frame_data(
-                self.arc_env.observation_space if self.arc_env else None
-            )
-            action = self._resolve_action(self.frames, latest_frame)
-            if frame := self.take_action(action):
-                self.append_frame(frame)
-                logger.info(
-                    f"{self.game_id} - {action.name}: count {self.action_counter}, levels completed {frame.levels_completed}, avg fps {self.fps})"
-                )
-            self.action_counter += 1
+                action = self._resolve_action(self.frames, latest_frame)
+                taking_action = True
+                if frame := self.take_action(action):
+                    self.append_frame(frame)
+                    logger.info(
+                        f"{self.game_id} - {action.name}: count {self.action_counter}, levels completed {frame.levels_completed}, avg fps {self.fps})"
+                    )
+                taking_action = False
+                self.action_counter += 1
+
+        except Exception:
+            self.exit_reason = ExitReason.API_ERROR if taking_action else ExitReason.AGENT_ERROR
+            raise
+
+        if self.exit_reason == ExitReason.UNKNOWN and self.action_counter >= self.MAX_ACTIONS:
+            self.exit_reason = ExitReason.ACTION_BUDGET
 
         self.cleanup()
 
