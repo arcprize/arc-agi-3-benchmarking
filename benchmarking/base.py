@@ -99,8 +99,8 @@ class Agent(ABC):
                 latest_frame = self._convert_raw_frame_data(
                     self.arc_env.observation_space if self.arc_env else None
                 )
-                taking_action = True
                 action = self._resolve_action(self.frames, latest_frame)
+                taking_action = True
                 if frame := self.take_action(action):
                     self.append_frame(frame)
                     logger.info(
