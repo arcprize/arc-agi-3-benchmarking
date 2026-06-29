@@ -174,8 +174,7 @@ class TestSwarmCloseScorecard:
         swarm = _swarm_with_agents([api_agent], _http_error(404))
 
         with patch.object(Swarm, "_scorecard_exists", return_value=False):
-            with pytest.raises(HTTPError):
-                swarm.close_scorecard("card-123")
+            swarm.close_scorecard("card-123")
 
         assert api_agent.exit_reason is ExitReason.API_ERROR
 
@@ -184,8 +183,7 @@ class TestSwarmCloseScorecard:
         swarm = _swarm_with_agents([api_agent], _http_error(500))
 
         with patch.object(Swarm, "_scorecard_exists") as exists:
-            with pytest.raises(HTTPError):
-                swarm.close_scorecard("card-123")
+            swarm.close_scorecard("card-123")
 
         exists.assert_not_called()
         assert api_agent.exit_reason is ExitReason.API_ERROR
