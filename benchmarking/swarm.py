@@ -155,10 +155,9 @@ class Swarm:
                     if agent.exit_reason == ExitReason.API_ERROR:
                         agent.exit_reason = ExitReason.SCORECARD_CLOSED
             else:
-                logger.error("Exception encountered on scorecard close. Swarm exit reason API_ERROR.")
+                logger.exception("Exception encountered on scorecard close. Swarm exit reason API_ERROR.")
                 for agent in self.agents:
                     agent.exit_reason = ExitReason.API_ERROR
-                # TODO log the error message
 
         return _scorecard
 
