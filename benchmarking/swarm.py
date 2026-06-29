@@ -150,7 +150,7 @@ class Swarm:
         except HTTPError as ex:
 
             # Check if scorecard closed due to idle/total time limit
-            if ex.response and ex.response.status_code == 404 and self._scorecard_exists(card_id):
+            if ex.response is not None and ex.response.status_code == 404 and self._scorecard_exists(card_id):
                 for agent in self.agents:
                     if agent.exit_reason == ExitReason.API_ERROR:
                         agent.exit_reason = ExitReason.SCORECARD_CLOSED
