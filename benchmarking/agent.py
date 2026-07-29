@@ -26,6 +26,8 @@ from .runtime_models import (
 )
 
 logger = logging.getLogger()
+MAX_LOG_CHARS = 11_000
+TRUNCATION_MARKER = "\n\n... truncated reasoning ...\n\n"
 
 
 class BenchmarkingAgent(Agent):
@@ -546,7 +548,14 @@ class BenchmarkingAgent(Agent):
             pricing=self._pricing,
         )
         if metadata.reasoning:
-            metadata.reasoning = metadata.reasoning[:12_000]
+            # Cut out the middle if we need to truncate the logs due to length.
+            if len(metadata.reasoning) > MAX_LOG_CHARS:
+                half_log_chars = (MAX_LOG_CHARS - len(TRUNCATION_MARKER)) // 2
+                metadata.reasoning = (
+                    metadata.reasoning[:half_log_chars]
+                    + TRUNCATION_MARKER
+                    + metadata.reasoning[-half_log_chars:]
+                )
         self._pending_action_reasoning = metadata.model_dump()
         total_cost = metadata.cost.total_cost
         input_cost = metadata.cost.input_cost

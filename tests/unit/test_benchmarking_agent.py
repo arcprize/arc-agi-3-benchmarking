@@ -4,7 +4,11 @@ import numpy as np
 import pytest
 from arcengine import ActionInput, FrameData, FrameDataRaw, GameAction, GameState
 
-from benchmarking.agent import BenchmarkingAgent
+from benchmarking.agent import (
+    MAX_LOG_CHARS,
+    TRUNCATION_MARKER,
+    BenchmarkingAgent,
+)
 from benchmarking.base import ExitReason
 from benchmarking.runtime_adapters import (
     OpenAIChatCompletionsAdapter,
@@ -1186,3 +1190,63 @@ class TestDoubleResetPrevention:
         actions = agent._get_actions(_playable_frame())
 
         assert GameAction.RESET in actions
+
+
+def _choose_action_with_reasoning(reasoning_text: str | None) -> BenchmarkingAgent:
+    agent = _agent_for_choose_action(
+        analysis_mode=False,
+        responses=[
+            ModelResponse(
+                output_text="ACTION1",
+                reasoning_text=reasoning_text,
+                usage=NormalizedUsage(total_tokens=9),
+            )
+        ],
+    )
+    agent.choose_action([], _playable_frame())
+    return agent
+
+
+@pytest.mark.unit
+class TestBenchmarkingAgentReasoningTruncation:
+    @pytest.mark.parametrize("length", [1, MAX_LOG_CHARS - 1, MAX_LOG_CHARS])
+    def test_reasoning_within_limit_is_passed_through_unchanged(self, length):
+        reasoning = "r" * length
+
+        agent = _choose_action_with_reasoning(reasoning)
+
+        assert agent._pending_action_reasoning["reasoning"] == reasoning
+
+    def test_over_limit_reasoning_keeps_head_and_tail_around_the_marker(self):
+        half = (MAX_LOG_CHARS - len(TRUNCATION_MARKER)) // 2
+        head = "H" * half
+        tail = "T" * half
+        reasoning = head + ("M" * 5_000) + tail
+
+        agent = _choose_action_with_reasoning(reasoning)
+
+        truncated = agent._pending_action_reasoning["reasoning"]
+        assert truncated == head + TRUNCATION_MARKER + tail
+        assert "M" not in truncated
+
+    def test_truncation_caps_length_for_arbitrarily_long_reasoning(self):
+        agent = _choose_action_with_reasoning("x" * (MAX_LOG_CHARS * 100))
+
+        truncated = agent._pending_action_reasoning["reasoning"]
+        assert TRUNCATION_MARKER in truncated
+        assert len(truncated) <= MAX_LOG_CHARS
+
+    def test_saved_step_keeps_the_full_untruncated_reasoning(self):
+        reasoning = "a" * MAX_LOG_CHARS + "b" * MAX_LOG_CHARS
+
+        agent = _choose_action_with_reasoning(reasoning)
+
+        assert agent._saved_steps[0].reasoning == reasoning
+        assert TRUNCATION_MARKER in agent._pending_action_reasoning["reasoning"]
+        assert len(agent._pending_action_reasoning["reasoning"]) <= MAX_LOG_CHARS
+
+    @pytest.mark.parametrize("reasoning_text", [None, ""])
+    def test_empty_reasoning_is_left_alone(self, reasoning_text):
+        agent = _choose_action_with_reasoning(reasoning_text)
+
+        assert agent._pending_action_reasoning["reasoning"] == reasoning_text
