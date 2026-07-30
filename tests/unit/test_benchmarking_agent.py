@@ -1366,7 +1366,7 @@ class TestBenchmarkingAgentEncryptedReplay:
             == output_items
         )
 
-    def test_sdk_output_items_are_serialized_without_dropping_null_fields(self):
+    def test_sdk_reasoning_item_drops_status_but_preserves_null_fields(self):
         class _SDKOutputItem:
             def model_dump(self, *, mode: str) -> dict:
                 assert mode == "json"
@@ -1375,6 +1375,7 @@ class TestBenchmarkingAgentEncryptedReplay:
                     "id": "rs_sdk",
                     "encrypted_content": "encrypted-sdk-state",
                     "summary": None,
+                    "status": "completed",
                 }
 
         response = ModelResponse(

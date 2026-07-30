@@ -425,6 +425,11 @@ class BenchmarkingAgent(Agent):
                     "Encrypted replay response output items must serialize "
                     "to mappings."
                 )
+            # openai-python 2.41.1 includes this response-only field when
+            # dumping reasoning items, but the Responses input schema rejects
+            # it when the encrypted item is replayed.
+            if value.get("type") == "reasoning":
+                value.pop("status", None)
             serialized.append(value)
 
         if not serialized:
