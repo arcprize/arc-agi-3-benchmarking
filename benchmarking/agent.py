@@ -13,7 +13,11 @@ from arcengine import FrameData, GameAction, GameState
 
 from .base import Agent, ExitReason
 from .exceptions import EmptyResponseError
-from .model_config import SERVER_RUNTIME_STATE, get_model_config
+from .model_config import (
+    ENCRYPTED_REPLAY_RUNTIME_STATE,
+    SERVER_RUNTIME_STATE,
+    get_model_config,
+)
 from .recording import RunRecord, StepRecord, StepUsage
 from .runtime_adapters import build_model_runtime_adapter
 from .runtime_clients import build_model_runtime_client
@@ -45,6 +49,8 @@ class BenchmarkingAgent(Agent):
     MAX_CONTEXT_LENGTH: int = 100000
     MAX_ANIMATION_FRAMES: int = 7
     analysis_mode: bool = False
+    include_carry_forward_instruction: bool = True
+    _encrypted_replay: bool = False
     # Empirically, rendered ARC grid payloads are close to 1 char per token.
     # Using 1.0 is intentionally conservative relative to observed runs.
     ESTIMATED_CHARS_PER_TOKEN: float = 1.0
@@ -72,8 +78,12 @@ class BenchmarkingAgent(Agent):
         self._server_state: bool = (
             runtime_cfg.get("state") == SERVER_RUNTIME_STATE
         )
+        self._encrypted_replay: bool = (
+            runtime_cfg.get("state") == ENCRYPTED_REPLAY_RUNTIME_STATE
+        )
         self._previous_response_id: str | None = None
         self._pending_user_messages: list[dict[str, Any]] = []
+        self._encrypted_input_items: list[dict[str, Any]] = []
 
         # Agent-level overrides
         self.MAX_ACTIONS_BASELINE_MULTIPLIER = agent_cfg.get(
@@ -90,6 +100,10 @@ class BenchmarkingAgent(Agent):
         )
         self.MAX_RETRIES = agent_cfg.get("MAX_RETRIES", self.MAX_RETRIES)
         self.analysis_mode = agent_cfg.get("analysis_mode", self.analysis_mode)
+        self.include_carry_forward_instruction = agent_cfg.get(
+            "include_carry_forward_instruction",
+            self.include_carry_forward_instruction,
+        )
 
         # Per-level action budgets from baseline_actions * multiplier.
         # MAX_ACTIONS becomes the derived total budget across all levels.
@@ -193,6 +207,10 @@ class BenchmarkingAgent(Agent):
                 You are playing a game. Your goal is to win. Include any context you want to carry forward in your reply, along with the action you want to take. The final action mentioned in your reply will be executed next turn.
 
                 Prior assistant turns may include a <reasoning_summary> block before the prior action text. Treat those summaries as compact helper context about the earlier decision process, then continue by choosing the next action normally.
+            """)
+        if not self.include_carry_forward_instruction:
+            return textwrap.dedent("""\
+                You are playing a game. Your goal is to win. The final action mentioned in your reply will be executed next turn.
             """)
         return textwrap.dedent("""\
             You are playing a game. Your goal is to win. Include any context you want to carry forward in your reply, along with the action you want to take. The final action mentioned in your reply will be executed next turn.
@@ -373,7 +391,61 @@ class BenchmarkingAgent(Agent):
         return ModelRequest(
             messages=[Message.model_validate(message) for message in self.conversation],
             request_config=dict(self._request_kwargs),
+            input_items=(
+                list(self._encrypted_input_items) if self._encrypted_replay else None
+            ),
         )
+
+    @staticmethod
+    def _serialize_encrypted_replay_output(
+        model_response: ModelResponse,
+    ) -> list[dict[str, Any]]:
+        """Serialize every Responses output item for stateless replay."""
+        raw_response = model_response.raw_response
+        if isinstance(raw_response, dict):
+            raw_output = raw_response.get("output", ())
+        else:
+            raw_output = getattr(raw_response, "output", ())
+
+        serialized: list[dict[str, Any]] = []
+        for item in raw_output or ():
+            if hasattr(item, "model_dump"):
+                value = item.model_dump(mode="json")
+            elif isinstance(item, dict):
+                value = dict(item)
+            elif hasattr(item, "__dict__"):
+                value = dict(vars(item))
+            else:
+                raise TypeError(
+                    "Encrypted replay response output items must be mappings "
+                    "or support model_dump()."
+                )
+            if not isinstance(value, dict):
+                raise TypeError(
+                    "Encrypted replay response output items must serialize "
+                    "to mappings."
+                )
+            serialized.append(value)
+
+        if not serialized:
+            raise RuntimeError(
+                "Encrypted replay response did not contain replayable output items."
+            )
+        return serialized
+
+    @staticmethod
+    def _messages_sent_for_request(
+        model_request: ModelRequest,
+    ) -> list[dict[str, Any]]:
+        """Return the effective request items for per-step recording."""
+        messages = [message.model_dump() for message in model_request.messages]
+        if model_request.input_items is None:
+            return messages
+
+        recorded_items = list(model_request.input_items)
+        if model_request.messages and model_request.messages[0].role == "system":
+            return [messages[0], *recorded_items]
+        return recorded_items
 
     def _build_server_state_request(self) -> ModelRequest:
         """Build a request that sends only the new turn(s) to OpenAI.
@@ -415,6 +487,8 @@ class BenchmarkingAgent(Agent):
             # so buffer it for server-managed state too.
             if self._server_state:
                 self._pending_user_messages.append(frame_message)
+            elif self._encrypted_replay:
+                self._encrypted_input_items.append(frame_message)
 
         self._save_step(
             StepRecord(
@@ -487,9 +561,12 @@ class BenchmarkingAgent(Agent):
         self._sync_level_progress(latest_frame)
         self._level_action_counter += 1
 
-        # Ensure the system prompt is present before the first real turn
-        if not self.conversation:
-            self.conversation.append(
+        # A forced reset can buffer a user observation before the first model
+        # call, so ensure the system prompt is the leading conversation item
+        # rather than relying on an otherwise-empty transcript.
+        if not self.conversation or self.conversation[0].get("role") != "system":
+            self.conversation.insert(
+                0,
                 {"role": "system", "content": self._build_system_prompt()}
             )
 
@@ -501,6 +578,8 @@ class BenchmarkingAgent(Agent):
         self.conversation.append(frame_message)
         if self._server_state:
             self._pending_user_messages.append(frame_message)
+        elif self._encrypted_replay:
+            self._encrypted_input_items.append(frame_message)
 
         actions = self._get_actions(latest_frame)
         start = time.monotonic()
@@ -510,11 +589,19 @@ class BenchmarkingAgent(Agent):
         duration = round(time.monotonic() - start, 3)
         step_usage = StepUsage.from_normalized_usage(model_response.usage)
 
-        # On success, advance server-side state and flush the pending buffer so
-        # the next turn sends only its new message(s).
+        # Commit state only after a response yields a valid action. Response-ID
+        # mode advances the pointer; encrypted replay retains the raw output.
         if self._server_state:
             self._previous_response_id = model_response.response_id
             self._pending_user_messages = []
+        elif self._encrypted_replay:
+            self._encrypted_input_items.extend(
+                self._serialize_encrypted_replay_output(model_response)
+            )
+            for index in range(len(self._encrypted_input_items) - 1, -1, -1):
+                if self._encrypted_input_items[index].get("type") == "compaction":
+                    self._encrypted_input_items = self._encrypted_input_items[index:]
+                    break
 
         self.conversation.append(
             {
@@ -605,9 +692,9 @@ class BenchmarkingAgent(Agent):
         accumulated_usage = NormalizedUsage()
         for attempt in range(self.MAX_RETRIES + 1):
             try:
-                # Server-managed state compacts on OpenAI's side; the docs say not
-                # to manually prune when chaining via previous_response_id.
-                if not self._server_state:
+                # OpenAI-managed state and encrypted replay each have their own
+                # compaction path, so neither uses the manual transcript trimmer.
+                if not (self._server_state or self._encrypted_replay):
                     self._trim_to_fit_context()
                 model_request = self._build_model_request()
                 model_response = self._call_api(model_request)
@@ -639,7 +726,7 @@ class BenchmarkingAgent(Agent):
                     model_response,
                     action,
                     attempt,
-                    [message.model_dump() for message in model_request.messages],
+                    self._messages_sent_for_request(model_request),
                 )
 
             logger.warning(

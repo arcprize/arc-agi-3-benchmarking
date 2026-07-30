@@ -23,6 +23,9 @@ class Message(BaseModel):
 class ModelRequest(BaseModel):
     messages: list[Message]
     request_config: dict[str, Any]
+    # Provider-native Responses input items used for stateless encrypted replay.
+    # ``messages`` remains the normalized transcript used by other runtimes.
+    input_items: list[dict[str, Any]] | None = None
 
 
 class NormalizedUsage(BaseModel):

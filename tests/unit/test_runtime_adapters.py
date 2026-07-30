@@ -572,6 +572,58 @@ class TestOpenAIResponsesAdapter:
         assert "previous_response_id" not in client.responses.calls[0]
         assert "conversation" not in client.responses.calls[0]
 
+    def test_sends_provider_native_items_for_stateless_encrypted_replay(self):
+        client = _FakeResponsesOpenAIClient(_responses_output())
+        adapter = OpenAIResponsesAdapter(client)
+        replay_items = [
+            {"role": "user", "content": "frame 1"},
+            {
+                "type": "reasoning",
+                "id": "rs_1",
+                "encrypted_content": "encrypted-reasoning",
+            },
+            {
+                "type": "message",
+                "id": "msg_1",
+                "role": "assistant",
+                "content": [
+                    {"type": "output_text", "text": "ACTION1"},
+                ],
+            },
+            {"role": "user", "content": "frame 2"},
+        ]
+
+        adapter.invoke(
+            ModelRequest(
+                messages=[
+                    Message(role="system", content="System prompt"),
+                    Message(role="user", content="full transcript is not sent"),
+                ],
+                request_config={
+                    "model": "gpt-5.6-sol",
+                    "store": False,
+                    "include": ["reasoning.encrypted_content"],
+                    "context_management": [
+                        {"type": "compaction", "compact_threshold": 175_000}
+                    ],
+                    "previous_response_id": "must-not-be-sent",
+                    "conversation": "must-not-be-sent",
+                },
+                input_items=replay_items,
+            )
+        )
+
+        call = client.responses.calls[0]
+        assert call["instructions"] == "System prompt"
+        assert call["input"] == replay_items
+        assert call["store"] is False
+        assert call["include"] == ["reasoning.encrypted_content"]
+        assert call["context_management"] == [
+            {"type": "compaction", "compact_threshold": 175_000}
+        ]
+        assert "previous_response_id" not in call
+        assert "conversation" not in call
+
 
 @pytest.mark.unit
 class TestOpenAIResponsesServerStateAdapter:
@@ -1377,3 +1429,45 @@ class TestBuildModelRuntimeAdapter:
         )
 
         assert isinstance(adapter, OpenAIResponsesServerStateAdapter)
+
+    def test_selects_responses_adapter_for_encrypted_replay(self):
+        adapter = build_model_runtime_adapter(
+            client=_FakeResponsesOpenAIClient(_responses_output()),
+            runtime_config={
+                "sdk": "openai-python",
+                "api": "responses",
+                "state": "encrypted_replay",
+            },
+            config_id="responses-encrypted-replay-config",
+        )
+
+        assert isinstance(adapter, OpenAIResponsesAdapter)
+
+    def test_checked_in_encrypted_replay_profiles_are_zdr_compatible(self):
+        efforts = ("low", "medium", "high", "xhigh", "max")
+
+        for effort in efforts:
+            config = get_model_config(
+                f"openai-gpt-5-6-sol-responses-reference-{effort}"
+            )
+
+            assert config["runtime"] == {
+                "sdk": "openai-python",
+                "api": "responses",
+                "state": "encrypted_replay",
+            }
+            assert config["request"]["model"] == "gpt-5.6-sol"
+            assert config["request"]["store"] is False
+            assert config["request"]["include"] == [
+                "reasoning.encrypted_content"
+            ]
+            assert config["request"]["reasoning"] == {
+                "effort": effort,
+                "context": "all_turns",
+            }
+            assert config["request"]["context_management"] == [
+                {"type": "compaction", "compact_threshold": 175_000}
+            ]
+            assert "background" not in config["request"]
+            assert "previous_response_id" not in config["request"]
+            assert "conversation" not in config["request"]

@@ -300,6 +300,163 @@ class TestModelConfig:
 
         assert configs[0]["runtime"]["state"] == "previous_response_id"
 
+    def test_load_model_configs_accepts_stateless_encrypted_replay(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "responses-encrypted-replay",
+                    runtime={
+                        "sdk": "openai-python",
+                        "api": "responses",
+                        "state": "encrypted_replay",
+                    },
+                    request={
+                        "model": "gpt-5.6-sol",
+                        "store": False,
+                        "reasoning": {
+                            "effort": "high",
+                            "context": "all_turns",
+                        },
+                    },
+                )
+            ],
+        )
+
+        configs = model_config.load_model_configs()
+
+        assert configs[0]["runtime"]["state"] == "encrypted_replay"
+        assert configs[0]["request"]["store"] is False
+
+    @pytest.mark.parametrize(
+        ("runtime_sdk", "runtime_api"),
+        [
+            ("openai-python", "chat_completions"),
+            ("anthropic-python", "messages"),
+            ("google-genai", "generate_content"),
+        ],
+    )
+    def test_load_model_configs_rejects_encrypted_replay_outside_openai_responses(
+        self,
+        tmp_path,
+        monkeypatch,
+        runtime_sdk,
+        runtime_api,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "bad-encrypted-replay-runtime",
+                    runtime={
+                        "sdk": runtime_sdk,
+                        "api": runtime_api,
+                        "state": "encrypted_replay",
+                    },
+                    request={"model": "model", "store": False},
+                )
+            ],
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="uses runtime.state='encrypted_replay'",
+        ):
+            model_config.load_model_configs()
+
+    @pytest.mark.parametrize("store_value", [None, True])
+    def test_encrypted_replay_requires_explicit_store_false(
+        self,
+        tmp_path,
+        monkeypatch,
+        store_value,
+    ):
+        request = {"model": "gpt-5.6-sol"}
+        if store_value is not None:
+            request["store"] = store_value
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "non-zdr-encrypted-replay",
+                    runtime={
+                        "sdk": "openai-python",
+                        "api": "responses",
+                        "state": "encrypted_replay",
+                    },
+                    request=request,
+                )
+            ],
+        )
+
+        with pytest.raises(ValueError, match="must set request.store=false"):
+            model_config.load_model_configs()
+
+    def test_encrypted_replay_rejects_background_mode(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "background-encrypted-replay",
+                    runtime={
+                        "sdk": "openai-python",
+                        "api": "responses",
+                        "state": "encrypted_replay",
+                    },
+                    request={
+                        "model": "gpt-5.6-sol",
+                        "store": False,
+                        "background": True,
+                    },
+                )
+            ],
+        )
+
+        with pytest.raises(ValueError, match="cannot enable request.background"):
+            model_config.load_model_configs()
+
+    @pytest.mark.parametrize("field", ["conversation", "previous_response_id"])
+    def test_encrypted_replay_rejects_server_managed_state_fields(
+        self,
+        tmp_path,
+        monkeypatch,
+        field,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "mixed-state-encrypted-replay",
+                    runtime={
+                        "sdk": "openai-python",
+                        "api": "responses",
+                        "state": "encrypted_replay",
+                    },
+                    request={
+                        "model": "gpt-5.6-sol",
+                        "store": False,
+                        field: "server-state",
+                    },
+                )
+            ],
+        )
+
+        with pytest.raises(ValueError, match="incompatible request field"):
+            model_config.load_model_configs()
+
     def test_load_model_configs_rejects_unknown_runtime_state(
         self,
         tmp_path,

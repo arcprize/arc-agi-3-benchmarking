@@ -15,13 +15,18 @@ SUPPORTED_RUNTIME_PAIRS = frozenset(
 )
 DEFAULT_RUNTIME_STATE = "manual_rolling"
 SERVER_RUNTIME_STATE = "previous_response_id"
+ENCRYPTED_REPLAY_RUNTIME_STATE = "encrypted_replay"
 # Backwards-compatible alias: most call sites and tests reference the default.
 SUPPORTED_RUNTIME_STATE = DEFAULT_RUNTIME_STATE
 SUPPORTED_RUNTIME_STATES = frozenset(
-    {DEFAULT_RUNTIME_STATE, SERVER_RUNTIME_STATE}
+    {
+        DEFAULT_RUNTIME_STATE,
+        SERVER_RUNTIME_STATE,
+        ENCRYPTED_REPLAY_RUNTIME_STATE,
+    }
 )
-# Server-managed conversation state (previous_response_id + compaction) is only
-# available on the OpenAI Responses runtime.
+# Response-ID chaining and encrypted reasoning replay are only available on the
+# OpenAI Responses runtime.
 SERVER_STATE_RUNTIME_PAIRS = frozenset({("openai-python", "responses")})
 ANTHROPIC_OPENAI_COMPAT_CLIENT_FIELDS = frozenset({"base_url"})
 ANTHROPIC_OPENAI_COMPAT_REQUEST_FIELDS = frozenset(
@@ -79,6 +84,36 @@ def _validate_anthropic_messages_config(config_id: str, entry: dict[str, Any]) -
         raise ValueError(
             f"Model config '{config_id}' uses OpenAI-compatible request field(s) "
             f"for native Anthropic runtime: {fields}."
+        )
+
+
+def _validate_encrypted_replay_config(
+    config_id: str,
+    entry: dict[str, Any],
+) -> None:
+    """Enforce the request invariants that keep encrypted replay stateless."""
+    request = entry["request"]
+    if request.get("store") is not False:
+        raise ValueError(
+            f"Model config '{config_id}' uses runtime.state="
+            f"{ENCRYPTED_REPLAY_RUNTIME_STATE!r} and must set request.store=false."
+        )
+    if request.get("background") is True:
+        raise ValueError(
+            f"Model config '{config_id}' uses runtime.state="
+            f"{ENCRYPTED_REPLAY_RUNTIME_STATE!r} and cannot enable "
+            f"request.background."
+        )
+
+    incompatible_fields = sorted(
+        field for field in ("conversation", "previous_response_id") if field in request
+    )
+    if incompatible_fields:
+        fields = ", ".join(incompatible_fields)
+        raise ValueError(
+            f"Model config '{config_id}' uses runtime.state="
+            f"{ENCRYPTED_REPLAY_RUNTIME_STATE!r} with incompatible request "
+            f"field(s): {fields}."
         )
 
 
@@ -155,14 +190,16 @@ def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> 
             f"but only {supported} are supported."
         )
     if (
-        runtime_state == SERVER_RUNTIME_STATE
+        runtime_state in {SERVER_RUNTIME_STATE, ENCRYPTED_REPLAY_RUNTIME_STATE}
         and runtime_pair not in SERVER_STATE_RUNTIME_PAIRS
     ):
         raise ValueError(
-            f"Model config '{config_id}' uses runtime.state={SERVER_RUNTIME_STATE!r}, "
+            f"Model config '{config_id}' uses runtime.state={runtime_state!r}, "
             f"which is only supported on the OpenAI Responses runtime "
             f"(sdk='openai-python', api='responses')."
         )
+    if runtime_state == ENCRYPTED_REPLAY_RUNTIME_STATE:
+        _validate_encrypted_replay_config(config_id, entry)
     if runtime_pair == ("anthropic-python", "messages"):
         _validate_anthropic_messages_config(config_id, entry)
 
