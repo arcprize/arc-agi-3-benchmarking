@@ -82,7 +82,7 @@
   agent:
     MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
     MAX_CONTEXT_LENGTH: 175_000
-    include_carry_forward_instruction: true
+    include_carry_forward_instruction: false
   runtime:
     sdk: "openai-python"
     api: "responses"
