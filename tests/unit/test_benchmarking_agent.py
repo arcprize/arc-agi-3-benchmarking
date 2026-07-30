@@ -1393,6 +1393,31 @@ class TestBenchmarkingAgentEncryptedReplay:
             }
         ]
 
+    def test_sdk_compaction_item_drops_created_by(self):
+        class _SDKOutputItem:
+            def model_dump(self, *, mode: str) -> dict:
+                assert mode == "json"
+                return {
+                    "type": "compaction",
+                    "id": "cmp_sdk",
+                    "encrypted_content": "encrypted-compacted-state",
+                    "created_by": "server-side-compaction",
+                }
+
+        response = ModelResponse(
+            output_text="ACTION1",
+            usage=NormalizedUsage(total_tokens=9),
+            raw_response=SimpleNamespace(output=[_SDKOutputItem()]),
+        )
+
+        assert BenchmarkingAgent._serialize_encrypted_replay_output(response) == [
+            {
+                "type": "compaction",
+                "id": "cmp_sdk",
+                "encrypted_content": "encrypted-compacted-state",
+            }
+        ]
+
     def test_latest_compaction_item_wins_when_response_contains_multiple(self):
         latest_compaction = {
             "type": "compaction",

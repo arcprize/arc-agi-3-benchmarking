@@ -425,11 +425,14 @@ class BenchmarkingAgent(Agent):
                     "Encrypted replay response output items must serialize "
                     "to mappings."
                 )
-            # openai-python 2.41.1 includes this response-only field when
-            # dumping reasoning items, but the Responses input schema rejects
-            # it when the encrypted item is replayed.
-            if value.get("type") == "reasoning":
+            # openai-python 2.41.1 includes response-only fields when dumping
+            # these output items, but the Responses input schema rejects them
+            # when the encrypted items are replayed.
+            item_type = value.get("type")
+            if item_type == "reasoning":
                 value.pop("status", None)
+            elif item_type == "compaction":
+                value.pop("created_by", None)
             serialized.append(value)
 
         if not serialized:
@@ -437,6 +440,16 @@ class BenchmarkingAgent(Agent):
                 "Encrypted replay response did not contain replayable output items."
             )
         return serialized
+
+    @staticmethod
+    def _prune_encrypted_replay_history(
+        input_items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Drop items superseded by the latest encrypted compaction item."""
+        for index in range(len(input_items) - 1, -1, -1):
+            if input_items[index].get("type") == "compaction":
+                return input_items[index:]
+        return input_items
 
     @staticmethod
     def _messages_sent_for_request(
@@ -603,10 +616,9 @@ class BenchmarkingAgent(Agent):
             self._encrypted_input_items.extend(
                 self._serialize_encrypted_replay_output(model_response)
             )
-            for index in range(len(self._encrypted_input_items) - 1, -1, -1):
-                if self._encrypted_input_items[index].get("type") == "compaction":
-                    self._encrypted_input_items = self._encrypted_input_items[index:]
-                    break
+            self._encrypted_input_items = self._prune_encrypted_replay_history(
+                self._encrypted_input_items
+            )
 
         self.conversation.append(
             {
