@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from benchmarking.exceptions import EmptyResponseError
+from benchmarking.models import ActionStateMetadata
 from benchmarking.runtime_models import (
     Message,
     ModelRequest,
@@ -205,6 +206,24 @@ class TestRuntimeModels:
         assert metadata.cost.input_cost == pytest.approx(0.0003)
         assert metadata.cost.output_cost == pytest.approx(0.00045)
         assert metadata.cost.total_cost == pytest.approx(0.00075)
+        assert "state" not in metadata.to_reasoning_dict()
+
+    def test_action_metadata_omits_unpopulated_compaction_fields(self):
+        metadata = action_metadata_from_model_response(
+            _normalized_model_response(),
+            pricing={},
+        )
+        metadata.state = ActionStateMetadata(
+            input_items_sent=12,
+            compaction_occurred=False,
+            compaction_items_returned=0,
+        )
+
+        assert metadata.to_reasoning_dict()["state"] == {
+            "input_items_sent": 12,
+            "compaction_occurred": False,
+            "compaction_items_returned": 0,
+        }
 
     def test_chat_response_normalizer_uses_first_choice_message_content(self):
         response = SimpleNamespace(

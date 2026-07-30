@@ -1168,6 +1168,25 @@ class TestBenchmarkingAgentEncryptedReplay:
             {"role": "system", "content": agent._build_system_prompt()},
             frame_message,
         ]
+        assert agent._pending_action_reasoning["state"] == {
+            "input_items_sent": 1,
+            "compaction_occurred": False,
+            "compaction_items_returned": 0,
+        }
+
+    def test_action_state_metadata_is_sent_to_arc_reasoning(self):
+        agent = _encrypted_replay_agent([_encrypted_replay_response()])
+        env = _CapturingRawEnv()
+        agent.arc_env = env
+
+        action = agent.choose_action([], _playable_frame())
+        agent.do_action_request(action)
+
+        assert env.reasonings[0]["state"] == {
+            "input_items_sent": 1,
+            "compaction_occurred": False,
+            "compaction_items_returned": 0,
+        }
 
     def test_second_turn_replays_user_input_encrypted_reasoning_and_message(self):
         first_output = _encrypted_replay_output(1)
@@ -1237,6 +1256,13 @@ class TestBenchmarkingAgentEncryptedReplay:
         agent.choose_action([first_frame], second_frame)
 
         assert agent._encrypted_input_items == compacted_output
+        assert agent._pending_action_reasoning["state"] == {
+            "input_items_sent": 4,
+            "compaction_occurred": True,
+            "compaction_items_returned": 1,
+            "history_items_before_prune": 7,
+            "history_items_after_prune": 3,
+        }
 
         agent.choose_action([first_frame, second_frame], third_frame)
 
@@ -1247,6 +1273,11 @@ class TestBenchmarkingAgentEncryptedReplay:
             *compacted_output,
             third_message,
         ]
+        assert agent._pending_action_reasoning["state"] == {
+            "input_items_sent": 4,
+            "compaction_occurred": False,
+            "compaction_items_returned": 0,
+        }
 
     def test_unparseable_retry_does_not_commit_orphaned_encrypted_state(self):
         orphaned_output = [
@@ -1444,6 +1475,13 @@ class TestBenchmarkingAgentEncryptedReplay:
             latest_compaction,
             {"type": "message", "id": "msg_after"},
         ]
+        assert agent._pending_action_reasoning["state"] == {
+            "input_items_sent": 1,
+            "compaction_occurred": True,
+            "compaction_items_returned": 2,
+            "history_items_before_prune": 5,
+            "history_items_after_prune": 2,
+        }
 
 
 def _agent_with_env(step_frame: FrameData) -> BenchmarkingAgent:
@@ -1573,6 +1611,11 @@ def _choose_action_with_reasoning(reasoning_text: str | None) -> BenchmarkingAge
 
 @pytest.mark.unit
 class TestBenchmarkingAgentReasoningTruncation:
+    def test_non_encrypted_action_metadata_omits_state(self):
+        agent = _choose_action_with_reasoning("inspect the board")
+
+        assert "state" not in agent._pending_action_reasoning
+
     @pytest.mark.parametrize("length", [1, MAX_LOG_CHARS - 1, MAX_LOG_CHARS])
     def test_reasoning_within_limit_is_passed_through_unchanged(self, length):
         reasoning = "r" * length

@@ -18,6 +18,7 @@ from .model_config import (
     SERVER_RUNTIME_STATE,
     get_model_config,
 )
+from .models import ActionStateMetadata
 from .recording import RunRecord, StepRecord, StepUsage
 from .runtime_adapters import build_model_runtime_adapter
 from .runtime_clients import build_model_runtime_client
@@ -606,6 +607,7 @@ class BenchmarkingAgent(Agent):
         )
         duration = round(time.monotonic() - start, 3)
         step_usage = StepUsage.from_normalized_usage(model_response.usage)
+        action_state: ActionStateMetadata | None = None
 
         # Commit state only after a response yields a valid action. Response-ID
         # mode advances the pointer; encrypted replay retains the raw output.
@@ -613,11 +615,27 @@ class BenchmarkingAgent(Agent):
             self._previous_response_id = model_response.response_id
             self._pending_user_messages = []
         elif self._encrypted_replay:
-            self._encrypted_input_items.extend(
-                self._serialize_encrypted_replay_output(model_response)
+            input_items_sent = len(self._encrypted_input_items)
+            replay_output = self._serialize_encrypted_replay_output(model_response)
+            compaction_items_returned = sum(
+                item.get("type") == "compaction" for item in replay_output
             )
+            self._encrypted_input_items.extend(replay_output)
+            history_items_before_prune = len(self._encrypted_input_items)
             self._encrypted_input_items = self._prune_encrypted_replay_history(
                 self._encrypted_input_items
+            )
+            compaction_occurred = compaction_items_returned > 0
+            action_state = ActionStateMetadata(
+                input_items_sent=input_items_sent,
+                compaction_occurred=compaction_occurred,
+                compaction_items_returned=compaction_items_returned,
+                history_items_before_prune=(
+                    history_items_before_prune if compaction_occurred else None
+                ),
+                history_items_after_prune=(
+                    len(self._encrypted_input_items) if compaction_occurred else None
+                ),
             )
 
         self.conversation.append(
@@ -651,6 +669,7 @@ class BenchmarkingAgent(Agent):
             model_response=model_response,
             pricing=self._pricing,
         )
+        metadata.state = action_state
         if metadata.reasoning:
             # Cut out the middle if we need to truncate the logs due to length.
             if len(metadata.reasoning) > MAX_LOG_CHARS:
@@ -660,7 +679,7 @@ class BenchmarkingAgent(Agent):
                     + TRUNCATION_MARKER
                     + metadata.reasoning[-half_log_chars:]
                 )
-        self._pending_action_reasoning = metadata.model_dump()
+        self._pending_action_reasoning = metadata.to_reasoning_dict()
         total_cost = metadata.cost.total_cost
         input_cost = metadata.cost.input_cost
         output_cost = metadata.cost.output_cost
