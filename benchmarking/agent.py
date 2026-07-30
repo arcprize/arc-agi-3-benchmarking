@@ -679,7 +679,15 @@ class BenchmarkingAgent(Agent):
                     + TRUNCATION_MARKER
                     + metadata.reasoning[-half_log_chars:]
                 )
-        self._pending_action_reasoning = metadata.to_reasoning_dict()
+        arc_reasoning = metadata.to_reasoning_dict()
+        if self._encrypted_replay:
+            # OpenAI Responses exposes a human-readable summary rather than raw
+            # chain-of-thought. Label it precisely in ARC's reasoning payload.
+            arc_reasoning["reasoning_summary"] = arc_reasoning.pop(
+                "reasoning",
+                None,
+            )
+        self._pending_action_reasoning = arc_reasoning
         total_cost = metadata.cost.total_cost
         input_cost = metadata.cost.input_cost
         output_cost = metadata.cost.output_cost

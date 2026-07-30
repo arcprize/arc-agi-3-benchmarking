@@ -82,7 +82,7 @@
   agent:
     MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
     MAX_CONTEXT_LENGTH: 175_000
-    include_carry_forward_instruction: false
+    include_carry_forward_instruction: true
   runtime:
     sdk: "openai-python"
     api: "responses"
@@ -96,24 +96,24 @@
     store: false
     include: ["reasoning.encrypted_content"]
     context_management: [{type: "compaction", compact_threshold: 175_000}]
-    reasoning: {effort: "xhigh", context: "all_turns"}
+    reasoning: {effort: "xhigh", context: "auto", summary: "auto"}
   pricing: {}
 
 - <<: *openai_sol_responses
   id: "openai-gpt-5-6-sol-responses-reference-low"
-  request: {<<: *openai_sol_responses_request, reasoning: {effort: "low", context: "all_turns"}}
+  request: {<<: *openai_sol_responses_request, reasoning: {effort: "low", context: "auto", summary: "auto"}}
 
 - <<: *openai_sol_responses
   id: "openai-gpt-5-6-sol-responses-reference-medium"
-  request: {<<: *openai_sol_responses_request, reasoning: {effort: "medium", context: "all_turns"}}
+  request: {<<: *openai_sol_responses_request, reasoning: {effort: "medium", context: "auto", summary: "auto"}}
 
 - <<: *openai_sol_responses
   id: "openai-gpt-5-6-sol-responses-reference-high"
-  request: {<<: *openai_sol_responses_request, reasoning: {effort: "high", context: "all_turns"}}
+  request: {<<: *openai_sol_responses_request, reasoning: {effort: "high", context: "auto", summary: "auto"}}
 
 - <<: *openai_sol_responses
   id: "openai-gpt-5-6-sol-responses-reference-max"
-  request: {<<: *openai_sol_responses_request, reasoning: {effort: "max", context: "all_turns"}}
+  request: {<<: *openai_sol_responses_request, reasoning: {effort: "max", context: "auto", summary: "auto"}}
 
 - id: "openai-gpt-5-4-2026-03-05-responses"
   agent:

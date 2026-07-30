@@ -1115,11 +1115,13 @@ def _encrypted_replay_output(turn: int) -> list[dict]:
 def _encrypted_replay_response(
     *,
     output_text: str = "ACTION1",
+    reasoning_text: str | None = None,
     output_items: list[dict] | None = None,
     total_tokens: int = 9,
 ) -> ModelResponse:
     return ModelResponse(
         output_text=output_text,
+        reasoning_text=reasoning_text,
         usage=NormalizedUsage(total_tokens=total_tokens),
         raw_response=SimpleNamespace(
             output=(
@@ -1187,6 +1189,26 @@ class TestBenchmarkingAgentEncryptedReplay:
             "compaction_occurred": False,
             "compaction_items_returned": 0,
         }
+
+    def test_reasoning_summary_is_labeled_separately_from_output_for_arc(self):
+        agent = _encrypted_replay_agent(
+            [
+                _encrypted_replay_response(
+                    output_text="Observed a movable block.\n\nACTION1",
+                    reasoning_text="The block can likely move in four directions.",
+                )
+            ]
+        )
+
+        agent.choose_action([], _playable_frame())
+
+        assert agent._pending_action_reasoning["output"] == (
+            "Observed a movable block.\n\nACTION1"
+        )
+        assert agent._pending_action_reasoning["reasoning_summary"] == (
+            "The block can likely move in four directions."
+        )
+        assert "reasoning" not in agent._pending_action_reasoning
 
     def test_second_turn_replays_user_input_encrypted_reasoning_and_message(self):
         first_output = _encrypted_replay_output(1)

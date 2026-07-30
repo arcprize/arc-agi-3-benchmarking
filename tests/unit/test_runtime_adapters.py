@@ -1463,7 +1463,8 @@ class TestBuildModelRuntimeAdapter:
             ]
             assert config["request"]["reasoning"] == {
                 "effort": effort,
-                "context": "all_turns",
+                "context": "auto",
+                "summary": "auto",
             }
             assert config["request"]["context_management"] == [
                 {"type": "compaction", "compact_threshold": 175_000}

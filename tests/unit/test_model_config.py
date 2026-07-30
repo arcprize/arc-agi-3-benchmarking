@@ -321,7 +321,7 @@ class TestModelConfig:
                         "store": False,
                         "reasoning": {
                             "effort": "high",
-                            "context": "all_turns",
+                            "context": "auto",
                         },
                     },
                 )
