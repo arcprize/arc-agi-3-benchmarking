@@ -404,6 +404,86 @@ class TestBenchmarkingAgentModelRequests:
 
 
 @pytest.mark.unit
+class TestBenchmarkingAgentActionParsing:
+    def test_parses_observed_single_complex_action_json(self):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+
+        action = agent._parse_action(
+            '{"actions":[{"action_type":"ACTION6","x":26,"y":36}]}',
+            [GameAction.ACTION6],
+        )
+
+        assert action is not None
+        assert action.name == "ACTION6"
+        assert action.action_data.x == 26
+        assert action.action_data.y == 36
+
+    def test_parses_single_simple_action_json(self):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+
+        action = agent._parse_action(
+            '{"actions": [{"action_type": "ACTION5"}]}',
+            [GameAction.ACTION5],
+        )
+
+        assert action == GameAction.ACTION5
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            '{"actions":[]}',
+            (
+                '{"actions":['
+                '{"action_type":"ACTION6","x":26,"y":36},'
+                '{"action_type":"ACTION6","x":25,"y":36}'
+                ']}'
+            ),
+            '{"actions":[{"action_type":"ACTION6","x":26}]}',
+            '{"actions":[{"action_type":"ACTION6","x":"26","y":36}]}',
+            '{"actions":[{"action_type":"ACTION6","x":26.0,"y":36}]}',
+            '{"actions":[{"action_type":"ACTION6","x":true,"y":36}]}',
+            '{"actions":[{"action_type":"ACTION6","x":64,"y":36}]}',
+            (
+                '{"actions":[{"action_type":"ACTION6","x":26,"y":36,'
+                '"note":"ACTION6 26 36"}]}'
+            ),
+            (
+                '{"actions":[{"action_type":"ACTION6","x":26,"y":36}],'
+                '"metadata":{}}'
+            ),
+        ],
+    )
+    def test_rejects_invalid_or_ambiguous_structured_actions(self, response):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+
+        assert agent._parse_action(response, [GameAction.ACTION6]) is None
+
+    def test_rejects_structured_action_that_is_not_available(self):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+
+        action = agent._parse_action(
+            '{"actions":[{"action_type":"ACTION6","x":26,"y":36}]}',
+            [GameAction.ACTION5],
+        )
+
+        assert action is None
+
+    @pytest.mark.parametrize(
+        "response",
+        ["ACTION6 26 36", "ACTION6: 26, 36", "ACTION6(26, 36)"],
+    )
+    def test_existing_complex_action_formats_still_parse(self, response):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+
+        action = agent._parse_action(response, [GameAction.ACTION6])
+
+        assert action is not None
+        assert action.name == "ACTION6"
+        assert action.action_data.x == 26
+        assert action.action_data.y == 36
+
+
+@pytest.mark.unit
 class TestBenchmarkingAgentRetries:
     def test_unparseable_assistant_response_retries_until_action_is_parsed(self):
         agent = _agent_for_request_kwargs(
