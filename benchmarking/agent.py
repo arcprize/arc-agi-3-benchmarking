@@ -285,10 +285,68 @@ class BenchmarkingAgent(Agent):
 
     # ── Action parsing ───────────────────────────────────────────────────
 
+    @staticmethod
+    def _parse_structured_action(
+        payload: dict[str, Any],
+        available_actions: list[GameAction],
+    ) -> Optional[GameAction]:
+        """Validate one available action and its required arguments."""
+        # 1. Envelope: only `actions`, containing exactly one object.
+        actions = payload.get("actions")
+        valid_envelope = (
+            set(payload) == {"actions"}
+            and isinstance(actions, list)
+            and len(actions) == 1
+        )
+        if not valid_envelope:
+            return None
+        entry = actions[0]
+        if not isinstance(entry, dict):
+            return None
+
+        # 2. Availability: the exact action name must be offered this turn.
+        action = next(
+            (a for a in available_actions if a.name == entry.get("action_type")),
+            None,
+        )
+        if action is None:
+            return None
+
+        # 3. Shape: simple actions have no arguments; complex actions require x/y.
+        expected_fields = {"action_type", "x", "y"}
+        if not action.is_complex():
+            expected_fields = {"action_type"}
+        if set(entry) != expected_fields:
+            return None
+        parsed = GameAction.from_name(action.name)
+        if not action.is_complex():
+            return parsed
+
+        # 4. Coordinates: genuine integers within the game grid.
+        x, y = entry["x"], entry["y"]
+        invalid_coordinate = any(
+            type(value) is not int or not 0 <= value <= 63 for value in (x, y)
+        )
+        if invalid_coordinate:
+            return None
+        parsed.set_data({"x": x, "y": y})
+        return parsed
+
     def _parse_action(
         self, text: str, available_actions: list[GameAction]
     ) -> Optional[GameAction]:
-        """Parse the last mentioned action from the assistant's response."""
+        """Parse a structured action or fall back to legacy text parsing."""
+        try:
+            payload = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            payload = None
+
+        # A response with `actions` claims the structured schema. Validate it
+        # strictly; invalid structured responses must not fall through to regex.
+        if isinstance(payload, dict) and "actions" in payload:
+            return self._parse_structured_action(payload, available_actions)
+
+        # Legacy free-text responses execute the last valid action mentioned.
         text_upper = text.upper()
         candidates: list[tuple[int, GameAction]] = []
 
