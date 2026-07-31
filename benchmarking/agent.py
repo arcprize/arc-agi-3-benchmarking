@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from arcengine import FrameData, GameAction, GameState
 
+from .action_metadata import fit_action_metadata_payload
 from .base import Agent, ExitReason
 from .exceptions import EmptyResponseError
 from .model_config import SERVER_RUNTIME_STATE, get_model_config
@@ -26,8 +27,6 @@ from .runtime_models import (
 )
 
 logger = logging.getLogger()
-MAX_LOG_CHARS = 11_000
-TRUNCATION_MARKER = "\n\n... truncated reasoning ...\n\n"
 
 
 class BenchmarkingAgent(Agent):
@@ -605,16 +604,9 @@ class BenchmarkingAgent(Agent):
             model_response=model_response,
             pricing=self._pricing,
         )
-        if metadata.reasoning:
-            # Cut out the middle if we need to truncate the logs due to length.
-            if len(metadata.reasoning) > MAX_LOG_CHARS:
-                half_log_chars = (MAX_LOG_CHARS - len(TRUNCATION_MARKER)) // 2
-                metadata.reasoning = (
-                    metadata.reasoning[:half_log_chars]
-                    + TRUNCATION_MARKER
-                    + metadata.reasoning[-half_log_chars:]
-                )
-        self._pending_action_reasoning = metadata.model_dump()
+        self._pending_action_reasoning = fit_action_metadata_payload(
+            metadata.model_dump()
+        )
         total_cost = metadata.cost.total_cost
         input_cost = metadata.cost.input_cost
         output_cost = metadata.cost.output_cost

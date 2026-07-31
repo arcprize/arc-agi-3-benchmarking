@@ -4,11 +4,11 @@ import numpy as np
 import pytest
 from arcengine import ActionInput, FrameData, FrameDataRaw, GameAction, GameState
 
-from benchmarking.agent import (
-    MAX_LOG_CHARS,
-    TRUNCATION_MARKER,
-    BenchmarkingAgent,
+from benchmarking.action_metadata import (
+    MAX_ACTION_METADATA_BYTES,
+    serialized_action_metadata_size,
 )
+from benchmarking.agent import BenchmarkingAgent
 from benchmarking.base import ExitReason
 from benchmarking.runtime_adapters import (
     OpenAIChatCompletionsAdapter,
@@ -1272,12 +1272,15 @@ class TestDoubleResetPrevention:
         assert GameAction.RESET in actions
 
 
-def _choose_action_with_reasoning(reasoning_text: str | None) -> BenchmarkingAgent:
+def _choose_action_with_response(
+    output_text: str,
+    reasoning_text: str | None,
+) -> BenchmarkingAgent:
     agent = _agent_for_choose_action(
         analysis_mode=False,
         responses=[
             ModelResponse(
-                output_text="ACTION1",
+                output_text=output_text,
                 reasoning_text=reasoning_text,
                 usage=NormalizedUsage(total_tokens=9),
             )
@@ -1287,43 +1290,86 @@ def _choose_action_with_reasoning(reasoning_text: str | None) -> BenchmarkingAge
     return agent
 
 
+def _choose_action_with_reasoning(reasoning_text: str | None) -> BenchmarkingAgent:
+    return _choose_action_with_response("ACTION1", reasoning_text)
+
+
 @pytest.mark.unit
 class TestBenchmarkingAgentReasoningTruncation:
-    @pytest.mark.parametrize("length", [1, MAX_LOG_CHARS - 1, MAX_LOG_CHARS])
-    def test_reasoning_within_limit_is_passed_through_unchanged(self, length):
+    @pytest.mark.parametrize("length", [1, 1_000, 10_000])
+    def test_payload_within_budget_is_passed_through_unchanged(self, length):
         reasoning = "r" * length
 
         agent = _choose_action_with_reasoning(reasoning)
 
         assert agent._pending_action_reasoning["reasoning"] == reasoning
 
-    def test_over_limit_reasoning_keeps_head_and_tail_around_the_marker(self):
-        half = (MAX_LOG_CHARS - len(TRUNCATION_MARKER)) // 2
-        head = "H" * half
-        tail = "T" * half
-        reasoning = head + ("M" * 5_000) + tail
+    def test_huge_reasoning_keeps_head_and_tail_around_the_marker(self):
+        reasoning = ("H" * 12_000) + "REMOVED-CENTER" + ("T" * 12_000)
 
         agent = _choose_action_with_reasoning(reasoning)
 
         truncated = agent._pending_action_reasoning["reasoning"]
-        assert truncated == head + TRUNCATION_MARKER + tail
-        assert "M" not in truncated
+        assert truncated.startswith("H")
+        assert truncated.endswith("T")
+        assert "truncated" in truncated
+        assert "REMOVED-CENTER" not in truncated
+        assert (
+            serialized_action_metadata_size(agent._pending_action_reasoning)
+            <= MAX_ACTION_METADATA_BYTES
+        )
 
-    def test_truncation_caps_length_for_arbitrarily_long_reasoning(self):
-        agent = _choose_action_with_reasoning("x" * (MAX_LOG_CHARS * 100))
+    def test_huge_output_without_summary_is_truncated_to_byte_budget(self):
+        agent = _choose_action_with_response("ACTION1 " + ("x" * 100_000), None)
 
-        truncated = agent._pending_action_reasoning["reasoning"]
-        assert TRUNCATION_MARKER in truncated
-        assert len(truncated) <= MAX_LOG_CHARS
+        truncated = agent._pending_action_reasoning["output"]
+        assert "truncated" in truncated
+        assert (
+            serialized_action_metadata_size(agent._pending_action_reasoning)
+            <= MAX_ACTION_METADATA_BYTES
+        )
+
+    def test_huge_reasoning_and_output_are_both_truncated(self):
+        agent = _choose_action_with_response(
+            "ACTION1 " + ("o" * 30_000),
+            "r" * 30_000,
+        )
+
+        payload = agent._pending_action_reasoning
+        assert "truncated" in payload["reasoning"]
+        assert payload["output"].startswith("ACTION1")
+        assert "truncated" in payload["output"]
+        assert serialized_action_metadata_size(payload) <= MAX_ACTION_METADATA_BYTES
 
     def test_saved_step_keeps_the_full_untruncated_reasoning(self):
-        reasoning = "a" * MAX_LOG_CHARS + "b" * MAX_LOG_CHARS
+        reasoning = "a" * 20_000 + "b" * 20_000
 
         agent = _choose_action_with_reasoning(reasoning)
 
         assert agent._saved_steps[0].reasoning == reasoning
-        assert TRUNCATION_MARKER in agent._pending_action_reasoning["reasoning"]
-        assert len(agent._pending_action_reasoning["reasoning"]) <= MAX_LOG_CHARS
+        assert "truncated" in agent._pending_action_reasoning["reasoning"]
+        assert (
+            serialized_action_metadata_size(agent._pending_action_reasoning)
+            <= MAX_ACTION_METADATA_BYTES
+        )
+
+    def test_saved_step_keeps_the_full_untruncated_output(self):
+        output = "ACTION1 " + ("x" * 40_000)
+
+        agent = _choose_action_with_response(output, None)
+
+        assert agent._saved_steps[0].assistant_response == output
+        assert "truncated" in agent._pending_action_reasoning["output"]
+
+    def test_unicode_and_json_escapes_are_measured_as_serialized_bytes(self):
+        reasoning = ('\ud83e\udde9"\\\n' * 10_000) + "TAIL"
+
+        agent = _choose_action_with_reasoning(reasoning)
+
+        payload = agent._pending_action_reasoning
+        assert payload["reasoning"].endswith("TAIL")
+        assert "truncated" in payload["reasoning"]
+        assert serialized_action_metadata_size(payload) <= MAX_ACTION_METADATA_BYTES
 
     @pytest.mark.parametrize("reasoning_text", [None, ""])
     def test_empty_reasoning_is_left_alone(self, reasoning_text):
