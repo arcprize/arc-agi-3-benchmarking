@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from arcengine import FrameData, GameAction, GameState
 
+from .action_metadata import fit_action_metadata_payload
 from .base import Agent, ExitReason
 from .exceptions import EmptyResponseError
 from .model_config import (
@@ -31,8 +32,6 @@ from .runtime_models import (
 )
 
 logger = logging.getLogger()
-MAX_LOG_CHARS = 11_000
-TRUNCATION_MARKER = "\n\n... truncated reasoning ...\n\n"
 
 
 class BenchmarkingAgent(Agent):
@@ -304,10 +303,68 @@ class BenchmarkingAgent(Agent):
 
     # ── Action parsing ───────────────────────────────────────────────────
 
+    @staticmethod
+    def _parse_structured_action(
+        payload: dict[str, Any],
+        available_actions: list[GameAction],
+    ) -> Optional[GameAction]:
+        """Validate one available action and its required arguments."""
+        # 1. Envelope: only `actions`, containing exactly one object.
+        actions = payload.get("actions")
+        valid_envelope = (
+            set(payload) == {"actions"}
+            and isinstance(actions, list)
+            and len(actions) == 1
+        )
+        if not valid_envelope:
+            return None
+        entry = actions[0]
+        if not isinstance(entry, dict):
+            return None
+
+        # 2. Availability: the exact action name must be offered this turn.
+        action = next(
+            (a for a in available_actions if a.name == entry.get("action_type")),
+            None,
+        )
+        if action is None:
+            return None
+
+        # 3. Shape: simple actions have no arguments; complex actions require x/y.
+        expected_fields = {"action_type", "x", "y"}
+        if not action.is_complex():
+            expected_fields = {"action_type"}
+        if set(entry) != expected_fields:
+            return None
+        parsed = GameAction.from_name(action.name)
+        if not action.is_complex():
+            return parsed
+
+        # 4. Coordinates: genuine integers within the game grid.
+        x, y = entry["x"], entry["y"]
+        invalid_coordinate = any(
+            type(value) is not int or not 0 <= value <= 63 for value in (x, y)
+        )
+        if invalid_coordinate:
+            return None
+        parsed.set_data({"x": x, "y": y})
+        return parsed
+
     def _parse_action(
         self, text: str, available_actions: list[GameAction]
     ) -> Optional[GameAction]:
-        """Parse the last mentioned action from the assistant's response."""
+        """Parse a structured action or fall back to legacy text parsing."""
+        try:
+            payload = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            payload = None
+
+        # A response with `actions` claims the structured schema. Validate it
+        # strictly; invalid structured responses must not fall through to regex.
+        if isinstance(payload, dict) and "actions" in payload:
+            return self._parse_structured_action(payload, available_actions)
+
+        # Legacy free-text responses execute the last valid action mentioned.
         text_upper = text.upper()
         candidates: list[tuple[int, GameAction]] = []
 
@@ -670,15 +727,6 @@ class BenchmarkingAgent(Agent):
             pricing=self._pricing,
         )
         metadata.state = action_state
-        if metadata.reasoning:
-            # Cut out the middle if we need to truncate the logs due to length.
-            if len(metadata.reasoning) > MAX_LOG_CHARS:
-                half_log_chars = (MAX_LOG_CHARS - len(TRUNCATION_MARKER)) // 2
-                metadata.reasoning = (
-                    metadata.reasoning[:half_log_chars]
-                    + TRUNCATION_MARKER
-                    + metadata.reasoning[-half_log_chars:]
-                )
         arc_reasoning = metadata.to_reasoning_dict()
         if self._encrypted_replay:
             # OpenAI Responses exposes a human-readable summary rather than raw
@@ -687,7 +735,9 @@ class BenchmarkingAgent(Agent):
                 "reasoning",
                 None,
             )
-        self._pending_action_reasoning = arc_reasoning
+        self._pending_action_reasoning = fit_action_metadata_payload(
+            arc_reasoning
+        )
         total_cost = metadata.cost.total_cost
         input_cost = metadata.cost.input_cost
         output_cost = metadata.cost.output_cost
