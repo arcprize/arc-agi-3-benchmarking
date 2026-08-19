@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -43,6 +45,16 @@ class CostDetails(BaseModel):
     total_cost: float = 0.0
 
 
+class ActionStateMetadata(BaseModel):
+    """Action-level state telemetry for runtimes that expose it."""
+
+    input_items_sent: int
+    compaction_occurred: bool
+    compaction_items_returned: int
+    history_items_before_prune: int | None = None
+    history_items_after_prune: int | None = None
+
+
 class ActionMetadata(BaseModel):
     """Metadata attached to every action via the reasoning field.
 
@@ -53,12 +65,23 @@ class ActionMetadata(BaseModel):
         usage: Token usage for this action, following OpenAI's ResponseUsage
                schema.
         cost: Computed dollar costs broken down by input and output.
+        state: Optional action-level state telemetry for encrypted replay.
     """
 
     output: str | None = None
     reasoning: str | None = None
     usage: ResponseUsage = Field(default_factory=ResponseUsage)
     cost: CostDetails = Field(default_factory=CostDetails)
+    state: ActionStateMetadata | None = None
+
+    def to_reasoning_dict(self) -> dict[str, Any]:
+        """Serialize for ARC without adding null state to other runtimes."""
+        payload = self.model_dump()
+        if self.state is None:
+            payload.pop("state", None)
+        else:
+            payload["state"] = self.state.model_dump(exclude_none=True)
+        return payload
 
 
 def calculate_cost(

@@ -82,6 +82,9 @@ class _FakeResponsesOpenAIClient:
 class _FakeAnthropicClient:
     def __init__(self, response: object, stream_response: object | None = None) -> None:
         self.messages = _FakeAnthropicMessages(response, stream_response)
+        self.beta = SimpleNamespace(
+            messages=_FakeAnthropicMessages(response, stream_response)
+        )
 
 
 def _chat_response(
@@ -171,13 +174,16 @@ def _responses_output(
 def _anthropic_response(
     *,
     text: str = "MOVE_LEFT",
+    content: list[object] | None = None,
     input_tokens: int = 11,
     output_tokens: int = 7,
     cache_creation_input_tokens: int = 2,
     cache_read_input_tokens: int = 5,
 ) -> SimpleNamespace:
+    if content is None:
+        content = [SimpleNamespace(type="text", text=text)]
     return SimpleNamespace(
-        content=[SimpleNamespace(type="text", text=text)],
+        content=content,
         usage=SimpleNamespace(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -572,6 +578,58 @@ class TestOpenAIResponsesAdapter:
         assert "previous_response_id" not in client.responses.calls[0]
         assert "conversation" not in client.responses.calls[0]
 
+    def test_sends_provider_native_items_for_stateless_encrypted_replay(self):
+        client = _FakeResponsesOpenAIClient(_responses_output())
+        adapter = OpenAIResponsesAdapter(client)
+        replay_items = [
+            {"role": "user", "content": "frame 1"},
+            {
+                "type": "reasoning",
+                "id": "rs_1",
+                "encrypted_content": "encrypted-reasoning",
+            },
+            {
+                "type": "message",
+                "id": "msg_1",
+                "role": "assistant",
+                "content": [
+                    {"type": "output_text", "text": "ACTION1"},
+                ],
+            },
+            {"role": "user", "content": "frame 2"},
+        ]
+
+        adapter.invoke(
+            ModelRequest(
+                messages=[
+                    Message(role="system", content="System prompt"),
+                    Message(role="user", content="full transcript is not sent"),
+                ],
+                request_config={
+                    "model": "gpt-5.6-sol",
+                    "store": False,
+                    "include": ["reasoning.encrypted_content"],
+                    "context_management": [
+                        {"type": "compaction", "compact_threshold": 175_000}
+                    ],
+                    "previous_response_id": "must-not-be-sent",
+                    "conversation": "must-not-be-sent",
+                },
+                input_items=replay_items,
+            )
+        )
+
+        call = client.responses.calls[0]
+        assert call["instructions"] == "System prompt"
+        assert call["input"] == replay_items
+        assert call["store"] is False
+        assert call["include"] == ["reasoning.encrypted_content"]
+        assert call["context_management"] == [
+            {"type": "compaction", "compact_threshold": 175_000}
+        ]
+        assert "previous_response_id" not in call
+        assert "conversation" not in call
+
 
 @pytest.mark.unit
 class TestOpenAIResponsesServerStateAdapter:
@@ -818,6 +876,107 @@ class TestAnthropicMessagesAdapter:
         ]
         assert response.output_text == "RESET"
 
+    def test_encrypted_replay_uses_beta_resource_and_native_messages(self):
+        content = [
+            SimpleNamespace(
+                type="thinking",
+                thinking="inspect the top row",
+                signature="encrypted-reasoning",
+            ),
+            SimpleNamespace(type="text", text="ACTION1"),
+        ]
+        client = _FakeAnthropicClient(_anthropic_response(content=content))
+        adapter = AnthropicMessagesAdapter(client)
+        native_messages = [
+            {"role": "user", "content": "frame 1"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "earlier summary",
+                        "signature": "earlier-encrypted-reasoning",
+                    },
+                    {"type": "text", "text": "MOVE_LEFT"},
+                ],
+            },
+            {"role": "user", "content": "frame 2"},
+        ]
+        request = ModelRequest(
+            messages=[Message(role="system", content="Play the game.")],
+            native_messages=native_messages,
+            request_config={
+                "model": "claude-opus-4-7",
+                "max_tokens": 128,
+                "betas": ["compact-2026-01-12"],
+                "thinking": {"type": "adaptive", "display": "summarized"},
+                "context_management": {
+                    "edits": [
+                        {
+                            "type": "compact_20260112",
+                            "trigger": {"type": "input_tokens", "value": 175_000},
+                            "pause_after_compaction": False,
+                        }
+                    ]
+                },
+            },
+        )
+
+        response = adapter.invoke(request)
+
+        assert client.messages.calls == []
+        assert client.beta.messages.calls[0]["messages"] == native_messages
+        assert client.beta.messages.calls[0]["system"] == "Play the game."
+        assert client.beta.messages.calls[0]["betas"] == ["compact-2026-01-12"]
+        assert response.reasoning_text == "inspect the top row"
+        assert response.raw_response.content == content
+
+    def test_beta_stream_preserves_thinking_and_encrypted_compaction_blocks(self):
+        final_content = [
+            SimpleNamespace(
+                type="compaction",
+                content="<summary>state</summary>",
+                encrypted_content="opaque-compaction",
+            ),
+            SimpleNamespace(
+                type="thinking",
+                thinking="choose the open path",
+                signature="opaque-thinking",
+            ),
+            SimpleNamespace(type="redacted_thinking", data="opaque-redacted"),
+            SimpleNamespace(type="text", text="ACTION1"),
+        ]
+        final_message = _anthropic_response(content=final_content)
+        client = _FakeAnthropicClient(
+            _anthropic_response(),
+            stream_response=_anthropic_stream(
+                events=[],
+                final_message=final_message,
+            ),
+        )
+        adapter = AnthropicMessagesAdapter(client)
+
+        response = adapter.invoke(
+            ModelRequest(
+                messages=[Message(role="system", content="Play.")],
+                native_messages=[{"role": "user", "content": "frame"}],
+                request_config={
+                    "model": "claude-opus-4-7",
+                    "max_tokens": 128,
+                    "stream": True,
+                    "betas": ["compact-2026-01-12"],
+                    "context_management": {"edits": [{"type": "compact_20260112"}]},
+                },
+            )
+        )
+
+        assert client.messages.stream_calls == []
+        assert len(client.beta.messages.stream_calls) == 1
+        assert response.raw_response is final_message
+        assert response.raw_response.content == final_content
+        assert response.output_text == "ACTION1"
+        assert response.reasoning_text == "choose the open path"
+
     def test_streaming_usage_can_come_from_message_delta_event(self):
         usage = SimpleNamespace(
             input_tokens=50,
@@ -917,7 +1076,9 @@ class TestAnthropicMessagesAdapter:
                 events=[
                     SimpleNamespace(
                         type="content_block_delta",
-                        delta=SimpleNamespace(type="thinking_delta", thinking="inspect"),
+                        delta=SimpleNamespace(
+                            type="thinking_delta", thinking="inspect"
+                        ),
                     )
                 ],
                 final_message=SimpleNamespace(content=[]),
@@ -1333,8 +1494,7 @@ class TestBuildModelRuntimeAdapter:
         with pytest.raises(
             ValueError,
             match=(
-                "Model config 'chat-config' uses runtime.state='bogus_state', "
-                "but only"
+                "Model config 'chat-config' uses runtime.state='bogus_state', but only"
             ),
         ):
             build_model_runtime_adapter(
@@ -1377,3 +1537,83 @@ class TestBuildModelRuntimeAdapter:
         )
 
         assert isinstance(adapter, OpenAIResponsesServerStateAdapter)
+
+    def test_selects_responses_adapter_for_encrypted_replay(self):
+        adapter = build_model_runtime_adapter(
+            client=_FakeResponsesOpenAIClient(_responses_output()),
+            runtime_config={
+                "sdk": "openai-python",
+                "api": "responses",
+                "state": "encrypted_replay",
+            },
+            config_id="responses-encrypted-replay-config",
+        )
+
+        assert isinstance(adapter, OpenAIResponsesAdapter)
+
+    def test_selects_anthropic_adapter_for_encrypted_replay(self):
+        adapter = build_model_runtime_adapter(
+            client=_FakeAnthropicClient(_anthropic_response()),
+            runtime_config={
+                "sdk": "anthropic-python",
+                "api": "messages",
+                "state": "encrypted_replay",
+            },
+            config_id="anthropic-encrypted-replay-config",
+        )
+
+        assert isinstance(adapter, AnthropicMessagesAdapter)
+
+    def test_checked_in_encrypted_replay_profiles_are_zdr_compatible(self):
+        efforts = ("low", "medium", "high", "xhigh", "max")
+
+        for effort in efforts:
+            config = get_model_config(
+                f"openai-gpt-5-6-sol-responses-reference-{effort}"
+            )
+
+            assert config["runtime"] == {
+                "sdk": "openai-python",
+                "api": "responses",
+                "state": "encrypted_replay",
+            }
+            assert config["request"]["model"] == "gpt-5.6-sol"
+            assert config["request"]["store"] is False
+            assert config["request"]["include"] == ["reasoning.encrypted_content"]
+            assert config["request"]["reasoning"] == {
+                "effort": effort,
+                "context": "auto",
+                "summary": "auto",
+            }
+            assert config["request"]["context_management"] == [
+                {"type": "compaction", "compact_threshold": 175_000}
+            ]
+            assert "background" not in config["request"]
+            assert "previous_response_id" not in config["request"]
+            assert "conversation" not in config["request"]
+
+    def test_checked_in_anthropic_encrypted_replay_profile_drives_beta_config(self):
+        config = get_model_config("anthropic-opus-5-encrypted-replay-medium")
+
+        assert config["runtime"] == {
+            "sdk": "anthropic-python",
+            "api": "messages",
+            "state": "encrypted_replay",
+        }
+        assert config["request"]["betas"] == [
+            "compact-2026-01-12",
+            "thinking-token-count-2026-05-13",
+        ]
+        assert config["request"]["thinking"] == {
+            "type": "adaptive",
+            "display": "summarized",
+        }
+        assert config["request"]["context_management"] == {
+            "edits": [
+                {
+                    "type": "compact_20260112",
+                    "trigger": {"type": "input_tokens", "value": 175_000},
+                    "pause_after_compaction": False,
+                }
+            ]
+        }

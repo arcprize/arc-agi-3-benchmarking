@@ -7,7 +7,7 @@ from typing import Any
 
 # ARC rejects reasoning payloads above 16,384 bytes. Keep a 384-byte margin.
 MAX_ACTION_METADATA_BYTES = 16_000
-TEXT_FIELDS = ("output", "reasoning")
+TEXT_FIELDS = ("output", "reasoning", "reasoning_summary")
 TRUNCATION_MARKER = "\n\n... truncated {removed_chars} characters ...\n\n"
 
 
@@ -111,7 +111,8 @@ def fit_action_metadata_payload(
     if final_size > max_bytes:
         raise ValueError(
             "Action metadata cannot fit within the byte budget by truncating "
-            f"reasoning and output fields: {final_size} > {max_bytes}"
+            "reasoning, reasoning summary, and output fields: "
+            f"{final_size} > {max_bytes}"
         )
     assert final_size <= max_bytes
     return fitted

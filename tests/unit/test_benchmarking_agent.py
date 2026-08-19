@@ -1,3 +1,4 @@
+from copy import deepcopy
 from types import SimpleNamespace
 
 import numpy as np
@@ -68,8 +69,13 @@ def _agent_for_request_kwargs(request_kwargs: dict) -> BenchmarkingAgent:
     agent.analysis_mode = False
     agent.token_counter = 0
     agent._server_state = False
+    agent._encrypted_replay = False
+    agent._anthropic_encrypted_replay = False
     agent._previous_response_id = None
     agent._pending_user_messages = []
+    agent._encrypted_input_items = []
+    agent._encrypted_messages = []
+    agent.include_carry_forward_instruction = True
     return agent
 
 
@@ -215,7 +221,9 @@ class TestBenchmarkingAgentRuntimeClient:
             calls["adapter_config_id"] = config_id
             return fake_adapter
 
-        monkeypatch.setattr("benchmarking.agent.get_model_config", fake_get_model_config)
+        monkeypatch.setattr(
+            "benchmarking.agent.get_model_config", fake_get_model_config
+        )
         monkeypatch.setattr(
             "benchmarking.agent.build_model_runtime_client",
             fake_build_client,
@@ -274,6 +282,17 @@ class TestBenchmarkingAgentModelRequests:
         assert "You are playing a game. Your goal is to win." in system_prompt
         assert "<reasoning_summary>" in system_prompt
         assert "compact helper context" in system_prompt
+
+    def test_build_system_prompt_can_omit_manual_carry_forward_instruction(self):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.6-sol"})
+        agent.include_carry_forward_instruction = False
+
+        system_prompt = agent._build_system_prompt()
+
+        assert (
+            "The final action mentioned in your reply will be executed" in system_prompt
+        )
+        assert "Include any context you want to carry forward" not in system_prompt
 
     def test_build_assistant_turn_content_returns_plain_output_in_normal_mode(self):
         agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
@@ -436,7 +455,7 @@ class TestBenchmarkingAgentActionParsing:
                 '{"actions":['
                 '{"action_type":"ACTION6","x":26,"y":36},'
                 '{"action_type":"ACTION6","x":25,"y":36}'
-                ']}'
+                "]}"
             ),
             '{"actions":[{"action_type":"ACTION6","x":26}]}',
             '{"actions":[{"action_type":"ACTION6","x":"26","y":36}]}',
@@ -447,10 +466,7 @@ class TestBenchmarkingAgentActionParsing:
                 '{"actions":[{"action_type":"ACTION6","x":26,"y":36,'
                 '"note":"ACTION6 26 36"}]}'
             ),
-            (
-                '{"actions":[{"action_type":"ACTION6","x":26,"y":36}],'
-                '"metadata":{}}'
-            ),
+            ('{"actions":[{"action_type":"ACTION6","x":26,"y":36}],"metadata":{}}'),
         ],
     )
     def test_rejects_invalid_or_ambiguous_structured_actions(self, response):
@@ -664,7 +680,9 @@ class TestBenchmarkingAgentConversationStorage:
         assert agent._saved_steps[0].assistant_response == "ACTION1"
         assert agent._saved_steps[0].reasoning == "choose the first action"
 
-    def test_choose_action_appends_plain_output_without_reasoning_in_analysis_mode(self):
+    def test_choose_action_appends_plain_output_without_reasoning_in_analysis_mode(
+        self,
+    ):
         agent = _agent_for_choose_action(
             analysis_mode=True,
             responses=[
@@ -833,7 +851,9 @@ class TestBenchmarkingAgentContextTrimming:
             f"{agent._build_system_prompt()}frameACTION1"
         )
 
-    def test_trim_to_fit_context_removes_oldest_replay_turn_and_preserves_current_user(self):
+    def test_trim_to_fit_context_removes_oldest_replay_turn_and_preserves_current_user(
+        self,
+    ):
         agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
         agent.analysis_mode = True
         old_replay_content = agent._build_assistant_turn_content(
@@ -859,10 +879,7 @@ class TestBenchmarkingAgentContextTrimming:
     def test_trim_oldest_turn_removes_replay_xml_with_its_assistant_message(self):
         agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
         replay_content = (
-            "<reasoning_summary>\n"
-            "prior reasoning\n"
-            "</reasoning_summary>\n\n"
-            "ACTION1\n"
+            "<reasoning_summary>\nprior reasoning\n</reasoning_summary>\n\nACTION1\n"
         )
         agent.conversation = [
             {"role": "system", "content": "system"},
@@ -1162,6 +1179,864 @@ class TestBenchmarkingAgentServerState:
         assert action == GameAction.ACTION1
 
 
+def _encrypted_replay_output(turn: int) -> list[dict]:
+    return [
+        {
+            "type": "reasoning",
+            "id": f"rs_{turn}",
+            "encrypted_content": f"encrypted-{turn}",
+            "summary": [],
+        },
+        {
+            "type": "message",
+            "id": f"msg_{turn}",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "ACTION1"}],
+        },
+    ]
+
+
+def _encrypted_replay_response(
+    *,
+    output_text: str = "ACTION1",
+    reasoning_text: str | None = None,
+    output_items: list[dict] | None = None,
+    total_tokens: int = 9,
+) -> ModelResponse:
+    return ModelResponse(
+        output_text=output_text,
+        reasoning_text=reasoning_text,
+        usage=NormalizedUsage(total_tokens=total_tokens),
+        raw_response=SimpleNamespace(
+            output=(
+                output_items
+                if output_items is not None
+                else _encrypted_replay_output(1)
+            )
+        ),
+    )
+
+
+def _encrypted_replay_agent(
+    responses: list[ModelResponse],
+) -> BenchmarkingAgent:
+    agent = _agent_for_choose_action(analysis_mode=False, responses=responses)
+    agent._encrypted_replay = True
+    agent._encrypted_input_items = []
+    return agent
+
+
+@pytest.mark.unit
+class TestBenchmarkingAgentEncryptedReplay:
+    def test_first_turn_sends_frame_and_commits_every_output_item(self):
+        output_items = _encrypted_replay_output(1)
+        agent = _encrypted_replay_agent(
+            [_encrypted_replay_response(output_items=output_items)]
+        )
+        frame = _playable_frame()
+        frame_message = {
+            "role": "user",
+            "content": agent.build_frame_content(frame),
+        }
+
+        action = agent.choose_action([], frame)
+
+        assert action == GameAction.ACTION1
+        request = agent._adapter.requests[0]
+        assert request.input_items == [frame_message]
+        assert [message.model_dump() for message in request.messages] == [
+            {"role": "system", "content": agent._build_system_prompt()},
+            frame_message,
+        ]
+        assert "previous_response_id" not in request.request_config
+        assert agent._encrypted_input_items == [frame_message, *output_items]
+        assert agent._saved_steps[0].messages_sent == [
+            {"role": "system", "content": agent._build_system_prompt()},
+            frame_message,
+        ]
+        assert agent._pending_action_reasoning["state"] == {
+            "input_items_sent": 1,
+            "compaction_occurred": False,
+            "compaction_items_returned": 0,
+        }
+
+    def test_action_state_metadata_is_sent_to_arc_reasoning(self):
+        agent = _encrypted_replay_agent([_encrypted_replay_response()])
+        env = _CapturingRawEnv()
+        agent.arc_env = env
+
+        action = agent.choose_action([], _playable_frame())
+        agent.do_action_request(action)
+
+        assert env.reasonings[0]["state"] == {
+            "input_items_sent": 1,
+            "compaction_occurred": False,
+            "compaction_items_returned": 0,
+        }
+
+    def test_reasoning_summary_is_labeled_separately_from_output_for_arc(self):
+        agent = _encrypted_replay_agent(
+            [
+                _encrypted_replay_response(
+                    output_text="Observed a movable block.\n\nACTION1",
+                    reasoning_text="The block can likely move in four directions.",
+                )
+            ]
+        )
+
+        agent.choose_action([], _playable_frame())
+
+        assert agent._pending_action_reasoning["output"] == (
+            "Observed a movable block.\n\nACTION1"
+        )
+        assert agent._pending_action_reasoning["reasoning_summary"] == (
+            "The block can likely move in four directions."
+        )
+        assert "reasoning" not in agent._pending_action_reasoning
+
+    def test_large_reasoning_summary_is_fitted_to_arc_byte_budget(self):
+        reasoning = ("H" * 12_000) + "REMOVED-CENTER" + ("T" * 12_000)
+        agent = _encrypted_replay_agent(
+            [_encrypted_replay_response(reasoning_text=reasoning)]
+        )
+
+        agent.choose_action([], _playable_frame())
+
+        summary = agent._pending_action_reasoning["reasoning_summary"]
+        assert summary.startswith("H")
+        assert summary.endswith("T")
+        assert "truncated" in summary
+        assert "REMOVED-CENTER" not in summary
+        assert (
+            serialized_action_metadata_size(agent._pending_action_reasoning)
+            <= MAX_ACTION_METADATA_BYTES
+        )
+
+    def test_second_turn_replays_user_input_encrypted_reasoning_and_message(self):
+        first_output = _encrypted_replay_output(1)
+        second_output = _encrypted_replay_output(2)
+        agent = _encrypted_replay_agent(
+            [
+                _encrypted_replay_response(output_items=first_output),
+                _encrypted_replay_response(output_items=second_output),
+            ]
+        )
+        first_frame = _playable_frame()
+        second_frame = _playable_frame()
+        first_message = {
+            "role": "user",
+            "content": agent.build_frame_content(first_frame),
+        }
+        second_message = {
+            "role": "user",
+            "content": agent.build_frame_content(second_frame),
+        }
+
+        agent.choose_action([], first_frame)
+        agent.choose_action([first_frame], second_frame)
+
+        second_request = agent._adapter.requests[1]
+        assert second_request.input_items == [
+            first_message,
+            *first_output,
+            second_message,
+        ]
+        assert "previous_response_id" not in second_request.request_config
+        assert agent._encrypted_input_items == [
+            first_message,
+            *first_output,
+            second_message,
+            *second_output,
+        ]
+
+    def test_compaction_drops_only_items_before_latest_compaction_item(self):
+        first_output = _encrypted_replay_output(1)
+        compacted_output = [
+            {
+                "type": "compaction",
+                "id": "cmp_2",
+                "encrypted_content": "opaque-compacted-state",
+            },
+            *_encrypted_replay_output(2),
+        ]
+        agent = _encrypted_replay_agent(
+            [
+                _encrypted_replay_response(output_items=first_output),
+                _encrypted_replay_response(output_items=compacted_output),
+                _encrypted_replay_response(output_items=_encrypted_replay_output(3)),
+            ]
+        )
+        first_frame = _playable_frame()
+        second_frame = _playable_frame()
+        third_frame = _playable_frame()
+        third_message = {
+            "role": "user",
+            "content": agent.build_frame_content(third_frame),
+        }
+
+        agent.choose_action([], first_frame)
+        agent.choose_action([first_frame], second_frame)
+
+        assert agent._encrypted_input_items == compacted_output
+        assert agent._pending_action_reasoning["state"] == {
+            "input_items_sent": 4,
+            "compaction_occurred": True,
+            "compaction_items_returned": 1,
+            "history_items_before_prune": 7,
+            "history_items_after_prune": 3,
+        }
+
+        agent.choose_action([first_frame, second_frame], third_frame)
+
+        third_request = agent._adapter.requests[2]
+        assert third_request.input_items == [*compacted_output, third_message]
+        assert agent._saved_steps[2].messages_sent == [
+            {"role": "system", "content": agent._build_system_prompt()},
+            *compacted_output,
+            third_message,
+        ]
+        assert agent._pending_action_reasoning["state"] == {
+            "input_items_sent": 4,
+            "compaction_occurred": False,
+            "compaction_items_returned": 0,
+        }
+
+    def test_unparseable_retry_does_not_commit_orphaned_encrypted_state(self):
+        orphaned_output = [
+            {
+                "type": "reasoning",
+                "id": "rs_orphaned",
+                "encrypted_content": "must-not-be-replayed",
+            },
+            {
+                "type": "message",
+                "id": "msg_orphaned",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "not an action"}],
+            },
+        ]
+        accepted_output = _encrypted_replay_output(2)
+        agent = _encrypted_replay_agent(
+            [
+                _encrypted_replay_response(
+                    output_text="not an action",
+                    output_items=orphaned_output,
+                    total_tokens=5,
+                ),
+                _encrypted_replay_response(
+                    output_items=accepted_output,
+                    total_tokens=7,
+                ),
+            ]
+        )
+        frame = _playable_frame()
+        frame_message = {
+            "role": "user",
+            "content": agent.build_frame_content(frame),
+        }
+
+        action = agent.choose_action([], frame)
+
+        assert action == GameAction.ACTION1
+        assert len(agent._adapter.requests) == 2
+        assert all(
+            request.input_items == [frame_message]
+            for request in agent._adapter.requests
+        )
+        assert agent._encrypted_input_items == [frame_message, *accepted_output]
+        assert orphaned_output[0] not in agent._encrypted_input_items
+
+    def test_forced_reset_observation_is_replayed_on_next_model_turn(self):
+        agent = _encrypted_replay_agent([_encrypted_replay_response()])
+        agent.action_counter = 1
+        game_over_frame = _terminal_frame(GameState.GAME_OVER)
+        game_over_message = {
+            "role": "user",
+            "content": agent.build_frame_content(game_over_frame),
+        }
+
+        forced_action = agent._resolve_action([], game_over_frame)
+
+        assert forced_action == GameAction.RESET
+        assert agent._adapter.requests == []
+        assert agent._encrypted_input_items == [game_over_message]
+
+        next_frame = _playable_frame()
+        next_message = {
+            "role": "user",
+            "content": agent.build_frame_content(next_frame),
+        }
+        agent.choose_action([], next_frame)
+
+        request = agent._adapter.requests[0]
+        assert request.messages[0].role == "system"
+        assert request.messages[0].content == agent._build_system_prompt()
+        assert request.input_items == [
+            game_over_message,
+            next_message,
+        ]
+
+    def test_encrypted_replay_skips_manual_transcript_trimming(self):
+        agent = _encrypted_replay_agent([_encrypted_replay_response()])
+        agent.MAX_CONTEXT_LENGTH = 1
+
+        def _fail_if_called() -> None:
+            raise AssertionError("manual trimming must not run for encrypted replay")
+
+        agent._trim_to_fit_context = _fail_if_called
+
+        action = agent.choose_action([], _playable_frame())
+
+        assert action == GameAction.ACTION1
+
+    def test_missing_raw_output_fails_instead_of_silently_losing_state(self):
+        agent = _encrypted_replay_agent(
+            [
+                ModelResponse(
+                    output_text="ACTION1",
+                    usage=NormalizedUsage(total_tokens=9),
+                    raw_response=SimpleNamespace(output=[]),
+                )
+            ]
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match="did not contain replayable output items",
+        ):
+            agent.choose_action([], _playable_frame())
+
+    def test_dict_raw_response_output_is_supported(self):
+        output_items = _encrypted_replay_output(1)
+        response = ModelResponse(
+            output_text="ACTION1",
+            usage=NormalizedUsage(total_tokens=9),
+            raw_response={"output": output_items},
+        )
+
+        assert (
+            BenchmarkingAgent._serialize_encrypted_replay_output(response)
+            == output_items
+        )
+
+    def test_sdk_reasoning_item_drops_status_but_preserves_null_fields(self):
+        class _SDKOutputItem:
+            def model_dump(self, *, mode: str) -> dict:
+                assert mode == "json"
+                return {
+                    "type": "reasoning",
+                    "id": "rs_sdk",
+                    "encrypted_content": "encrypted-sdk-state",
+                    "summary": None,
+                    "status": "completed",
+                }
+
+        response = ModelResponse(
+            output_text="ACTION1",
+            usage=NormalizedUsage(total_tokens=9),
+            raw_response=SimpleNamespace(output=[_SDKOutputItem()]),
+        )
+
+        assert BenchmarkingAgent._serialize_encrypted_replay_output(response) == [
+            {
+                "type": "reasoning",
+                "id": "rs_sdk",
+                "encrypted_content": "encrypted-sdk-state",
+                "summary": None,
+            }
+        ]
+
+    def test_sdk_compaction_item_drops_created_by(self):
+        class _SDKOutputItem:
+            def model_dump(self, *, mode: str) -> dict:
+                assert mode == "json"
+                return {
+                    "type": "compaction",
+                    "id": "cmp_sdk",
+                    "encrypted_content": "encrypted-compacted-state",
+                    "created_by": "server-side-compaction",
+                }
+
+        response = ModelResponse(
+            output_text="ACTION1",
+            usage=NormalizedUsage(total_tokens=9),
+            raw_response=SimpleNamespace(output=[_SDKOutputItem()]),
+        )
+
+        assert BenchmarkingAgent._serialize_encrypted_replay_output(response) == [
+            {
+                "type": "compaction",
+                "id": "cmp_sdk",
+                "encrypted_content": "encrypted-compacted-state",
+            }
+        ]
+
+    def test_latest_compaction_item_wins_when_response_contains_multiple(self):
+        latest_compaction = {
+            "type": "compaction",
+            "id": "cmp_latest",
+            "encrypted_content": "latest-opaque-state",
+        }
+        output_items = [
+            {
+                "type": "compaction",
+                "id": "cmp_old",
+                "encrypted_content": "old-opaque-state",
+            },
+            {"type": "message", "id": "msg_between"},
+            latest_compaction,
+            {"type": "message", "id": "msg_after"},
+        ]
+        agent = _encrypted_replay_agent(
+            [_encrypted_replay_response(output_items=output_items)]
+        )
+
+        agent.choose_action([], _playable_frame())
+
+        assert agent._encrypted_input_items == [
+            latest_compaction,
+            {"type": "message", "id": "msg_after"},
+        ]
+        assert agent._pending_action_reasoning["state"] == {
+            "input_items_sent": 1,
+            "compaction_occurred": True,
+            "compaction_items_returned": 2,
+            "history_items_before_prune": 5,
+            "history_items_after_prune": 2,
+        }
+
+
+def _anthropic_replay_output(turn: int) -> list[dict]:
+    return [
+        {
+            "type": "thinking",
+            "thinking": f"summary-{turn}",
+            "signature": f"encrypted-thinking-{turn}",
+        },
+        {
+            "type": "redacted_thinking",
+            "data": f"encrypted-redacted-{turn}",
+        },
+        {"type": "text", "text": "ACTION1"},
+    ]
+
+
+def _anthropic_replay_response(
+    *,
+    output_text: str = "ACTION1",
+    reasoning_text: str | None = "summary-1",
+    content: list[dict] | None = None,
+    total_tokens: int = 9,
+) -> ModelResponse:
+    return ModelResponse(
+        output_text=output_text,
+        reasoning_text=reasoning_text,
+        usage=NormalizedUsage(total_tokens=total_tokens),
+        raw_response=SimpleNamespace(
+            content=content if content is not None else _anthropic_replay_output(1)
+        ),
+    )
+
+
+def _anthropic_replay_agent(
+    responses: list[ModelResponse],
+) -> BenchmarkingAgent:
+    agent = _agent_for_choose_action(analysis_mode=False, responses=responses)
+    agent._encrypted_replay = True
+    agent._anthropic_encrypted_replay = True
+    agent._encrypted_messages = []
+    return agent
+
+
+@pytest.mark.unit
+class TestBenchmarkingAgentAnthropicEncryptedReplay:
+    def test_replays_native_reasoning_blocks_and_labels_summary(self):
+        first_output = _anthropic_replay_output(1)
+        second_output = _anthropic_replay_output(2)
+        agent = _anthropic_replay_agent(
+            [
+                _anthropic_replay_response(content=first_output),
+                _anthropic_replay_response(
+                    content=second_output,
+                    reasoning_text="summary-2",
+                ),
+            ]
+        )
+        first_frame = _playable_frame()
+        second_frame = _playable_frame()
+        first_message = {
+            "role": "user",
+            "content": agent.build_frame_content(first_frame),
+        }
+        second_message = {
+            "role": "user",
+            "content": agent.build_frame_content(second_frame),
+        }
+
+        agent.choose_action([], first_frame)
+        agent.choose_action([first_frame], second_frame)
+
+        first_request, second_request = agent._adapter.requests
+        assert first_request.input_items is None
+        assert first_request.native_messages == [first_message]
+        assert second_request.native_messages == [
+            first_message,
+            {"role": "assistant", "content": first_output},
+            second_message,
+        ]
+        assert agent._encrypted_messages == [
+            first_message,
+            {"role": "assistant", "content": first_output},
+            second_message,
+            {"role": "assistant", "content": second_output},
+        ]
+        assert agent._pending_action_reasoning["reasoning_summary"] == "summary-2"
+        assert "reasoning" not in agent._pending_action_reasoning
+        assert agent._saved_steps[1].messages_sent == [
+            {"role": "system", "content": agent._build_system_prompt()},
+            first_message,
+            {"role": "assistant", "content": first_output},
+            second_message,
+        ]
+
+    def test_successful_compaction_prunes_to_latest_native_block(self):
+        first_output = _anthropic_replay_output(1)
+        compacted_output = [
+            {
+                "type": "compaction",
+                "content": "<summary>retained state</summary>",
+                "encrypted_content": "encrypted-compaction",
+            },
+            *_anthropic_replay_output(2),
+        ]
+        agent = _anthropic_replay_agent(
+            [
+                _anthropic_replay_response(content=first_output),
+                _anthropic_replay_response(content=compacted_output),
+                _anthropic_replay_response(content=_anthropic_replay_output(3)),
+            ]
+        )
+        first_frame = _playable_frame()
+        second_frame = _playable_frame()
+        third_frame = _playable_frame()
+        third_message = {
+            "role": "user",
+            "content": agent.build_frame_content(third_frame),
+        }
+
+        agent.choose_action([], first_frame)
+        agent.choose_action([first_frame], second_frame)
+
+        compacted_message = {"role": "assistant", "content": compacted_output}
+        assert agent._encrypted_messages == [compacted_message]
+        assert agent._pending_action_reasoning["state"] == {
+            "input_items_sent": 3,
+            "compaction_occurred": True,
+            "compaction_items_returned": 1,
+            "history_items_before_prune": 4,
+            "history_items_after_prune": 1,
+        }
+
+        agent.choose_action([first_frame, second_frame], third_frame)
+
+        assert agent._adapter.requests[2].native_messages == [
+            compacted_message,
+            third_message,
+        ]
+
+    def test_null_compaction_is_replayed_but_does_not_prune_history(self):
+        failed_compaction_output = [
+            {
+                "type": "compaction",
+                "content": None,
+                "encrypted_content": "failed-compaction-metadata",
+            },
+            *_anthropic_replay_output(1),
+        ]
+        agent = _anthropic_replay_agent(
+            [_anthropic_replay_response(content=failed_compaction_output)]
+        )
+        frame = _playable_frame()
+        frame_message = {
+            "role": "user",
+            "content": agent.build_frame_content(frame),
+        }
+
+        agent.choose_action([], frame)
+
+        assert agent._encrypted_messages == [
+            frame_message,
+            {"role": "assistant", "content": failed_compaction_output},
+        ]
+        assert agent._pending_action_reasoning["state"] == {
+            "input_items_sent": 1,
+            "compaction_occurred": False,
+            "compaction_items_returned": 1,
+        }
+
+    def test_latest_compaction_within_assistant_content_wins(self):
+        latest = {
+            "type": "compaction",
+            "content": "<summary>latest</summary>",
+            "encrypted_content": "latest-encrypted-compaction",
+        }
+        output = [
+            {
+                "type": "compaction",
+                "content": "<summary>old</summary>",
+                "encrypted_content": "old-encrypted-compaction",
+            },
+            {"type": "text", "text": "discarded"},
+            latest,
+            *_anthropic_replay_output(2),
+        ]
+        agent = _anthropic_replay_agent([_anthropic_replay_response(content=output)])
+
+        agent.choose_action([], _playable_frame())
+
+        assert agent._encrypted_messages == [
+            {
+                "role": "assistant",
+                "content": [latest, *_anthropic_replay_output(2)],
+            }
+        ]
+        assert agent._pending_action_reasoning["state"] == {
+            "input_items_sent": 1,
+            "compaction_occurred": True,
+            "compaction_items_returned": 2,
+            "history_items_before_prune": 2,
+            "history_items_after_prune": 1,
+        }
+
+    def test_invalid_action_retry_does_not_commit_orphaned_native_blocks(self):
+        orphaned = [
+            {
+                "type": "thinking",
+                "thinking": "wrong path",
+                "signature": "orphaned-encrypted-reasoning",
+            },
+            {"type": "text", "text": "not an action"},
+        ]
+        accepted = _anthropic_replay_output(2)
+        agent = _anthropic_replay_agent(
+            [
+                _anthropic_replay_response(
+                    output_text="not an action",
+                    content=orphaned,
+                ),
+                _anthropic_replay_response(content=accepted),
+            ]
+        )
+
+        agent.choose_action([], _playable_frame())
+
+        assert len(agent._adapter.requests) == 2
+        assert (
+            agent._adapter.requests[0].native_messages
+            == agent._adapter.requests[1].native_messages
+        )
+        assert all(
+            message.get("content") != orphaned for message in agent._encrypted_messages
+        )
+        assert agent._encrypted_messages[-1] == {
+            "role": "assistant",
+            "content": accepted,
+        }
+
+    def test_sdk_blocks_preserve_encrypted_state_and_strip_response_only_text(self):
+        class _SDKBlock:
+            def __init__(self, value: dict) -> None:
+                self._value = value
+
+            def model_dump(self, *, mode: str) -> dict:
+                assert mode == "json"
+                return dict(self._value)
+
+        blocks = [
+            _SDKBlock(
+                {
+                    "type": "thinking",
+                    "thinking": "summary",
+                    "signature": "opaque-signature",
+                }
+            ),
+            _SDKBlock(
+                {
+                    "type": "compaction",
+                    "content": "<summary>state</summary>",
+                    "encrypted_content": "opaque-compaction",
+                }
+            ),
+            _SDKBlock(
+                {
+                    "type": "compaction",
+                    "content": "<summary>state without metadata</summary>",
+                    "encrypted_content": None,
+                }
+            ),
+            _SDKBlock(
+                {
+                    "type": "text",
+                    "text": "ACTION1",
+                    "parsed_output": None,
+                }
+            ),
+        ]
+        response = ModelResponse(
+            output_text="ACTION1",
+            usage=NormalizedUsage(total_tokens=9),
+            raw_response=SimpleNamespace(content=blocks),
+        )
+
+        assert BenchmarkingAgent._serialize_anthropic_replay_content(response) == [
+            {
+                "type": "thinking",
+                "thinking": "summary",
+                "signature": "opaque-signature",
+            },
+            {
+                "type": "compaction",
+                "content": "<summary>state</summary>",
+                "encrypted_content": "opaque-compaction",
+            },
+            {
+                "type": "compaction",
+                "content": "<summary>state without metadata</summary>",
+            },
+            {"type": "text", "text": "ACTION1"},
+        ]
+
+    def test_fifty_turn_replay_is_exact_across_repeated_and_failed_compactions(
+        self,
+    ):
+        successful_compaction_turns = {10, 20, 35, 49}
+        failed_compaction_turns = {27}
+        response_blocks: list[list[dict]] = []
+        responses: list[ModelResponse] = []
+
+        for turn in range(1, 51):
+            blocks = _anthropic_replay_output(turn)
+            if turn in successful_compaction_turns:
+                blocks = [
+                    {
+                        "type": "compaction",
+                        "content": f"<summary>state-through-{turn}</summary>",
+                        "encrypted_content": f"opaque-compaction-{turn}",
+                    },
+                    *blocks,
+                ]
+            elif turn in failed_compaction_turns:
+                blocks = [
+                    {
+                        "type": "compaction",
+                        "content": None,
+                        "encrypted_content": f"failed-compaction-{turn}",
+                    },
+                    *blocks,
+                ]
+            response_blocks.append(blocks)
+            responses.append(
+                _anthropic_replay_response(
+                    content=blocks,
+                    reasoning_text=f"summary-{turn}",
+                )
+            )
+
+        original_response_blocks = deepcopy(response_blocks)
+        agent = _anthropic_replay_agent(responses)
+        expected_history: list[dict] = []
+
+        for turn, blocks in enumerate(response_blocks, start=1):
+            frame = _playable_frame()
+            user_message = {
+                "role": "user",
+                "content": agent.build_frame_content(frame),
+            }
+            expected_history.append(user_message)
+            expected_request = deepcopy(expected_history)
+
+            agent.choose_action([], frame)
+
+            assert agent._adapter.requests[turn - 1].native_messages == expected_request
+            assistant_message = {
+                "role": "assistant",
+                "content": blocks,
+            }
+            if turn in successful_compaction_turns:
+                expected_history = [assistant_message]
+                assert agent._pending_action_reasoning["state"] == {
+                    "input_items_sent": len(expected_request),
+                    "compaction_occurred": True,
+                    "compaction_items_returned": 1,
+                    "history_items_before_prune": len(expected_request) + 1,
+                    "history_items_after_prune": 1,
+                }
+            else:
+                expected_history.append(assistant_message)
+                expected_history = BenchmarkingAgent._prune_anthropic_replay_history(
+                    expected_history
+                )
+                if turn in failed_compaction_turns:
+                    assert agent._pending_action_reasoning["state"] == {
+                        "input_items_sent": len(expected_request),
+                        "compaction_occurred": False,
+                        "compaction_items_returned": 1,
+                    }
+
+            assert agent._encrypted_messages == expected_history
+
+        assert response_blocks == original_response_blocks
+        assert len(agent._adapter.requests) == 50
+        assert agent._encrypted_messages[0]["content"][0] == {
+            "type": "compaction",
+            "content": "<summary>state-through-49</summary>",
+            "encrypted_content": "opaque-compaction-49",
+        }
+        final_history = repr(agent._encrypted_messages)
+        assert "encrypted-thinking-48" not in final_history
+        assert "encrypted-thinking-49" in final_history
+        assert "encrypted-thinking-50" in final_history
+
+    def test_invalid_action_compaction_is_not_committed_before_retry(self):
+        invalid_compaction = [
+            {
+                "type": "compaction",
+                "content": "<summary>must not commit</summary>",
+                "encrypted_content": "orphaned-compaction",
+            },
+            {
+                "type": "thinking",
+                "thinking": "invalid action path",
+                "signature": "orphaned-thinking",
+            },
+            {"type": "text", "text": "not an action"},
+        ]
+        accepted = _anthropic_replay_output(2)
+        agent = _anthropic_replay_agent(
+            [
+                _anthropic_replay_response(
+                    output_text="not an action",
+                    content=invalid_compaction,
+                ),
+                _anthropic_replay_response(content=accepted),
+            ]
+        )
+
+        agent.choose_action([], _playable_frame())
+
+        assert (
+            agent._adapter.requests[0].native_messages
+            == agent._adapter.requests[1].native_messages
+        )
+        assert "orphaned-compaction" not in repr(agent._encrypted_messages)
+        assert "orphaned-thinking" not in repr(agent._encrypted_messages)
+        assert agent._encrypted_messages[-1] == {
+            "role": "assistant",
+            "content": accepted,
+        }
+
+
 def _agent_with_env(step_frame: FrameData) -> BenchmarkingAgent:
     """Reuse _agent_for_choose_action and patch in a minimal arc_env."""
     agent = _agent_for_choose_action(analysis_mode=False, responses=[])
@@ -1296,6 +2171,11 @@ def _choose_action_with_reasoning(reasoning_text: str | None) -> BenchmarkingAge
 
 @pytest.mark.unit
 class TestBenchmarkingAgentReasoningTruncation:
+    def test_non_encrypted_action_metadata_omits_state(self):
+        agent = _choose_action_with_reasoning("inspect the board")
+
+        assert "state" not in agent._pending_action_reasoning
+
     @pytest.mark.parametrize("length", [1, 1_000, 10_000])
     def test_payload_within_budget_is_passed_through_unchanged(self, length):
         reasoning = "r" * length
