@@ -75,15 +75,18 @@ class BenchmarkingAgent(Agent):
         # + compaction). When enabled, we send only the new message(s) each turn
         # and let OpenAI hold the transcript; `self.conversation` becomes a
         # recording-only mirror and client-side trimming is disabled.
-        self._server_state: bool = (
-            runtime_cfg.get("state") == SERVER_RUNTIME_STATE
-        )
+        self._server_state: bool = runtime_cfg.get("state") == SERVER_RUNTIME_STATE
         self._encrypted_replay: bool = (
             runtime_cfg.get("state") == ENCRYPTED_REPLAY_RUNTIME_STATE
         )
+        self._anthropic_encrypted_replay: bool = self._encrypted_replay and (
+            runtime_cfg.get("sdk"),
+            runtime_cfg.get("api"),
+        ) == ("anthropic-python", "messages")
         self._previous_response_id: str | None = None
         self._pending_user_messages: list[dict[str, Any]] = []
         self._encrypted_input_items: list[dict[str, Any]] = []
+        self._encrypted_messages: list[dict[str, Any]] = []
 
         # Agent-level overrides
         self.MAX_ACTIONS_BASELINE_MULTIPLIER = agent_cfg.get(
@@ -446,11 +449,17 @@ class BenchmarkingAgent(Agent):
     def _build_model_request(self) -> ModelRequest:
         if self._server_state:
             return self._build_server_state_request()
+        anthropic_replay = getattr(self, "_anthropic_encrypted_replay", False)
         return ModelRequest(
             messages=[Message.model_validate(message) for message in self.conversation],
             request_config=dict(self._request_kwargs),
             input_items=(
-                list(self._encrypted_input_items) if self._encrypted_replay else None
+                list(self._encrypted_input_items)
+                if self._encrypted_replay and not anthropic_replay
+                else None
+            ),
+            native_messages=(
+                list(self._encrypted_messages) if anthropic_replay else None
             ),
         )
 
@@ -480,8 +489,7 @@ class BenchmarkingAgent(Agent):
                 )
             if not isinstance(value, dict):
                 raise TypeError(
-                    "Encrypted replay response output items must serialize "
-                    "to mappings."
+                    "Encrypted replay response output items must serialize to mappings."
                 )
             # openai-python 2.41.1 includes response-only fields when dumping
             # these output items, but the Responses input schema rejects them
@@ -510,11 +518,90 @@ class BenchmarkingAgent(Agent):
         return input_items
 
     @staticmethod
+    def _serialize_anthropic_replay_content(
+        model_response: ModelResponse,
+    ) -> list[dict[str, Any]]:
+        """Serialize Anthropic assistant blocks without losing opaque state."""
+        raw_response = model_response.raw_response
+        if isinstance(raw_response, dict):
+            raw_content = raw_response.get("content", ())
+        else:
+            raw_content = getattr(raw_response, "content", ())
+
+        serialized: list[dict[str, Any]] = []
+        for block in raw_content or ():
+            if hasattr(block, "model_dump"):
+                value = block.model_dump(mode="json")
+            elif isinstance(block, dict):
+                value = dict(block)
+            elif hasattr(block, "__dict__"):
+                value = dict(vars(block))
+            else:
+                raise TypeError(
+                    "Anthropic encrypted replay content blocks must be mappings "
+                    "or support model_dump()."
+                )
+            if not isinstance(value, dict):
+                raise TypeError(
+                    "Anthropic encrypted replay content blocks must serialize "
+                    "to mappings."
+                )
+            # anthropic-python attaches this response-only structured-output
+            # helper as model extra on text blocks. The Messages input schema
+            # rejects it during replay; all provider-authored replay state is
+            # otherwise retained verbatim.
+            if value.get("type") == "text":
+                value.pop("parsed_output", None)
+            # The current API may return no encrypted compaction metadata, but
+            # the SDK still materializes the optional field as null. The live
+            # input validator rejects that null response representation.
+            # Preserve real ciphertext verbatim whenever the API provides it.
+            if (
+                value.get("type") == "compaction"
+                and value.get("encrypted_content") is None
+            ):
+                value.pop("encrypted_content", None)
+            serialized.append(value)
+
+        if not serialized:
+            raise RuntimeError(
+                "Anthropic encrypted replay response did not contain replayable "
+                "content blocks."
+            )
+        return serialized
+
+    @staticmethod
+    def _prune_anthropic_replay_history(
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Keep the latest successful compaction block and all later content."""
+        for message_index in range(len(messages) - 1, -1, -1):
+            content = messages[message_index].get("content")
+            if not isinstance(content, list):
+                continue
+            for block_index in range(len(content) - 1, -1, -1):
+                block = content[block_index]
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "compaction"
+                    and block.get("content") is not None
+                ):
+                    compacted_message = dict(messages[message_index])
+                    compacted_message["content"] = content[block_index:]
+                    return [compacted_message, *messages[message_index + 1 :]]
+        return messages
+
+    @staticmethod
     def _messages_sent_for_request(
         model_request: ModelRequest,
     ) -> list[dict[str, Any]]:
         """Return the effective request items for per-step recording."""
         messages = [message.model_dump() for message in model_request.messages]
+        if model_request.native_messages is not None:
+            recorded_messages = list(model_request.native_messages)
+            if model_request.messages and model_request.messages[0].role == "system":
+                return [messages[0], *recorded_messages]
+            return recorded_messages
         if model_request.input_items is None:
             return messages
 
@@ -533,9 +620,7 @@ class BenchmarkingAgent(Agent):
         request_config = dict(self._request_kwargs)
         messages: list[dict[str, Any]] = []
         if self._previous_response_id is None:
-            messages.append(
-                {"role": "system", "content": self._build_system_prompt()}
-            )
+            messages.append({"role": "system", "content": self._build_system_prompt()})
         else:
             request_config["previous_response_id"] = self._previous_response_id
         messages.extend(self._pending_user_messages)
@@ -553,7 +638,10 @@ class BenchmarkingAgent(Agent):
         self._sync_level_progress(latest_frame)
         self._level_action_counter += 1
 
-        if forced_action == GameAction.RESET and latest_frame.state is GameState.GAME_OVER:
+        if (
+            forced_action == GameAction.RESET
+            and latest_frame.state is GameState.GAME_OVER
+        ):
             frame_message = {
                 "role": "user",
                 "content": self.build_frame_content(latest_frame),
@@ -564,7 +652,10 @@ class BenchmarkingAgent(Agent):
             if self._server_state:
                 self._pending_user_messages.append(frame_message)
             elif self._encrypted_replay:
-                self._encrypted_input_items.append(frame_message)
+                if getattr(self, "_anthropic_encrypted_replay", False):
+                    self._encrypted_messages.append(frame_message)
+                else:
+                    self._encrypted_input_items.append(frame_message)
 
         self._save_step(
             StepRecord(
@@ -581,7 +672,9 @@ class BenchmarkingAgent(Agent):
 
     def do_action_request(self, action: GameAction) -> FrameData:
         data = action.action_data.model_dump()
-        reasoning = self._pending_action_reasoning or getattr(action, "reasoning", {}) or {}
+        reasoning = (
+            self._pending_action_reasoning or getattr(action, "reasoning", {}) or {}
+        )
         self._pending_action_reasoning = {}
         raw = self.arc_env.step(action, data=data, reasoning=reasoning)
         self._previous_action = action
@@ -642,8 +735,7 @@ class BenchmarkingAgent(Agent):
         # rather than relying on an otherwise-empty transcript.
         if not self.conversation or self.conversation[0].get("role") != "system":
             self.conversation.insert(
-                0,
-                {"role": "system", "content": self._build_system_prompt()}
+                0, {"role": "system", "content": self._build_system_prompt()}
             )
 
         # Normal turn: append frame, call the model, parse action
@@ -655,7 +747,10 @@ class BenchmarkingAgent(Agent):
         if self._server_state:
             self._pending_user_messages.append(frame_message)
         elif self._encrypted_replay:
-            self._encrypted_input_items.append(frame_message)
+            if getattr(self, "_anthropic_encrypted_replay", False):
+                self._encrypted_messages.append(frame_message)
+            else:
+                self._encrypted_input_items.append(frame_message)
 
         actions = self._get_actions(latest_frame)
         start = time.monotonic()
@@ -672,17 +767,44 @@ class BenchmarkingAgent(Agent):
             self._previous_response_id = model_response.response_id
             self._pending_user_messages = []
         elif self._encrypted_replay:
-            input_items_sent = len(self._encrypted_input_items)
-            replay_output = self._serialize_encrypted_replay_output(model_response)
-            compaction_items_returned = sum(
-                item.get("type") == "compaction" for item in replay_output
+            anthropic_replay = getattr(
+                self,
+                "_anthropic_encrypted_replay",
+                False,
             )
-            self._encrypted_input_items.extend(replay_output)
-            history_items_before_prune = len(self._encrypted_input_items)
-            self._encrypted_input_items = self._prune_encrypted_replay_history(
-                self._encrypted_input_items
-            )
-            compaction_occurred = compaction_items_returned > 0
+            if anthropic_replay:
+                input_items_sent = len(self._encrypted_messages)
+                replay_output = self._serialize_anthropic_replay_content(model_response)
+                compaction_items_returned = sum(
+                    block.get("type") == "compaction" for block in replay_output
+                )
+                successful_compactions = sum(
+                    block.get("type") == "compaction"
+                    and block.get("content") is not None
+                    for block in replay_output
+                )
+                self._encrypted_messages.append(
+                    {"role": "assistant", "content": replay_output}
+                )
+                history_items_before_prune = len(self._encrypted_messages)
+                self._encrypted_messages = self._prune_anthropic_replay_history(
+                    self._encrypted_messages
+                )
+                history_items_after_prune = len(self._encrypted_messages)
+                compaction_occurred = successful_compactions > 0
+            else:
+                input_items_sent = len(self._encrypted_input_items)
+                replay_output = self._serialize_encrypted_replay_output(model_response)
+                compaction_items_returned = sum(
+                    item.get("type") == "compaction" for item in replay_output
+                )
+                self._encrypted_input_items.extend(replay_output)
+                history_items_before_prune = len(self._encrypted_input_items)
+                self._encrypted_input_items = self._prune_encrypted_replay_history(
+                    self._encrypted_input_items
+                )
+                history_items_after_prune = len(self._encrypted_input_items)
+                compaction_occurred = compaction_items_returned > 0
             action_state = ActionStateMetadata(
                 input_items_sent=input_items_sent,
                 compaction_occurred=compaction_occurred,
@@ -691,7 +813,7 @@ class BenchmarkingAgent(Agent):
                     history_items_before_prune if compaction_occurred else None
                 ),
                 history_items_after_prune=(
-                    len(self._encrypted_input_items) if compaction_occurred else None
+                    history_items_after_prune if compaction_occurred else None
                 ),
             )
 
@@ -729,15 +851,13 @@ class BenchmarkingAgent(Agent):
         metadata.state = action_state
         arc_reasoning = metadata.to_reasoning_dict()
         if self._encrypted_replay:
-            # OpenAI Responses exposes a human-readable summary rather than raw
-            # chain-of-thought. Label it precisely in ARC's reasoning payload.
+            # Encrypted-replay providers expose a human-readable summary rather
+            # than raw chain-of-thought. Label it precisely in ARC metadata.
             arc_reasoning["reasoning_summary"] = arc_reasoning.pop(
                 "reasoning",
                 None,
             )
-        self._pending_action_reasoning = fit_action_metadata_payload(
-            arc_reasoning
-        )
+        self._pending_action_reasoning = fit_action_metadata_payload(arc_reasoning)
         total_cost = metadata.cost.total_cost
         input_cost = metadata.cost.input_cost
         output_cost = metadata.cost.output_cost

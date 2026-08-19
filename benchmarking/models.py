@@ -65,8 +65,7 @@ class ActionMetadata(BaseModel):
         usage: Token usage for this action, following OpenAI's ResponseUsage
                schema.
         cost: Computed dollar costs broken down by input and output.
-        state: Optional action-level state telemetry. Currently populated only
-               for OpenAI encrypted replay.
+        state: Optional action-level state telemetry for encrypted replay.
     """
 
     output: str | None = None

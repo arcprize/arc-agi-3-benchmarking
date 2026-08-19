@@ -337,11 +337,10 @@ class TestModelConfig:
         ("runtime_sdk", "runtime_api"),
         [
             ("openai-python", "chat_completions"),
-            ("anthropic-python", "messages"),
             ("google-genai", "generate_content"),
         ],
     )
-    def test_load_model_configs_rejects_encrypted_replay_outside_openai_responses(
+    def test_load_model_configs_rejects_encrypted_replay_on_unsupported_runtime(
         self,
         tmp_path,
         monkeypatch,
@@ -368,6 +367,186 @@ class TestModelConfig:
             ValueError,
             match="uses runtime.state='encrypted_replay'",
         ):
+            model_config.load_model_configs()
+
+    def test_load_model_configs_accepts_anthropic_encrypted_replay(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "anthropic-encrypted-replay",
+                    runtime_sdk="anthropic-python",
+                    runtime_api="messages",
+                    runtime={
+                        "sdk": "anthropic-python",
+                        "api": "messages",
+                        "state": "encrypted_replay",
+                    },
+                    client={"api_key_env": "ANTHROPIC_API_KEY"},
+                    request={
+                        "model": "claude-opus-4-7",
+                        "max_tokens": 120_000,
+                        "betas": ["compact-2026-01-12"],
+                        "thinking": {
+                            "type": "adaptive",
+                            "display": "summarized",
+                        },
+                        "context_management": {
+                            "edits": [
+                                {
+                                    "type": "compact_20260112",
+                                    "trigger": {
+                                        "type": "input_tokens",
+                                        "value": 175_000,
+                                    },
+                                    "pause_after_compaction": False,
+                                }
+                            ]
+                        },
+                    },
+                )
+            ],
+        )
+
+        configs = model_config.load_model_configs()
+
+        assert configs[0]["runtime"]["state"] == "encrypted_replay"
+
+    @pytest.mark.parametrize(
+        ("request_override", "error_match"),
+        [
+            ({"betas": []}, "must include request.betas"),
+            (
+                {
+                    "context_management": {
+                        "edits": [{"type": "clear_thinking_20251015"}]
+                    }
+                },
+                "must define exactly one",
+            ),
+            (
+                {
+                    "context_management": {
+                        "edits": [
+                            {
+                                "type": "compact_20260112",
+                                "trigger": {
+                                    "type": "input_tokens",
+                                    "value": 175_000,
+                                },
+                                "pause_after_compaction": False,
+                            },
+                            {"type": "clear_thinking_20251015"},
+                        ]
+                    }
+                },
+                "must define exactly one",
+            ),
+            (
+                {
+                    "context_management": {
+                        "edits": [
+                            {
+                                "type": "compact_20260112",
+                                "trigger": {
+                                    "type": "input_tokens",
+                                    "value": 175_000,
+                                },
+                                "pause_after_compaction": True,
+                            }
+                        ]
+                    }
+                },
+                "must set pause_after_compaction=false",
+            ),
+            (
+                {
+                    "context_management": {
+                        "edits": [
+                            {
+                                "type": "compact_20260112",
+                                "trigger": {
+                                    "type": "input_tokens",
+                                    "value": 175_000,
+                                },
+                                "pause_after_compaction": False,
+                                "instructions": "Custom summary",
+                            }
+                        ]
+                    }
+                },
+                "cannot override the provider's compaction instructions",
+            ),
+            (
+                {
+                    "context_management": {
+                        "edits": [
+                            {
+                                "type": "compact_20260112",
+                                "trigger": {
+                                    "type": "input_tokens",
+                                    "value": 49_999,
+                                },
+                                "pause_after_compaction": False,
+                            }
+                        ]
+                    }
+                },
+                "input_tokens compaction trigger",
+            ),
+            (
+                {"thinking": {"type": "adaptive", "display": "omitted"}},
+                "must request summarized thinking",
+            ),
+        ],
+    )
+    def test_anthropic_encrypted_replay_rejects_unsafe_config(
+        self,
+        tmp_path,
+        monkeypatch,
+        request_override,
+        error_match,
+    ):
+        request = {
+            "model": "claude-opus-4-7",
+            "betas": ["compact-2026-01-12"],
+            "thinking": {"type": "adaptive", "display": "summarized"},
+            "context_management": {
+                "edits": [
+                    {
+                        "type": "compact_20260112",
+                        "trigger": {"type": "input_tokens", "value": 175_000},
+                        "pause_after_compaction": False,
+                    }
+                ]
+            },
+        }
+        request.update(request_override)
+        _write_model_configs(
+            tmp_path,
+            monkeypatch,
+            [
+                _valid_config(
+                    "bad-anthropic-encrypted-replay",
+                    runtime_sdk="anthropic-python",
+                    runtime_api="messages",
+                    runtime={
+                        "sdk": "anthropic-python",
+                        "api": "messages",
+                        "state": "encrypted_replay",
+                    },
+                    client={"api_key_env": "ANTHROPIC_API_KEY"},
+                    request=request,
+                )
+            ],
+        )
+
+        with pytest.raises(ValueError, match=error_match):
             model_config.load_model_configs()
 
     @pytest.mark.parametrize("store_value", [None, True])
@@ -651,10 +830,14 @@ class TestModelConfig:
             ],
         )
 
-        with pytest.raises(ValueError, match="Duplicate model config id 'duplicate-id'"):
+        with pytest.raises(
+            ValueError, match="Duplicate model config id 'duplicate-id'"
+        ):
             model_config.load_model_configs()
 
-    def test_list_model_config_ids_returns_id_values_not_name(self, tmp_path, monkeypatch):
+    def test_list_model_config_ids_returns_id_values_not_name(
+        self, tmp_path, monkeypatch
+    ):
         _write_model_configs(
             tmp_path,
             monkeypatch,
@@ -752,6 +935,7 @@ class TestModelConfig:
         assert {
             "anthropic-opus-4-7-medium",
             "anthropic-opus-4-7-low-thinking",
+            "anthropic-opus-5-encrypted-replay-medium",
             "google-gemini-3-1-pro-preview",
             "openai-gpt-5-4-2026-03-05",
             "openai-gpt-5-4-2026-03-05-high",
@@ -762,6 +946,19 @@ class TestModelConfig:
             "openai-gpt-5.4-openrouter",
             "xai-grok-4-20-beta-0309-reasoning",
         } <= config_ids
+
+    def test_checked_in_opus_5_encrypted_replay_config(self):
+        config = model_config.get_model_config(
+            "anthropic-opus-5-encrypted-replay-medium"
+        )
+
+        assert config["request"]["model"] == "claude-opus-5"
+        assert config["request"]["thinking"] == {
+            "type": "adaptive",
+            "display": "summarized",
+        }
+        assert config["request"]["output_config"] == {"effort": "medium"}
+        assert config["runtime"]["state"] == "encrypted_replay"
 
     @pytest.mark.parametrize(
         "config_id",
@@ -793,8 +990,7 @@ class TestModelConfig:
         ]
 
         assert all(
-            config["request"]["thinking"] == {"type": "adaptive"}
-            for config in configs
+            config["request"]["thinking"] == {"type": "adaptive"} for config in configs
         )
         assert configs[0]["request"]["output_config"] == {"effort": "medium"}
         assert configs[1]["request"]["output_config"] == {"effort": "low"}

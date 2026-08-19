@@ -36,6 +36,106 @@
     input: 5.00
     output: 25.00
 
+# Stateless Messages chaining for ZDR-compatible runs. The client owns the
+# native content-block history and replays thinking signatures plus encrypted
+# compaction metadata verbatim on each request.
+- id: "anthropic-opus-5-encrypted-replay-high"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
+    MAX_CONTEXT_LENGTH: 175_000
+    include_carry_forward_instruction: false
+  runtime:
+    sdk: "anthropic-python"
+    api: "messages"
+    state: "encrypted_replay"
+  client:
+    api_key_env: "ANTHROPIC_API_KEY"
+  request:
+    model: "claude-opus-5"
+    max_tokens: 120_000
+    stream: true
+    betas: ["compact-2026-01-12", "thinking-token-count-2026-05-13"]
+    thinking: {type: "adaptive", display: "summarized"}
+    output_config: {effort: "high"}
+    context_management:
+      edits:
+        - type: "compact_20260112"
+          trigger: {type: "input_tokens", value: 175_000}
+          pause_after_compaction: false
+  pricing:
+    input: 5.00
+    output: 25.00
+
+# Fable 5 equivalent of the client-owned replay profile above.
+- id: "anthropic-fable-5-encrypted-replay-medium"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
+    MAX_CONTEXT_LENGTH: 175_000
+    include_carry_forward_instruction: false
+
+  runtime:
+    sdk: "anthropic-python"
+    api: "messages"
+    state: "encrypted_replay"
+
+  client:
+    api_key_env: "ANTHROPIC_API_KEY"
+
+  request:
+    model: "claude-fable-5"
+    max_tokens: 120_000
+    stream: true
+
+    betas:
+      - "compact-2026-01-12"
+      - "thinking-token-count-2026-05-13"
+
+    thinking:
+      type: "adaptive"
+      display: "summarized"
+
+    output_config:
+      effort: "medium"
+
+    context_management:
+      edits:
+        - type: "compact_20260112"
+          trigger:
+            type: "input_tokens"
+            value: 175_000
+          pause_after_compaction: false
+
+  pricing:
+    input: 10.00
+    output: 50.00
+
+- id: "anthropic-opus-5-encrypted-replay-medium"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
+    MAX_CONTEXT_LENGTH: 175_000
+    include_carry_forward_instruction: false
+  runtime:
+    sdk: "anthropic-python"
+    api: "messages"
+    state: "encrypted_replay"
+  client:
+    api_key_env: "ANTHROPIC_API_KEY"
+  request:
+    model: "claude-opus-5"
+    max_tokens: 120_000
+    stream: true
+    betas: ["compact-2026-01-12", "thinking-token-count-2026-05-13"]
+    thinking: {type: "adaptive", display: "summarized"}
+    output_config: {effort: "medium"}
+    context_management:
+      edits:
+        - type: "compact_20260112"
+          trigger: {type: "input_tokens", value: 175_000}
+          pause_after_compaction: false
+  pricing:
+    input: 5.00
+    output: 25.00
+
 - id: "anthropic-opus-4-7-low-thinking"
   agent:
     MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0

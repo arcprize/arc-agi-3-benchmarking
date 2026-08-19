@@ -20,6 +20,7 @@ class TestMainCliHelpers:
         assert "openai-gpt-5.4-openrouter" in configs
         assert "anthropic-opus-4-7-medium" in configs
         assert "anthropic-opus-4-7-low-thinking" in configs
+        assert "anthropic-opus-5-encrypted-replay-medium" in configs
 
     def test_validate_required_model_api_key_uses_selected_config_env(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")

@@ -25,9 +25,18 @@ SUPPORTED_RUNTIME_STATES = frozenset(
         ENCRYPTED_REPLAY_RUNTIME_STATE,
     }
 )
-# Response-ID chaining and encrypted reasoning replay are only available on the
-# OpenAI Responses runtime.
+# Response-ID chaining is OpenAI-only. Encrypted replay additionally supports
+# Anthropic's stateless beta Messages compaction API.
 SERVER_STATE_RUNTIME_PAIRS = frozenset({("openai-python", "responses")})
+ENCRYPTED_REPLAY_RUNTIME_PAIRS = frozenset(
+    {
+        ("openai-python", "responses"),
+        ("anthropic-python", "messages"),
+    }
+)
+ANTHROPIC_COMPACTION_BETA = "compact-2026-01-12"
+ANTHROPIC_COMPACTION_EDIT = "compact_20260112"
+ANTHROPIC_MIN_COMPACTION_TOKENS = 50_000
 ANTHROPIC_OPENAI_COMPAT_CLIENT_FIELDS = frozenset({"base_url"})
 ANTHROPIC_OPENAI_COMPAT_REQUEST_FIELDS = frozenset(
     {
@@ -57,8 +66,7 @@ def _read_raw_model_configs() -> list[dict[str, Any]]:
 
 def _format_supported_runtime_pairs() -> str:
     return ", ".join(
-        f"(sdk={sdk!r}, api={api!r})"
-        for sdk, api in sorted(SUPPORTED_RUNTIME_PAIRS)
+        f"(sdk={sdk!r}, api={api!r})" for sdk, api in sorted(SUPPORTED_RUNTIME_PAIRS)
     )
 
 
@@ -87,11 +95,11 @@ def _validate_anthropic_messages_config(config_id: str, entry: dict[str, Any]) -
         )
 
 
-def _validate_encrypted_replay_config(
+def _validate_openai_encrypted_replay_config(
     config_id: str,
     entry: dict[str, Any],
 ) -> None:
-    """Enforce the request invariants that keep encrypted replay stateless."""
+    """Enforce OpenAI request invariants for stateless encrypted replay."""
     request = entry["request"]
     if request.get("store") is not False:
         raise ValueError(
@@ -117,7 +125,96 @@ def _validate_encrypted_replay_config(
         )
 
 
-def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> dict[str, Any]:
+def _validate_anthropic_encrypted_replay_config(
+    config_id: str,
+    entry: dict[str, Any],
+) -> None:
+    """Require Anthropic's stateless compaction and continuation contract."""
+    request = entry["request"]
+    betas = request.get("betas")
+    if not isinstance(betas, list) or ANTHROPIC_COMPACTION_BETA not in betas:
+        raise ValueError(
+            f"Model config '{config_id}' uses runtime.state="
+            f"{ENCRYPTED_REPLAY_RUNTIME_STATE!r} on Anthropic and must include "
+            f"request.betas={ANTHROPIC_COMPACTION_BETA!r}."
+        )
+
+    context_management = request.get("context_management")
+    edits = (
+        context_management.get("edits")
+        if isinstance(context_management, dict)
+        else None
+    )
+    compact_edits = [
+        edit
+        for edit in edits or []
+        if isinstance(edit, dict) and edit.get("type") == ANTHROPIC_COMPACTION_EDIT
+    ]
+    if (
+        not isinstance(edits, list)
+        or len(edits) != 1
+        or len(compact_edits) != 1
+    ):
+        raise ValueError(
+            f"Model config '{config_id}' uses Anthropic encrypted replay and "
+            f"must define exactly one request.context_management edit, with "
+            f"type={ANTHROPIC_COMPACTION_EDIT!r}."
+        )
+
+    compact_edit = compact_edits[0]
+    if compact_edit.get("pause_after_compaction") is not False:
+        raise ValueError(
+            f"Model config '{config_id}' uses Anthropic encrypted replay and "
+            f"must set pause_after_compaction=false."
+        )
+    if "instructions" in compact_edit:
+        raise ValueError(
+            f"Model config '{config_id}' uses Anthropic encrypted replay and "
+            f"cannot override the provider's compaction instructions."
+        )
+
+    trigger = compact_edit.get("trigger")
+    trigger_value = trigger.get("value") if isinstance(trigger, dict) else None
+    if (
+        not isinstance(trigger, dict)
+        or trigger.get("type") != "input_tokens"
+        or isinstance(trigger_value, bool)
+        or not isinstance(trigger_value, int)
+        or trigger_value < ANTHROPIC_MIN_COMPACTION_TOKENS
+    ):
+        raise ValueError(
+            f"Model config '{config_id}' uses Anthropic encrypted replay and "
+            f"must define an input_tokens compaction trigger of at least "
+            f"{ANTHROPIC_MIN_COMPACTION_TOKENS}."
+        )
+
+    thinking = request.get("thinking")
+    if not isinstance(thinking, dict) or thinking.get("type") != "adaptive":
+        raise ValueError(
+            f"Model config '{config_id}' uses Anthropic encrypted replay and "
+            f"must enable adaptive thinking."
+        )
+    if thinking.get("display") != "summarized":
+        raise ValueError(
+            f"Model config '{config_id}' uses Anthropic encrypted replay and "
+            f"must request summarized thinking alongside encrypted signatures."
+        )
+
+
+def _validate_encrypted_replay_config(
+    config_id: str,
+    entry: dict[str, Any],
+    runtime_pair: tuple[str, str],
+) -> None:
+    if runtime_pair == ("openai-python", "responses"):
+        _validate_openai_encrypted_replay_config(config_id, entry)
+        return
+    _validate_anthropic_encrypted_replay_config(config_id, entry)
+
+
+def _validate_model_config_entry(
+    entry: Any, index: int, seen_ids: set[str]
+) -> dict[str, Any]:
     if not isinstance(entry, dict):
         raise ValueError(
             f"Model config entry #{index} in {MODEL_CONFIG_PATH} must be a mapping."
@@ -131,9 +228,7 @@ def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> 
                 f"Model config entry #{index} uses legacy field 'name'. "
                 f"Rename it to 'id'."
             )
-        raise ValueError(
-            f"Model config entry #{index} is missing required 'id'."
-        )
+        raise ValueError(f"Model config entry #{index} is missing required 'id'.")
 
     config_id = raw_config_id.strip()
     if config_id in seen_ids:
@@ -190,7 +285,7 @@ def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> 
             f"but only {supported} are supported."
         )
     if (
-        runtime_state in {SERVER_RUNTIME_STATE, ENCRYPTED_REPLAY_RUNTIME_STATE}
+        runtime_state == SERVER_RUNTIME_STATE
         and runtime_pair not in SERVER_STATE_RUNTIME_PAIRS
     ):
         raise ValueError(
@@ -198,8 +293,17 @@ def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> 
             f"which is only supported on the OpenAI Responses runtime "
             f"(sdk='openai-python', api='responses')."
         )
+    if (
+        runtime_state == ENCRYPTED_REPLAY_RUNTIME_STATE
+        and runtime_pair not in ENCRYPTED_REPLAY_RUNTIME_PAIRS
+    ):
+        raise ValueError(
+            f"Model config '{config_id}' uses runtime.state={runtime_state!r}, "
+            f"which is only supported on OpenAI Responses or Anthropic "
+            f"Messages runtimes."
+        )
     if runtime_state == ENCRYPTED_REPLAY_RUNTIME_STATE:
-        _validate_encrypted_replay_config(config_id, entry)
+        _validate_encrypted_replay_config(config_id, entry, runtime_pair)
     if runtime_pair == ("anthropic-python", "messages"):
         _validate_anthropic_messages_config(config_id, entry)
 

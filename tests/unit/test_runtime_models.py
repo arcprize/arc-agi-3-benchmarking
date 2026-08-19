@@ -130,6 +130,8 @@ def _anthropic_response(
     output_tokens: int = 7,
     cache_creation_input_tokens: int = 0,
     cache_read_input_tokens: int = 0,
+    iterations: list[object] | None = None,
+    thinking_tokens: int = 0,
 ) -> SimpleNamespace:
     if content is None:
         content = [SimpleNamespace(type="text", text="TOKEN_PROBE")]
@@ -140,6 +142,10 @@ def _anthropic_response(
             output_tokens=output_tokens,
             cache_creation_input_tokens=cache_creation_input_tokens,
             cache_read_input_tokens=cache_read_input_tokens,
+            iterations=iterations,
+            output_tokens_details=SimpleNamespace(
+                thinking_tokens=thinking_tokens,
+            ),
         ),
     )
 
@@ -449,7 +455,7 @@ class TestRuntimeModels:
 
         assert model_response.output_text == "MOVE_LEFT"
 
-    def test_anthropic_messages_normalizer_ignores_thinking_blocks_for_now(self):
+    def test_anthropic_messages_normalizer_extracts_summarized_thinking(self):
         model_response = normalize_anthropic_messages_response(
             _anthropic_response(
                 content=[
@@ -460,8 +466,22 @@ class TestRuntimeModels:
         )
 
         assert model_response.output_text == "RESET"
-        assert model_response.reasoning_text is None
+        assert model_response.reasoning_text == "inspect the top row"
         assert model_response.usage.reasoning_tokens == 0
+
+    def test_anthropic_messages_normalizer_joins_multiple_thinking_summaries(self):
+        model_response = normalize_anthropic_messages_response(
+            _anthropic_response(
+                content=[
+                    SimpleNamespace(type="thinking", thinking="inspect"),
+                    SimpleNamespace(type="redacted_thinking", data="opaque"),
+                    SimpleNamespace(type="thinking", thinking="then move"),
+                    SimpleNamespace(type="text", text="ACTION1"),
+                ]
+            )
+        )
+
+        assert model_response.reasoning_text == "inspect\nthen move"
 
     def test_anthropic_messages_usage_total_matches_input_plus_output_tokens(self):
         model_response = normalize_anthropic_messages_response(
@@ -484,6 +504,39 @@ class TestRuntimeModels:
 
         assert model_response.usage.cached_tokens == 47
         assert model_response.usage.cache_write_tokens == 31
+
+    def test_anthropic_compaction_usage_sums_all_sampling_iterations(self):
+        iterations = [
+            SimpleNamespace(
+                type="compaction",
+                input_tokens=180_000,
+                output_tokens=3_500,
+                cache_creation_input_tokens=11,
+                cache_read_input_tokens=13,
+            ),
+            SimpleNamespace(
+                type="message",
+                input_tokens=23_000,
+                output_tokens=1_000,
+                cache_creation_input_tokens=17,
+                cache_read_input_tokens=19,
+            ),
+        ]
+        model_response = normalize_anthropic_messages_response(
+            _anthropic_response(
+                input_tokens=23_000,
+                output_tokens=1_000,
+                iterations=iterations,
+                thinking_tokens=600,
+            )
+        )
+
+        assert model_response.usage.input_tokens == 203_000
+        assert model_response.usage.output_tokens == 4_500
+        assert model_response.usage.total_tokens == 207_500
+        assert model_response.usage.reasoning_tokens == 600
+        assert model_response.usage.cached_tokens == 32
+        assert model_response.usage.cache_write_tokens == 28
 
     def test_anthropic_messages_normalizer_maps_dict_response_and_usage_schema(self):
         raw_response = {
@@ -804,9 +857,16 @@ class TestRuntimeModels:
         )
 
         assert gemini_metadata.cost.model_dump() == anthropic_metadata.cost.model_dump()
-        assert gemini_metadata.usage.input_tokens == anthropic_metadata.usage.input_tokens
-        assert gemini_metadata.usage.output_tokens == anthropic_metadata.usage.output_tokens
-        assert gemini_metadata.usage.total_tokens == anthropic_metadata.usage.total_tokens
+        assert (
+            gemini_metadata.usage.input_tokens == anthropic_metadata.usage.input_tokens
+        )
+        assert (
+            gemini_metadata.usage.output_tokens
+            == anthropic_metadata.usage.output_tokens
+        )
+        assert (
+            gemini_metadata.usage.total_tokens == anthropic_metadata.usage.total_tokens
+        )
 
     def test_anthropic_messages_metadata_projection_maps_usage_and_cost(self):
         raw_response = _anthropic_response(

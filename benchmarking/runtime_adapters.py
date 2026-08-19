@@ -21,8 +21,15 @@ ENCRYPTED_REPLAY_RUNTIME_STATE = model_config.ENCRYPTED_REPLAY_RUNTIME_STATE
 SUPPORTED_RUNTIME_STATE = model_config.SUPPORTED_RUNTIME_STATE
 SUPPORTED_RUNTIME_STATES = model_config.SUPPORTED_RUNTIME_STATES
 
-# Non-manual state modes are only available on the OpenAI Responses runtime.
+# Response-ID state is OpenAI-only. Stateless encrypted replay is supported by
+# OpenAI Responses and Anthropic's beta Messages compaction API.
 SERVER_STATE_RUNTIME_KEYS = frozenset({("openai-python", "responses")})
+ENCRYPTED_REPLAY_RUNTIME_KEYS = frozenset(
+    {
+        ("openai-python", "responses"),
+        ("anthropic-python", "messages"),
+    }
+)
 
 
 class ModelRuntimeAdapter(Protocol):
@@ -62,9 +69,7 @@ class OpenAIResponsesAdapter:
             return request_kwargs
 
         request_kwargs["input"] = (
-            list(request.input_items)
-            if request.input_items is not None
-            else messages
+            list(request.input_items) if request.input_items is not None else messages
         )
         return request_kwargs
 
@@ -137,14 +142,29 @@ class AnthropicMessagesAdapter:
     def _build_request_kwargs(request: ModelRequest) -> dict[str, Any]:
         request_kwargs = dict(request.request_config)
         messages = [message.model_dump() for message in request.messages]
+        request_messages = (
+            list(request.native_messages)
+            if request.native_messages is not None
+            else messages
+        )
 
         if request.messages and request.messages[0].role == "system":
             request_kwargs["system"] = request.messages[0].content
-            request_kwargs["messages"] = messages[1:]
+            request_kwargs["messages"] = (
+                request_messages
+                if request.native_messages is not None
+                else request_messages[1:]
+            )
             return request_kwargs
 
-        request_kwargs["messages"] = messages
+        request_kwargs["messages"] = request_messages
         return request_kwargs
+
+    def _messages_resource(self, request_kwargs: dict[str, Any]) -> Any:
+        """Route beta-only config through ``client.beta.messages``."""
+        if request_kwargs.get("betas") or request_kwargs.get("context_management"):
+            return self._client.beta.messages
+        return self._client.messages
 
     @staticmethod
     def _should_stream(request_kwargs: dict[str, Any]) -> bool:
@@ -180,32 +200,41 @@ class AnthropicMessagesAdapter:
         fallback_usage: Any | None,
     ) -> Any:
         usage = getattr(final_message, "usage", None) or fallback_usage
-        if text_parts:
+        content = list(getattr(final_message, "content", []) or [])
+
+        def block_value(block: Any, key: str) -> Any:
+            if isinstance(block, dict):
+                return block.get(key)
+            return getattr(block, key, None)
+
+        final_has_text = any(
+            block_value(block, "type") == "text" and bool(block_value(block, "text"))
+            for block in content
+        )
+        if text_parts and not final_has_text:
+            content.append({"type": "text", "text": "".join(text_parts)})
+
+        # Preserve the SDK's accumulated native blocks. In encrypted replay
+        # these carry thinking signatures and opaque compaction metadata.
+        if content != list(getattr(final_message, "content", []) or []) or (
+            fallback_usage is not None and getattr(final_message, "usage", None) is None
+        ):
             return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "".join(text_parts),
-                    }
-                ],
+                "content": content,
                 "usage": usage,
                 "stream_final_message": final_message,
             }
-
-        if fallback_usage is not None and getattr(final_message, "usage", None) is None:
-            return {
-                "content": getattr(final_message, "content", []),
-                "usage": fallback_usage,
-                "stream_final_message": final_message,
-            }
-
         return final_message
 
-    def _invoke_streaming(self, request_kwargs: dict[str, Any]) -> ModelResponse:
+    def _invoke_streaming(
+        self,
+        messages_resource: Any,
+        request_kwargs: dict[str, Any],
+    ) -> ModelResponse:
         text_parts: list[str] = []
         latest_usage = None
 
-        with self._client.messages.stream(**request_kwargs) as stream:
+        with messages_resource.stream(**request_kwargs) as stream:
             for event in stream:
                 text_delta = self._stream_text_delta(event)
                 if text_delta is not None:
@@ -227,10 +256,11 @@ class AnthropicMessagesAdapter:
 
     def invoke(self, request: ModelRequest) -> ModelResponse:
         request_kwargs = self._build_request_kwargs(request)
+        messages_resource = self._messages_resource(request_kwargs)
         if self._should_stream(request_kwargs):
-            return self._invoke_streaming(request_kwargs)
+            return self._invoke_streaming(messages_resource, request_kwargs)
 
-        raw_response = self._client.messages.create(
+        raw_response = messages_resource.create(
             **request_kwargs,
         )
         return normalize_anthropic_messages_response(raw_response)
@@ -253,9 +283,7 @@ class GoogleGenAIGenerateContentAdapter:
         request_config = dict(request.request_config)
         model = request_config.pop("model", None)
         if not model:
-            raise ValueError(
-                "Google GenAI request_config is missing required 'model'."
-            )
+            raise ValueError("Google GenAI request_config is missing required 'model'.")
 
         system_instruction: str | None = None
         messages = list(request.messages)
@@ -307,16 +335,25 @@ def build_model_runtime_adapter(
 
     runtime_key = (runtime_config.get("sdk"), runtime_config.get("api"))
 
-    if runtime_state in {SERVER_RUNTIME_STATE, ENCRYPTED_REPLAY_RUNTIME_STATE}:
+    if runtime_state == SERVER_RUNTIME_STATE:
         if runtime_key not in SERVER_STATE_RUNTIME_KEYS:
             raise ValueError(
                 f"Model config '{config_id}' uses runtime.state={runtime_state!r}, "
                 f"which is only supported on the OpenAI Responses runtime "
                 f"(sdk='openai-python', api='responses')."
             )
-        if runtime_state == SERVER_RUNTIME_STATE:
-            return OpenAIResponsesServerStateAdapter(client)
-        return OpenAIResponsesAdapter(client)
+        return OpenAIResponsesServerStateAdapter(client)
+
+    if runtime_state == ENCRYPTED_REPLAY_RUNTIME_STATE:
+        if runtime_key not in ENCRYPTED_REPLAY_RUNTIME_KEYS:
+            raise ValueError(
+                f"Model config '{config_id}' uses runtime.state={runtime_state!r}, "
+                f"which is only supported on OpenAI Responses or Anthropic "
+                f"Messages runtimes."
+            )
+        if runtime_key == ("openai-python", "responses"):
+            return OpenAIResponsesAdapter(client)
+        return AnthropicMessagesAdapter(client)
 
     if runtime_key == ("openai-python", "chat_completions"):
         return OpenAIChatCompletionsAdapter(client)

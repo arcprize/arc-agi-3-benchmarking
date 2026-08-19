@@ -26,6 +26,10 @@ class ModelRequest(BaseModel):
     # Provider-native Responses input items used for stateless encrypted replay.
     # ``messages`` remains the normalized transcript used by other runtimes.
     input_items: list[dict[str, Any]] | None = None
+    # Provider-native Messages API history. Anthropic encrypted replay needs
+    # ordered content blocks (thinking signatures, compaction metadata, text)
+    # that cannot be represented by the normalized string-only ``Message``.
+    native_messages: list[dict[str, Any]] | None = None
 
 
 class NormalizedUsage(BaseModel):
@@ -126,8 +130,7 @@ def _normalize_responses_usage(usage: Any) -> dict[str, Any]:
     )
     if input_tokens_details:
         normalized_usage_kwargs["cached_tokens"] = (
-            _value_from_response_object(input_tokens_details, "cached_tokens", 0)
-            or 0
+            _value_from_response_object(input_tokens_details, "cached_tokens", 0) or 0
         )
         normalized_usage_kwargs["cache_write_tokens"] = (
             _value_from_response_object(
@@ -170,9 +173,7 @@ def _normalize_google_genai_usage(usage: Any) -> dict[str, Any]:
     candidates_tokens = (
         _value_from_response_object(usage, "candidates_token_count", 0) or 0
     )
-    thoughts_tokens = (
-        _value_from_response_object(usage, "thoughts_token_count", 0) or 0
-    )
+    thoughts_tokens = _value_from_response_object(usage, "thoughts_token_count", 0) or 0
     cached_tokens = (
         _value_from_response_object(usage, "cached_content_token_count", 0) or 0
     )
@@ -189,18 +190,43 @@ def _normalize_anthropic_messages_usage(usage: Any) -> dict[str, Any]:
     if not usage:
         return {}
 
-    input_tokens = _value_from_response_object(usage, "input_tokens", 0) or 0
-    output_tokens = _value_from_response_object(usage, "output_tokens", 0) or 0
+    # Compaction is an extra sampling iteration. Anthropic's top-level usage
+    # excludes it, so sum the per-iteration values whenever the beta returns
+    # them; otherwise cost and token telemetry would be understated.
+    iterations = _value_from_response_object(usage, "iterations", []) or []
+    usage_rows = iterations or [usage]
+    input_tokens = sum(
+        _value_from_response_object(row, "input_tokens", 0) or 0 for row in usage_rows
+    )
+    output_tokens = sum(
+        _value_from_response_object(row, "output_tokens", 0) or 0 for row in usage_rows
+    )
+    cached_tokens = sum(
+        _value_from_response_object(row, "cache_read_input_tokens", 0) or 0
+        for row in usage_rows
+    )
+    cache_write_tokens = sum(
+        _value_from_response_object(row, "cache_creation_input_tokens", 0) or 0
+        for row in usage_rows
+    )
+    output_tokens_details = _value_from_response_object(
+        usage,
+        "output_tokens_details",
+    )
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": input_tokens + output_tokens,
-        "cached_tokens": (
-            _value_from_response_object(usage, "cache_read_input_tokens", 0) or 0
+        "reasoning_tokens": (
+            _value_from_response_object(
+                output_tokens_details,
+                "thinking_tokens",
+                0,
+            )
+            or 0
         ),
-        "cache_write_tokens": (
-            _value_from_response_object(usage, "cache_creation_input_tokens", 0) or 0
-        ),
+        "cached_tokens": cached_tokens,
+        "cache_write_tokens": cache_write_tokens,
     }
 
 
@@ -228,7 +254,9 @@ def _extract_responses_output_text(response: Any) -> str:
         for content_item in _value_from_response_object(item, "content", []) or []:
             if _value_from_response_object(content_item, "type") != "output_text":
                 continue
-            text_parts.append(_value_from_response_object(content_item, "text", "") or "")
+            text_parts.append(
+                _value_from_response_object(content_item, "text", "") or ""
+            )
 
     if not found_message_item:
         raise EmptyResponseError(
@@ -260,6 +288,22 @@ def _extract_anthropic_messages_output_text(response: Any) -> str:
         )
 
     return "".join(text_parts)
+
+
+def _extract_anthropic_messages_reasoning_text(response: Any) -> str | None:
+    """Return Anthropic's readable reasoning summaries, never ciphertext."""
+    content_blocks = _value_from_response_object(response, "content", []) or []
+    reasoning_parts: list[str] = []
+    for content_block in content_blocks:
+        if _value_from_response_object(content_block, "type") != "thinking":
+            continue
+        thinking = _value_from_response_object(content_block, "thinking", "") or ""
+        if thinking:
+            reasoning_parts.append(thinking)
+
+    if not reasoning_parts:
+        return None
+    return "\n".join(reasoning_parts)
 
 
 def _google_genai_part_text(part: Any) -> str:
@@ -314,9 +358,8 @@ def _extract_google_genai_reasoning_text(response: Any) -> str | None:
 def _extract_reasoning_text_fragment(item: Any) -> str | None:
     if isinstance(item, str):
         return item
-    return (
-        _value_from_response_object(item, "text")
-        or _value_from_response_object(item, "summary_text")
+    return _value_from_response_object(item, "text") or _value_from_response_object(
+        item, "summary_text"
     )
 
 
@@ -392,7 +435,7 @@ def normalize_google_genai_response(response: Any) -> ModelResponse:
 def normalize_anthropic_messages_response(response: Any) -> ModelResponse:
     return ModelResponse(
         output_text=_extract_anthropic_messages_output_text(response),
-        reasoning_text=None,
+        reasoning_text=_extract_anthropic_messages_reasoning_text(response),
         usage=NormalizedUsage(
             **_normalize_anthropic_messages_usage(
                 _value_from_response_object(response, "usage"),
@@ -406,7 +449,9 @@ def action_metadata_from_model_response(
     model_response: ModelResponse,
     pricing: dict[str, float],
 ) -> ActionMetadata:
-    input_cost = calculate_cost(model_response.usage.input_tokens, pricing.get("input", 0.0))
+    input_cost = calculate_cost(
+        model_response.usage.input_tokens, pricing.get("input", 0.0)
+    )
     output_cost = calculate_cost(
         model_response.usage.output_tokens, pricing.get("output", 0.0)
     )
