@@ -2,6 +2,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import textwrap
 import time
@@ -40,7 +41,10 @@ class BenchmarkingAgent(Agent):
     MODEL_CONFIG_ID: str = ""
     MAX_ACTIONS: int = 10  # Fallback only when baseline_actions are unavailable.
     MAX_ACTIONS_BASELINE_MULTIPLIER: float = 2.0
-    MAX_RETRIES: int = 3
+    MAX_RETRIES: int = 10
+    RETRY_INITIAL_DELAY_SECONDS: float = 0.5
+    RETRY_MAX_DELAY_SECONDS: float = 8.0
+    RETRY_JITTER_RATIO: float = 0.25
     MAX_CONTEXT_LENGTH: int = 100000
     MAX_ANIMATION_FRAMES: int = 7
     analysis_mode: bool = False
@@ -88,6 +92,15 @@ class BenchmarkingAgent(Agent):
             "MAX_ANIMATION_FRAMES", self.MAX_ANIMATION_FRAMES
         )
         self.MAX_RETRIES = agent_cfg.get("MAX_RETRIES", self.MAX_RETRIES)
+        self.RETRY_INITIAL_DELAY_SECONDS = agent_cfg.get(
+            "RETRY_INITIAL_DELAY_SECONDS", self.RETRY_INITIAL_DELAY_SECONDS
+        )
+        self.RETRY_MAX_DELAY_SECONDS = agent_cfg.get(
+            "RETRY_MAX_DELAY_SECONDS", self.RETRY_MAX_DELAY_SECONDS
+        )
+        self.RETRY_JITTER_RATIO = agent_cfg.get(
+            "RETRY_JITTER_RATIO", self.RETRY_JITTER_RATIO
+        )
         self.analysis_mode = agent_cfg.get("analysis_mode", self.analysis_mode)
 
         # Per-level action budgets from baseline_actions * multiplier.
@@ -643,6 +656,50 @@ class BenchmarkingAgent(Agent):
 
     # ── API calls & retries ────────────────────────────────────────────
 
+    def _remaining_runtime_seconds(self) -> float | None:
+        timer = getattr(self, "timer", 0.0)
+        if not timer:
+            return None
+        elapsed = max(0.0, time.time() - timer)
+        return max(0.0, self.MAX_RUNTIME_SECONDS - elapsed)
+
+    def _raise_retry_runtime_exhausted(self) -> None:
+        self._timed_out = True
+        self.exit_reason = ExitReason.TIME_BUDGET
+        raise TimeoutError(
+            "Model retry would exceed the remaining MAX_RUNTIME_SECONDS budget."
+        )
+
+    def _retry_delay_seconds(self, attempt: int) -> float:
+        exponential_delay = self.RETRY_INITIAL_DELAY_SECONDS * (2**attempt)
+        jitter = 1.0 - (self.RETRY_JITTER_RATIO * random.random())
+        return max(0.0, min(exponential_delay * jitter, self.RETRY_MAX_DELAY_SECONDS))
+
+    def _sleep_before_retry(self, attempt: int, failure_kind: str) -> None:
+        if attempt >= self.MAX_RETRIES:
+            return
+
+        delay = self._retry_delay_seconds(attempt)
+        remaining_runtime = self._remaining_runtime_seconds()
+        if remaining_runtime is not None and delay >= remaining_runtime:
+            logger.warning(
+                "Stopping retries after %s because the %.2fs backoff would "
+                "exceed the %.2fs remaining runtime budget.",
+                failure_kind,
+                delay,
+                remaining_runtime,
+            )
+            self._raise_retry_runtime_exhausted()
+
+        logger.info(
+            "Retrying after %s in %.2f seconds (next attempt %s/%s).",
+            failure_kind,
+            delay,
+            attempt + 2,
+            self.MAX_RETRIES + 1,
+        )
+        time.sleep(delay)
+
     def _request_with_retries(
         self, actions: list[GameAction]
     ) -> tuple[ModelResponse, GameAction, int, list[dict[str, Any]]]:
@@ -654,6 +711,10 @@ class BenchmarkingAgent(Agent):
         """
         accumulated_usage = NormalizedUsage()
         for attempt in range(self.MAX_RETRIES + 1):
+            remaining_runtime = self._remaining_runtime_seconds()
+            if remaining_runtime is not None and remaining_runtime <= 0:
+                self._raise_retry_runtime_exhausted()
+
             try:
                 # Server-managed state compacts on OpenAI's side; the docs say not
                 # to manually prune when chaining via previous_response_id.
@@ -664,16 +725,21 @@ class BenchmarkingAgent(Agent):
             except EmptyResponseError as e:
                 if e.response is not None:
                     self._save_diagnostic(e.response)
+                if isinstance(e.usage, NormalizedUsage):
+                    self.track_tokens(e.usage.total_tokens)
+                    accumulated_usage = accumulated_usage + e.usage
                 logger.warning(
                     f"Empty API response "
                     f"(attempt {attempt + 1}/{self.MAX_RETRIES + 1})."
                 )
+                self._sleep_before_retry(attempt, "empty API response")
                 continue
             except Exception as e:
                 logger.warning(
                     f"API error: {type(e).__name__}: {e} "
                     f"(attempt {attempt + 1}/{self.MAX_RETRIES + 1})."
                 )
+                self._sleep_before_retry(attempt, "API error")
                 continue
 
             self.track_tokens(model_response.usage.total_tokens)
@@ -696,6 +762,7 @@ class BenchmarkingAgent(Agent):
                 f"Could not parse action from response "
                 f"(attempt {attempt + 1}/{self.MAX_RETRIES + 1})."
             )
+            self._sleep_before_retry(attempt, "unparseable response")
 
         raise RuntimeError(
             f"Failed to get a valid action after {self.MAX_RETRIES + 1} attempts."

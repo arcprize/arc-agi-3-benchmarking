@@ -500,6 +500,9 @@ class TestRuntimeModels:
 
         assert str(exc_info.value) == "API returned 200 with empty output."
         assert exc_info.value.response is raw_response
+        assert exc_info.value.usage.input_tokens == 15
+        assert exc_info.value.usage.output_tokens == 7
+        assert exc_info.value.usage.total_tokens == 22
 
     def test_anthropic_messages_content_without_text_raises_empty_response_error(self):
         raw_response = _anthropic_response(
@@ -511,6 +514,9 @@ class TestRuntimeModels:
 
         assert str(exc_info.value) == "API returned 200 with empty output."
         assert exc_info.value.response is raw_response
+        assert exc_info.value.usage.input_tokens == 15
+        assert exc_info.value.usage.output_tokens == 7
+        assert exc_info.value.usage.total_tokens == 22
 
     def test_anthropic_messages_raw_response_is_preserved(self):
         raw_response = _anthropic_response()
@@ -569,7 +575,9 @@ class TestRuntimeModels:
 
     def test_google_genai_normalizer_raises_when_no_visible_text_parts(self):
         response = _google_genai_response(
-            parts=[_google_genai_part(text="hidden thought", thought=True)]
+            parts=[_google_genai_part(text="hidden thought", thought=True)],
+            candidates_token_count=0,
+            thoughts_token_count=7,
         )
 
         with pytest.raises(EmptyResponseError) as exc_info:
@@ -577,6 +585,9 @@ class TestRuntimeModels:
 
         assert str(exc_info.value) == "API returned 200 with empty output."
         assert exc_info.value.response is response
+        assert exc_info.value.usage.input_tokens == 11
+        assert exc_info.value.usage.output_tokens == 7
+        assert exc_info.value.usage.reasoning_tokens == 7
 
     def test_google_genai_normalizer_raises_when_no_candidates(self):
         response = SimpleNamespace(
@@ -590,8 +601,11 @@ class TestRuntimeModels:
             ),
         )
 
-        with pytest.raises(EmptyResponseError):
+        with pytest.raises(EmptyResponseError) as exc_info:
             normalize_google_genai_response(response)
+
+        assert exc_info.value.usage.input_tokens == 5
+        assert exc_info.value.usage.total_tokens == 5
 
     def test_google_genai_normalizer_maps_prompt_to_input_tokens(self):
         model_response = normalize_google_genai_response(

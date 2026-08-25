@@ -10,6 +10,7 @@ from benchmarking.action_metadata import (
 )
 from benchmarking.agent import BenchmarkingAgent
 from benchmarking.base import ExitReason
+from benchmarking.exceptions import EmptyResponseError
 from benchmarking.runtime_adapters import (
     OpenAIChatCompletionsAdapter,
     OpenAIResponsesAdapter,
@@ -65,6 +66,9 @@ def _agent_for_request_kwargs(request_kwargs: dict) -> BenchmarkingAgent:
     agent.MAX_CONTEXT_LENGTH = 1_000
     agent.ESTIMATED_CHARS_PER_TOKEN = 1.0
     agent.MAX_RETRIES = 2
+    agent.RETRY_INITIAL_DELAY_SECONDS = 0.0
+    agent.RETRY_MAX_DELAY_SECONDS = 0.0
+    agent.RETRY_JITTER_RATIO = 0.0
     agent.analysis_mode = False
     agent.token_counter = 0
     agent._server_state = False
@@ -485,6 +489,94 @@ class TestBenchmarkingAgentActionParsing:
 
 @pytest.mark.unit
 class TestBenchmarkingAgentRetries:
+    def test_default_retry_count_is_ten(self):
+        assert BenchmarkingAgent.MAX_RETRIES == 10
+
+    def test_retry_backoff_doubles_then_caps_and_skips_final_wait(
+        self, monkeypatch
+    ):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+        agent.MAX_RETRIES = 10
+        agent.RETRY_INITIAL_DELAY_SECONDS = 0.5
+        agent.RETRY_MAX_DELAY_SECONDS = 8.0
+        agent.RETRY_JITTER_RATIO = 0.25
+        sleeps = []
+        monkeypatch.setattr("benchmarking.agent.random.random", lambda: 0.0)
+        monkeypatch.setattr("benchmarking.agent.time.sleep", sleeps.append)
+
+        for attempt in range(agent.MAX_RETRIES + 1):
+            agent._sleep_before_retry(attempt, "empty API response")
+
+        assert sleeps == [0.5, 1.0, 2.0, 4.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0]
+
+    def test_empty_response_usage_is_included_after_success(self):
+        agent = _agent_for_request_kwargs({"model": "claude-opus-4-7"})
+        agent.conversation = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "frame"},
+        ]
+        diagnostics = []
+        agent._save_diagnostic = diagnostics.append
+        calls = 0
+        empty_response = object()
+
+        def fake_call_api(_request: ModelRequest) -> ModelResponse:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise EmptyResponseError(
+                    "empty",
+                    response=empty_response,
+                    usage=NormalizedUsage(
+                        input_tokens=15,
+                        output_tokens=7,
+                        total_tokens=22,
+                    ),
+                )
+            return ModelResponse(
+                output_text="RESET",
+                usage=NormalizedUsage(
+                    input_tokens=15,
+                    output_tokens=3,
+                    total_tokens=18,
+                ),
+            )
+
+        agent._call_api = fake_call_api
+
+        model_response, action, retries, _messages_sent = agent._request_with_retries(
+            [GameAction.RESET]
+        )
+
+        assert action == GameAction.RESET
+        assert retries == 1
+        assert diagnostics == [empty_response]
+        assert model_response.usage.input_tokens == 30
+        assert model_response.usage.output_tokens == 10
+        assert model_response.usage.total_tokens == 40
+        assert agent.token_counter == 40
+
+    def test_retry_backoff_stops_before_exceeding_runtime(self, monkeypatch):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+        agent.MAX_RETRIES = 10
+        agent.RETRY_INITIAL_DELAY_SECONDS = 0.5
+        agent.RETRY_MAX_DELAY_SECONDS = 8.0
+        agent.RETRY_JITTER_RATIO = 0.0
+        agent.MAX_RUNTIME_SECONDS = 5.0
+        agent.timer = 100.0
+        agent._timed_out = False
+        agent.exit_reason = ExitReason.UNKNOWN
+        sleeps = []
+        monkeypatch.setattr("benchmarking.agent.time.time", lambda: 104.75)
+        monkeypatch.setattr("benchmarking.agent.time.sleep", sleeps.append)
+
+        with pytest.raises(TimeoutError, match="remaining MAX_RUNTIME_SECONDS"):
+            agent._sleep_before_retry(0, "empty API response")
+
+        assert sleeps == []
+        assert agent._timed_out is True
+        assert agent.exit_reason is ExitReason.TIME_BUDGET
+
     def test_unparseable_assistant_response_retries_until_action_is_parsed(self):
         agent = _agent_for_request_kwargs(
             {"model": "gpt-5.4", "max_completion_tokens": 128}

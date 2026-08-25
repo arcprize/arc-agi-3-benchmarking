@@ -205,6 +205,20 @@ class _ResolveFailsAgent(_TestAgent):
         raise RuntimeError("model issue")
 
 
+class _RetryTimeoutAgent(_TestAgent):
+    """Agent whose model retry loop exhausts the run's time budget."""
+
+    MAX_ACTIONS = 5
+
+    def choose_action(
+        self,
+        frames: list[FrameData],
+        latest_frame: FrameData,
+    ) -> GameAction:
+        self._timed_out = True
+        raise TimeoutError("retry budget exhausted")
+
+
 @pytest.mark.unit
 class TestAgentExitReason:
     def test_main_sets_action_budget_when_max_actions_reached(self):
@@ -245,3 +259,16 @@ class TestAgentExitReason:
 
         # Failure happened while submitting the action to the ARC API.
         assert agent.exit_reason is ExitReason.API_ERROR
+
+    def test_main_preserves_time_budget_when_retry_wait_would_exceed_runtime(self):
+        arc_env = _FakeEnv(
+            observation_space=_frame(GameState.NOT_FINISHED),
+            step_frame=_frame(GameState.NOT_FINISHED),
+        )
+        agent = _RetryTimeoutAgent(arc_env)
+
+        with pytest.raises(TimeoutError, match="retry budget exhausted"):
+            agent.main()
+
+        assert agent.exit_reason is ExitReason.TIME_BUDGET
+        assert arc_env.actions == []

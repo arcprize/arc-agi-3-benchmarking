@@ -341,60 +341,84 @@ def _extract_responses_reasoning_text(response: Any) -> str | None:
 
 
 def normalize_chat_completion_response(response: Any) -> ModelResponse:
+    usage = NormalizedUsage(
+        **_normalize_chat_usage(getattr(response, "usage", None))
+    )
     if not getattr(response, "choices", None):
         raise EmptyResponseError(
             "API returned 200 with empty choices.",
             response=response,
+            usage=usage,
         )
 
     message = response.choices[0].message
-    usage = getattr(response, "usage", None)
 
     return ModelResponse(
         output_text=message.content or "",
         reasoning_text=getattr(message, "reasoning", None)
         or getattr(message, "reasoning_content", None),
-        usage=NormalizedUsage(**_normalize_chat_usage(usage)),
+        usage=usage,
         raw_response=response,
     )
 
 
 def normalize_responses_response(response: Any) -> ModelResponse:
+    usage = NormalizedUsage(
+        **_normalize_responses_usage(
+            _value_from_response_object(response, "usage"),
+        )
+    )
+    try:
+        output_text = _extract_responses_output_text(response)
+    except EmptyResponseError as error:
+        error.usage = usage
+        raise
+
     return ModelResponse(
-        output_text=_extract_responses_output_text(response),
+        output_text=output_text,
         reasoning_text=_extract_responses_reasoning_text(response),
-        usage=NormalizedUsage(
-            **_normalize_responses_usage(
-                _value_from_response_object(response, "usage"),
-            )
-        ),
+        usage=usage,
         raw_response=response,
         response_id=_value_from_response_object(response, "id"),
     )
 
 
 def normalize_google_genai_response(response: Any) -> ModelResponse:
+    usage = NormalizedUsage(
+        **_normalize_google_genai_usage(
+            _value_from_response_object(response, "usage_metadata"),
+        )
+    )
+    try:
+        output_text = _extract_google_genai_output_text(response)
+    except EmptyResponseError as error:
+        error.usage = usage
+        raise
+
     return ModelResponse(
-        output_text=_extract_google_genai_output_text(response),
+        output_text=output_text,
         reasoning_text=_extract_google_genai_reasoning_text(response),
-        usage=NormalizedUsage(
-            **_normalize_google_genai_usage(
-                _value_from_response_object(response, "usage_metadata"),
-            )
-        ),
+        usage=usage,
         raw_response=response,
     )
 
 
 def normalize_anthropic_messages_response(response: Any) -> ModelResponse:
+    usage = NormalizedUsage(
+        **_normalize_anthropic_messages_usage(
+            _value_from_response_object(response, "usage"),
+        )
+    )
+    try:
+        output_text = _extract_anthropic_messages_output_text(response)
+    except EmptyResponseError as error:
+        error.usage = usage
+        raise
+
     return ModelResponse(
-        output_text=_extract_anthropic_messages_output_text(response),
+        output_text=output_text,
         reasoning_text=None,
-        usage=NormalizedUsage(
-            **_normalize_anthropic_messages_usage(
-                _value_from_response_object(response, "usage"),
-            )
-        ),
+        usage=usage,
         raw_response=response,
     )
 

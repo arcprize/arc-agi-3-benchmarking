@@ -110,7 +110,12 @@ class Agent(ABC):
                 self.action_counter += 1
 
         except Exception:
-            self.exit_reason = ExitReason.API_ERROR if taking_action else ExitReason.AGENT_ERROR
+            if self._timed_out:
+                self.exit_reason = ExitReason.TIME_BUDGET
+            else:
+                self.exit_reason = (
+                    ExitReason.API_ERROR if taking_action else ExitReason.AGENT_ERROR
+                )
             raise
 
         if self.exit_reason == ExitReason.UNKNOWN and self.action_counter >= self.MAX_ACTIONS:

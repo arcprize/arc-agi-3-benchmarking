@@ -19,7 +19,10 @@ import requests
 
 from benchmarking import BenchmarkingAgent, Swarm
 from benchmarking.cli_list import print_requested_resource_lists
-from benchmarking.model_config import get_model_config, list_model_config_ids
+from benchmarking.model_config import (
+    get_model_config,
+    list_model_config_ids,  # noqa: F401
+)
 
 logger = logging.getLogger()
 
