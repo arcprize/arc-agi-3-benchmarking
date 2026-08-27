@@ -38,7 +38,12 @@ def _turn(state: RuntimeState, **overrides):
     values = {
         "system_prompt": "system",
         "new_messages": [Message(role="user", content="frame")],
-        "request_config": {"model": "model"},
+        "request_config": {
+            "model": "gpt-5.6-sol",
+            "store": False,
+            "include": ["reasoning.encrypted_content"],
+            "reasoning": {"context": "all_turns", "summary": "auto"},
+        },
         "previous_state": state,
     }
     values.update(overrides)
@@ -86,113 +91,40 @@ class TestRuntimeStateContract:
             )
 
     def test_strategy_rejects_malformed_provider_payload(self):
-        low_level = _FakeModelAdapter([_response()])
-        adapter = build_stateful_runtime_adapter(
-            model_adapter=low_level,
-            runtime_config={
-                "sdk": "openai-python",
-                "api": "chat_completions",
-                "state": "manual_rolling",
-            },
-            config_id="manual",
-        )
-        malformed = RuntimeState(
-            adapter_id=adapter.descriptor.adapter_id,
-            strategy="manual_rolling",
-            payload={"messages": "not-a-list"},
-        )
-
-        with pytest.raises(ValueError, match="payload.messages"):
-            adapter.invoke_turn(_turn(malformed))
-
-
-@pytest.mark.unit
-class TestCommonStateStrategies:
-    def test_manual_rolling_preserves_existing_request_shape(self):
-        low_level = _FakeModelAdapter([_response()])
-        adapter = build_stateful_runtime_adapter(
-            model_adapter=low_level,
-            runtime_config={
-                "sdk": "openai-python",
-                "api": "chat_completions",
-                "state": "manual_rolling",
-            },
-            config_id="legacy-chat",
-        )
-        state = adapter.buffer_inputs(
-            adapter.initial_state(),
-            [Message(role="user", content="earlier frame")],
-        )
-
-        result = adapter.invoke_turn(_turn(state))
-
-        assert [message.model_dump() for message in low_level.requests[0].messages] == [
-            {"role": "system", "content": "system"},
-            {"role": "user", "content": "earlier frame"},
-            {"role": "user", "content": "frame"},
-        ]
-        assert result.state.payload["messages"][-1] == {
-            "role": "assistant",
-            "content": "ACTION1",
-        }
-
-    def test_manual_rolling_uses_existing_oldest_turn_trimming(self):
-        low_level = _FakeModelAdapter([_response()])
-        adapter = build_stateful_runtime_adapter(
-            model_adapter=low_level,
-            runtime_config={
-                "sdk": "openai-python",
-                "api": "chat_completions",
-                "state": "manual_rolling",
-            },
-            config_id="legacy-chat",
-        )
-        state = RuntimeState(
-            adapter_id=adapter.descriptor.adapter_id,
-            strategy="manual_rolling",
-            payload={
-                "messages": [
-                    {"role": "user", "content": "old"},
-                    {"role": "assistant", "content": "ACTION1"},
-                ]
-            },
-        )
-
-        adapter.invoke_turn(_turn(state, max_context_length=5))
-
-        assert [message.content for message in low_level.requests[0].messages] == [
-            "system",
-            "frame",
-        ]
-
-    def test_previous_response_id_preserves_first_and_later_turn_shapes(self):
-        low_level = _FakeModelAdapter(
-            [_response(response_id="resp_1"), _response(response_id="resp_2")]
-        )
+        low_level = _FakeModelAdapter([])
         adapter = build_stateful_runtime_adapter(
             model_adapter=low_level,
             runtime_config={
                 "sdk": "openai-python",
                 "api": "responses",
-                "state": "previous_response_id",
+                "state": "continuous_conversation",
             },
-            config_id="server-state",
+            config_id="continuous",
+        )
+        malformed = RuntimeState(
+            adapter_id=adapter.descriptor.adapter_id,
+            strategy="continuous_conversation",
+            payload={"input_items": "not-a-list"},
         )
 
-        first = adapter.invoke_turn(_turn(adapter.initial_state()))
-        second = adapter.invoke_turn(_turn(first.state))
-
-        assert [m.role for m in low_level.requests[0].messages] == ["system", "user"]
-        assert [m.role for m in low_level.requests[1].messages] == ["user"]
-        assert low_level.requests[1].request_config["previous_response_id"] == "resp_1"
-        assert second.state.payload == {
-            "response_id": "resp_2",
-            "pending_inputs": [],
-        }
+        with pytest.raises(ValueError, match="payload.input_items"):
+            adapter.invoke_turn(_turn(malformed))
 
 
 @pytest.mark.unit
 class TestAdapterRegistryAndProvenance:
+    def test_stateful_turn_contract_rejects_existing_runtime_states(self):
+        with pytest.raises(ValueError, match="only 'continuous_conversation' is opt-in"):
+            build_stateful_runtime_adapter(
+                model_adapter=_FakeModelAdapter([]),
+                runtime_config={
+                    "sdk": "openai-python",
+                    "api": "chat_completions",
+                    "state": "manual_rolling",
+                },
+                config_id="legacy",
+            )
+
     def test_legacy_sdk_and_api_resolve_to_stable_adapter(self):
         assert resolve_adapter_id(
             {"sdk": "openai-python", "api": "responses"}, "legacy"

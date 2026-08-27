@@ -7,11 +7,7 @@ from typing import Any
 from .openai_runtime import OpenAIEncryptedReplayRuntimeAdapter
 from .runtime_state import (
     CONTINUOUS_CONVERSATION_RUNTIME_STATE,
-    DEFAULT_RUNTIME_STATE,
-    SERVER_RUNTIME_STATE,
     AdapterDescriptor,
-    ManualRollingRuntimeAdapter,
-    PreviousResponseIdRuntimeAdapter,
     StatefulRuntimeAdapter,
 )
 
@@ -94,15 +90,7 @@ def build_stateful_runtime_adapter(
 ) -> StatefulRuntimeAdapter:
     adapter_id = resolve_adapter_id(runtime_config, config_id)
     descriptor = ADAPTER_DESCRIPTORS[adapter_id]
-    strategy = runtime_config.get("state", DEFAULT_RUNTIME_STATE)
-    if strategy == DEFAULT_RUNTIME_STATE:
-        return ManualRollingRuntimeAdapter(
-            model_adapter=model_adapter, descriptor=descriptor
-        )
-    if strategy == SERVER_RUNTIME_STATE:
-        return PreviousResponseIdRuntimeAdapter(
-            model_adapter=model_adapter, descriptor=descriptor
-        )
+    strategy = runtime_config.get("state")
     if strategy == CONTINUOUS_CONVERSATION_RUNTIME_STATE:
         if adapter_id != OPENAI_RESPONSES_ADAPTER_ID:
             raise ValueError(
@@ -114,5 +102,7 @@ def build_stateful_runtime_adapter(
             model_adapter=model_adapter, descriptor=descriptor
         )
     raise ValueError(
-        f"Model config '{config_id}' uses unsupported runtime.state={strategy!r}."
+        f"Model config '{config_id}' cannot use the stateful turn contract with "
+        f"runtime.state={strategy!r}; only "
+        f"{CONTINUOUS_CONVERSATION_RUNTIME_STATE!r} is opt-in."
     )

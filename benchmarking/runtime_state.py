@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 from typing import Any, Protocol
 
 from pydantic import BaseModel, Field, model_validator
 
-from .runtime_models import Message, ModelRequest, ModelResponse
+from .runtime_models import Message, ModelResponse
 
 RUNTIME_STATE_SCHEMA_VERSION = 1
 DEFAULT_RUNTIME_STATE = "manual_rolling"
@@ -134,182 +133,6 @@ def runtime_payload_items(state: RuntimeState, key: str) -> list[dict[str, Any]]
     ):
         raise ValueError(f"Runtime state payload.{key} must be a list of mappings.")
     return list(value)
-
-
-def _assistant_content(request: ModelTurnRequest, response: ModelResponse) -> str:
-    if not request.include_reasoning_summary_in_transcript or not response.reasoning_text:
-        return response.output_text
-    return (
-        "<reasoning_summary>\n"
-        f"{response.reasoning_text}\n"
-        "</reasoning_summary>\n\n"
-        f"{response.output_text}\n"
-    )
-
-
-def _trim_messages(
-    messages: list[dict[str, Any]],
-    *,
-    max_context_length: int,
-    chars_per_token: float,
-) -> list[dict[str, Any]]:
-    """Apply the harness's existing oldest-turn token/window policy."""
-
-    trimmed = list(messages)
-    while math.ceil(
-        sum(len(str(item.get("content", ""))) for item in trimmed)
-        / chars_per_token
-    ) > max_context_length:
-        user_index = next(
-            (index for index, item in enumerate(trimmed) if item.get("role") == "user"),
-            None,
-        )
-        if user_index is None:
-            break
-        end = user_index + 1
-        if end < len(trimmed) and trimmed[end].get("role") == "assistant":
-            end += 1
-        if len(trimmed) - (end - user_index) < 1:
-            break
-        trimmed = trimmed[:user_index] + trimmed[end:]
-    return trimmed
-
-
-class ManualRollingRuntimeAdapter:
-    strategy = DEFAULT_RUNTIME_STATE
-    provides_continuous_conversation = False
-
-    def __init__(
-        self, *, model_adapter: Any, descriptor: AdapterDescriptor
-    ) -> None:
-        self._model_adapter = model_adapter
-        self.descriptor = descriptor
-
-    def initial_state(self) -> RuntimeState:
-        return RuntimeState(
-            adapter_id=self.descriptor.adapter_id,
-            strategy=self.strategy,
-            payload={"messages": []},
-        )
-
-    def buffer_inputs(
-        self, state: RuntimeState, messages: list[Message]
-    ) -> RuntimeState:
-        state.validate_for(
-            adapter_id=self.descriptor.adapter_id, strategy=self.strategy
-        )
-        history = runtime_payload_items(state, "messages")
-        history.extend(message.model_dump() for message in messages)
-        return replace_runtime_payload(state, {"messages": history})
-
-    def invoke_turn(self, request: ModelTurnRequest) -> ModelTurnResult:
-        request.previous_state.validate_for(
-            adapter_id=self.descriptor.adapter_id, strategy=self.strategy
-        )
-        history = runtime_payload_items(request.previous_state, "messages")
-        history.extend(message.model_dump() for message in request.new_messages)
-        history = _trim_messages(
-            history,
-            max_context_length=request.max_context_length,
-            chars_per_token=request.estimated_chars_per_token,
-        )
-        normalized_messages = [
-            Message(role="system", content=request.system_prompt),
-            *[Message.model_validate(item) for item in history],
-        ]
-        response = self._model_adapter.invoke(
-            ModelRequest(
-                messages=normalized_messages,
-                request_config=dict(request.request_config),
-            )
-        )
-        next_history = [
-            *history,
-            {
-                "role": "assistant",
-                "content": _assistant_content(request, response),
-            },
-        ]
-        next_state = replace_runtime_payload(
-            request.previous_state, {"messages": next_history}
-        )
-        sent = [message.model_dump() for message in normalized_messages]
-        return ModelTurnResult(
-            response=response,
-            state=next_state,
-            sanitized_request={"messages": sent},
-            transition=StateTransitionTelemetry(
-                strategy=self.strategy,
-                input_items_sent=len(sent),
-            ),
-        )
-
-
-class PreviousResponseIdRuntimeAdapter:
-    strategy = SERVER_RUNTIME_STATE
-    provides_continuous_conversation = False
-
-    def __init__(
-        self, *, model_adapter: Any, descriptor: AdapterDescriptor
-    ) -> None:
-        self._model_adapter = model_adapter
-        self.descriptor = descriptor
-
-    def initial_state(self) -> RuntimeState:
-        return RuntimeState(
-            adapter_id=self.descriptor.adapter_id,
-            strategy=self.strategy,
-            payload={"response_id": None, "pending_inputs": []},
-        )
-
-    def buffer_inputs(
-        self, state: RuntimeState, messages: list[Message]
-    ) -> RuntimeState:
-        state.validate_for(
-            adapter_id=self.descriptor.adapter_id, strategy=self.strategy
-        )
-        payload = dict(state.payload)
-        pending = runtime_payload_items(state, "pending_inputs")
-        pending.extend(message.model_dump() for message in messages)
-        payload["pending_inputs"] = pending
-        return replace_runtime_payload(state, payload)
-
-    def invoke_turn(self, request: ModelTurnRequest) -> ModelTurnResult:
-        request.previous_state.validate_for(
-            adapter_id=self.descriptor.adapter_id, strategy=self.strategy
-        )
-        payload = request.previous_state.payload
-        response_id = payload.get("response_id")
-        if response_id is not None and not isinstance(response_id, str):
-            raise ValueError("Runtime state payload.response_id must be a string or null.")
-        pending = runtime_payload_items(request.previous_state, "pending_inputs")
-        pending.extend(message.model_dump() for message in request.new_messages)
-        request_config = dict(request.request_config)
-        messages = [Message.model_validate(item) for item in pending]
-        if response_id is None:
-            messages.insert(0, Message(role="system", content=request.system_prompt))
-        else:
-            request_config["previous_response_id"] = response_id
-        response = self._model_adapter.invoke(
-            ModelRequest(messages=messages, request_config=request_config)
-        )
-        next_state = replace_runtime_payload(
-            request.previous_state,
-            {
-                "response_id": response.response_id,
-                "pending_inputs": [],
-            },
-        )
-        sent = [message.model_dump() for message in messages]
-        return ModelTurnResult(
-            response=response,
-            state=next_state,
-            sanitized_request={"messages": sent},
-            transition=StateTransitionTelemetry(
-                strategy=self.strategy,
-                input_items_sent=len(sent),
-            ),
-        )
 
 
 def sanitize_settings(value: Any) -> Any:

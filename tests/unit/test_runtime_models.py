@@ -349,6 +349,26 @@ class TestRuntimeModels:
             "**Answering a simple question**\n\nParis is the capital."
         )
 
+    def test_responses_normalizer_preserves_existing_summary_and_content_behavior(self):
+        raw_response = {
+            "output": [
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "summary"}],
+                    "content": [{"type": "reasoning_text", "text": "content"}],
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "ACTION1"}],
+                },
+            ]
+        }
+
+        model_response = normalize_responses_response(raw_response)
+
+        assert model_response.reasoning_text == "summary\ncontent"
+
     def test_responses_normalizer_maps_dict_usage_schema_and_cost_without_double_counting_reasoning_tokens(
         self,
     ):

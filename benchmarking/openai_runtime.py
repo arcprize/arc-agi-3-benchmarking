@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from .runtime_models import Message, ModelRequest, ModelResponse
+from .runtime_models import (
+    Message,
+    ModelRequest,
+    ModelResponse,
+    extract_responses_reasoning_summary,
+)
 from .runtime_state import (
     CONTINUOUS_CONVERSATION_RUNTIME_STATE,
     AdapterDescriptor,
@@ -145,6 +150,13 @@ class OpenAIEncryptedReplayRuntimeAdapter:
             native_input=input_items,
         )
         response = self._model_adapter.invoke(model_request)
+        response = response.model_copy(
+            update={
+                "reasoning_text": extract_responses_reasoning_summary(
+                    response.raw_response
+                )
+            }
+        )
         output_items = serialize_replay_output(response)
         all_items = [*input_items, *output_items]
         history_before = len(all_items)

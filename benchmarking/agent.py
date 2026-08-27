@@ -27,6 +27,7 @@ from .runtime_models import (
 )
 from .runtime_registry import build_stateful_runtime_adapter
 from .runtime_state import (
+    CONTINUOUS_CONVERSATION_RUNTIME_STATE,
     SERVER_RUNTIME_STATE,
     ModelTurnRequest,
     ModelTurnResult,
@@ -53,6 +54,7 @@ class BenchmarkingAgent(Agent):
     MAX_CONTEXT_LENGTH: int = 100000
     MAX_ANIMATION_FRAMES: int = 7
     analysis_mode: bool = False
+    _continuous_conversation: bool = False
     # Empirically, rendered ARC grid payloads are close to 1 char per token.
     # Using 1.0 is intentionally conservative relative to observed runs.
     ESTIMATED_CHARS_PER_TOKEN: float = 1.0
@@ -79,6 +81,9 @@ class BenchmarkingAgent(Agent):
         # recording-only mirror and client-side trimming is disabled.
         self._server_state: bool = (
             runtime_cfg.get("state") == SERVER_RUNTIME_STATE
+        )
+        self._continuous_conversation = (
+            runtime_cfg.get("state") == CONTINUOUS_CONVERSATION_RUNTIME_STATE
         )
         self._previous_response_id: str | None = None
         self._pending_user_messages: list[dict[str, Any]] = []
@@ -140,30 +145,26 @@ class BenchmarkingAgent(Agent):
             runtime_config=runtime_cfg,
             config_id=self.MODEL_CONFIG_ID,
         )
-        self._stateful_adapter = build_stateful_runtime_adapter(
-            model_adapter=self._adapter,
-            runtime_config=runtime_cfg,
-            config_id=self.MODEL_CONFIG_ID,
-        )
-        self._runtime_state = self._stateful_adapter.initial_state()
-        self._pending_turn_messages: list[Message] = []
         self._last_turn_result: ModelTurnResult | None = None
+        if self._continuous_conversation:
+            self._stateful_adapter = build_stateful_runtime_adapter(
+                model_adapter=self._adapter,
+                runtime_config=runtime_cfg,
+                config_id=self.MODEL_CONFIG_ID,
+            )
+            self._runtime_state = self._stateful_adapter.initial_state()
+            self._pending_turn_messages: list[Message] = []
         # Per-step recording
         self.step_counter: int = 0
         run_id = uuid.uuid4()
         self.run_dir = os.path.join("recordings", f"{self.name}.{run_id}")
         os.makedirs(self.run_dir, exist_ok=True)
-        commit_sha = harness_commit_sha()
-        repository = "https://github.com/arcprize/arc-agi-3-benchmarking"
-        descriptor = self._stateful_adapter.descriptor
-        self.run_record = RunRecord(
-            run_id=str(run_id),
-            game_id=self.game_id,
-            agent_name=self.name,
-            model=self.MODEL,
-            started_at=datetime.now(timezone.utc),
-            run_dir=self.run_dir,
-            runtime={
+        runtime_metadata = None
+        if self._continuous_conversation:
+            commit_sha = harness_commit_sha()
+            repository = "https://github.com/arcprize/arc-agi-3-benchmarking"
+            descriptor = self._stateful_adapter.descriptor
+            runtime_metadata = {
                 "adapter_id": descriptor.adapter_id,
                 "state_strategy": self._runtime_state.strategy,
                 "config_id": self.MODEL_CONFIG_ID,
@@ -180,7 +181,15 @@ class BenchmarkingAgent(Agent):
                     implementation_path=descriptor.implementation_path,
                     commit_sha=commit_sha,
                 ),
-            },
+            }
+        self.run_record = RunRecord(
+            run_id=str(run_id),
+            game_id=self.game_id,
+            agent_name=self.name,
+            model=self.MODEL,
+            started_at=datetime.now(timezone.utc),
+            run_dir=self.run_dir,
+            runtime=runtime_metadata,
         )
         self._write_run_meta()
 
@@ -439,7 +448,8 @@ class BenchmarkingAgent(Agent):
     def _write_run_meta(self) -> None:
         path = os.path.join(self.run_dir, "run_meta.json")
         with open(path, "w") as f:
-            f.write(self.run_record.model_dump_json(indent=2))
+            exclude = {"runtime"} if self.run_record.runtime is None else None
+            f.write(self.run_record.model_dump_json(indent=2, exclude=exclude))
 
     def _save_diagnostic(self, response: Any) -> None:
         """Dump a raw API response to a diagnostic file for post-mortem debugging."""
@@ -448,22 +458,34 @@ class BenchmarkingAgent(Agent):
             f"diagnostic_step_{self.step_counter + 1}_{int(time.time())}.json",
         )
         try:
-            raw = (
-                response.model_dump()
-                if hasattr(response, "model_dump")
-                else dict(response)
-                if isinstance(response, dict)
-                else {"response_type": type(response).__name__}
-            )
-            raw = sanitize_settings(raw)
+            if self._continuous_conversation:
+                raw = (
+                    response.model_dump()
+                    if hasattr(response, "model_dump")
+                    else dict(response)
+                    if isinstance(response, dict)
+                    else {"response_type": type(response).__name__}
+                )
+                raw = sanitize_settings(raw)
+            else:
+                raw = (
+                    response.model_dump()
+                    if hasattr(response, "model_dump")
+                    else repr(response)
+                )
             with open(filename, "w") as f:
                 json.dump(raw, f, indent=2, default=str)
         except Exception as exc:
             with open(filename, "w") as f:
-                f.write(
-                    "Failed to serialize redacted diagnostic response: "
-                    f"{type(exc).__name__}"
-                )
+                if self._continuous_conversation:
+                    f.write(
+                        "Failed to serialize redacted diagnostic response: "
+                        f"{type(exc).__name__}"
+                    )
+                else:
+                    f.write(
+                        f"Failed to serialize response: {exc}\nrepr: {repr(response)}"
+                    )
         logger.warning(f"Saved diagnostic response to {filename}")
 
     def _save_step(self, step: StepRecord) -> None:
@@ -472,7 +494,12 @@ class BenchmarkingAgent(Agent):
         self.run_record.total_steps = self.step_counter
         filename = os.path.join(self.run_dir, f"step_{self.step_counter:03d}.json")
         with open(filename, "w") as f:
-            f.write(step.model_dump_json(indent=2))
+            exclude = {
+                field
+                for field in ("request_record", "state_transition")
+                if getattr(step, field) is None
+            }
+            f.write(step.model_dump_json(indent=2, exclude=exclude))
         self._write_run_meta()
         logger.info(f"Saved step {self.step_counter} to {filename}")
 
@@ -602,10 +629,15 @@ class BenchmarkingAgent(Agent):
         self._level_action_counter += 1
 
         # Ensure the system prompt is present before the first real turn
-        if not self.conversation or self.conversation[0].get("role") != "system":
-            self.conversation.insert(
-                0,
+        if not self.conversation:
+            self.conversation.append(
                 {"role": "system", "content": self._build_system_prompt()}
+            )
+        elif self._continuous_conversation and self.conversation[0].get(
+            "role"
+        ) != "system":
+            self.conversation.insert(
+                0, {"role": "system", "content": self._build_system_prompt()}
             )
 
         # Normal turn: append frame, call the model, parse action

@@ -16,9 +16,14 @@ harness accepts a provisional state only after it parses a valid action. A retry
 therefore starts from the same last accepted state and cannot add an orphaned
 reasoning item or response ID to later turns.
 
+The new turn contract is opt-in. Only `continuous_conversation` enters this
+path. Existing `manual_rolling` configurations continue to use the original
+agent-owned transcript and trimming code, and `previous_response_id` continues
+to use its original request builder and response-handle fields.
+
 ## State contract
 
-`RuntimeState` is a JSON-serializable envelope with:
+For continuous conversation, `RuntimeState` is a JSON-serializable envelope with:
 
 - `schema_version`: the common state schema version
 - `adapter_id`: the stable local implementation identifier

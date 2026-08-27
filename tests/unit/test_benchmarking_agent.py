@@ -21,6 +21,7 @@ from benchmarking.runtime_models import (
     NormalizedUsage,
 )
 from benchmarking.runtime_registry import build_stateful_runtime_adapter
+from benchmarking.runtime_state import RuntimeState
 
 
 class _FakeAdapter:
@@ -169,9 +170,18 @@ def _responses_response(text: str = "RESET") -> SimpleNamespace:
 
 @pytest.mark.unit
 class TestBenchmarkingAgentRuntimeClient:
-    def test_init_routes_client_construction_through_runtime_client_factory(
+    @pytest.mark.parametrize(
+        ("runtime_state", "runtime_api"),
+        [
+            ("manual_rolling", "chat_completions"),
+            ("previous_response_id", "responses"),
+        ],
+    )
+    def test_existing_states_keep_legacy_runtime_path(
         self,
         monkeypatch,
+        runtime_state,
+        runtime_api,
     ):
         fake_client = object()
         fake_adapter = object()
@@ -183,8 +193,8 @@ class TestBenchmarkingAgentRuntimeClient:
                 "agent": {"MAX_CONTEXT_LENGTH": 175_000},
                 "runtime": {
                     "sdk": "openai-python",
-                    "api": "chat_completions",
-                    "state": "manual_rolling",
+                    "api": runtime_api,
+                    "state": runtime_state,
                 },
                 "client": {
                     "base_url": "https://api.openai.com/v1",
@@ -225,6 +235,12 @@ class TestBenchmarkingAgentRuntimeClient:
             "benchmarking.agent.build_model_runtime_adapter",
             fake_build_adapter,
         )
+        monkeypatch.setattr(
+            "benchmarking.agent.build_stateful_runtime_adapter",
+            lambda **_kwargs: pytest.fail(
+                "existing runtime states must not build the new stateful adapter"
+            ),
+        )
         monkeypatch.setattr(BenchmarkingAgent, "_write_run_meta", lambda _self: None)
 
         agent = BenchmarkingAgent(
@@ -242,8 +258,8 @@ class TestBenchmarkingAgentRuntimeClient:
         assert calls["config_id"] == "fake-openai-config"
         assert calls["client_runtime_config"] == {
             "sdk": "openai-python",
-            "api": "chat_completions",
-            "state": "manual_rolling",
+            "api": runtime_api,
+            "state": runtime_state,
         }
         assert calls["client_config"] == {
             "base_url": "https://api.openai.com/v1",
@@ -253,12 +269,82 @@ class TestBenchmarkingAgentRuntimeClient:
         assert calls["adapter_client"] is fake_client
         assert calls["adapter_runtime_config"] == calls["client_runtime_config"]
         assert calls["adapter_config_id"] == "fake-openai-config"
+        assert not hasattr(agent, "_stateful_adapter")
+        assert agent.run_record.runtime is None
+
+    def test_continuous_conversation_opts_into_stateful_runtime_path(
+        self, monkeypatch
+    ):
+        runtime = {
+            "adapter_id": "openai.responses.v1",
+            "sdk": "openai-python",
+            "api": "responses",
+            "state": "continuous_conversation",
+        }
+        descriptor = SimpleNamespace(
+            adapter_id="openai.responses.v1",
+            provider="openai",
+            api_surface="responses",
+            implementation_path="benchmarking/openai_runtime.py",
+            version="1",
+            approval_status="provider_reference",
+        )
+        stateful_adapter = SimpleNamespace(
+            descriptor=descriptor,
+            initial_state=lambda: RuntimeState(
+                adapter_id="openai.responses.v1",
+                strategy="continuous_conversation",
+                payload={"input_items": []},
+            ),
+        )
+        calls = []
+        monkeypatch.setattr(
+            "benchmarking.agent.get_model_config",
+            lambda _config_id: {
+                "agent": {},
+                "runtime": runtime,
+                "client": {"api_key_env": "OPENAI_API_KEY"},
+                "request": {
+                    "model": "gpt-5.6-sol",
+                    "store": False,
+                    "include": ["reasoning.encrypted_content"],
+                },
+                "pricing": {},
+            },
+        )
+        monkeypatch.setattr(
+            "benchmarking.agent.build_model_runtime_client", lambda **_kwargs: object()
+        )
+        monkeypatch.setattr(
+            "benchmarking.agent.build_model_runtime_adapter", lambda **_kwargs: object()
+        )
+
+        def fake_build_stateful(**kwargs):
+            calls.append(kwargs)
+            return stateful_adapter
+
+        monkeypatch.setattr(
+            "benchmarking.agent.build_stateful_runtime_adapter",
+            fake_build_stateful,
+        )
+        monkeypatch.setattr(BenchmarkingAgent, "_write_run_meta", lambda _self: None)
+
+        agent = BenchmarkingAgent(
+            card_id="card-id",
+            game_id="game-id",
+            agent_name="agent-name",
+            ROOT_URL="https://arcprize.org",
+            record=False,
+            arc_env=SimpleNamespace(info=SimpleNamespace(baseline_actions=[])),
+            config="continuous-config",
+        )
+
+        assert agent._stateful_adapter is stateful_adapter
+        assert len(calls) == 1
+        assert calls[0]["runtime_config"] == runtime
         assert agent.run_record.runtime is not None
-        assert agent.run_record.runtime["adapter_id"] == "openai.chat_completions.v1"
-        assert agent.run_record.runtime["state_strategy"] == "manual_rolling"
-        assert agent.run_record.runtime["config_id"] == "fake-openai-config"
-        assert agent.run_record.runtime["implementation_path"] == (
-            "benchmarking/runtime_adapters.py"
+        assert agent.run_record.runtime["state_strategy"] == (
+            "continuous_conversation"
         )
 
 
@@ -1200,6 +1286,7 @@ class TestBenchmarkingAgentEncryptedReplayState:
                 "type": "reasoning",
                 "id": "rs_accepted",
                 "encrypted_content": "accepted-secret",
+                "summary": [{"text": "accepted summary"}],
             },
             {"type": "message", "id": "msg_accepted"},
         ]
