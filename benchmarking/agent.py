@@ -53,7 +53,6 @@ class BenchmarkingAgent(Agent):
     MAX_CONTEXT_LENGTH: int = 100000
     MAX_ANIMATION_FRAMES: int = 7
     analysis_mode: bool = False
-    include_carry_forward_instruction: bool = True
     # Empirically, rendered ARC grid payloads are close to 1 char per token.
     # Using 1.0 is intentionally conservative relative to observed runs.
     ESTIMATED_CHARS_PER_TOKEN: float = 1.0
@@ -99,10 +98,6 @@ class BenchmarkingAgent(Agent):
         )
         self.MAX_RETRIES = agent_cfg.get("MAX_RETRIES", self.MAX_RETRIES)
         self.analysis_mode = agent_cfg.get("analysis_mode", self.analysis_mode)
-        self.include_carry_forward_instruction = agent_cfg.get(
-            "include_carry_forward_instruction",
-            self.include_carry_forward_instruction,
-        )
 
         # Per-level action budgets from baseline_actions * multiplier.
         # MAX_ACTIONS becomes the derived total budget across all levels.
@@ -230,15 +225,19 @@ class BenchmarkingAgent(Agent):
     # ── Prompts ──────────────────────────────────────────────────────────
 
     def _build_system_prompt(self) -> str:
+        if getattr(
+            getattr(self, "_stateful_adapter", None),
+            "preserves_encrypted_reasoning",
+            False,
+        ):
+            return textwrap.dedent("""\
+                You are playing a game. Your goal is to win. The final action mentioned in your reply will be executed next turn.
+            """)
         if self.analysis_mode:
             return textwrap.dedent("""\
                 You are playing a game. Your goal is to win. Include any context you want to carry forward in your reply, along with the action you want to take. The final action mentioned in your reply will be executed next turn.
 
                 Prior assistant turns may include a <reasoning_summary> block before the prior action text. Treat those summaries as compact helper context about the earlier decision process, then continue by choosing the next action normally.
-            """)
-        if not self.include_carry_forward_instruction:
-            return textwrap.dedent("""\
-                You are playing a game. Your goal is to win. The final action mentioned in your reply will be executed next turn.
             """)
         return textwrap.dedent("""\
             You are playing a game. Your goal is to win. Include any context you want to carry forward in your reply, along with the action you want to take. The final action mentioned in your reply will be executed next turn.

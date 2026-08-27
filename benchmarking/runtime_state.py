@@ -106,6 +106,7 @@ class AdapterDescriptor(BaseModel):
 class StatefulRuntimeAdapter(Protocol):
     descriptor: AdapterDescriptor
     strategy: str
+    preserves_encrypted_reasoning: bool
 
     def initial_state(self) -> RuntimeState: ...
 
@@ -176,6 +177,7 @@ def _trim_messages(
 
 class ManualRollingRuntimeAdapter:
     strategy = DEFAULT_RUNTIME_STATE
+    preserves_encrypted_reasoning = False
 
     def __init__(
         self, *, model_adapter: Any, descriptor: AdapterDescriptor
@@ -245,6 +247,7 @@ class ManualRollingRuntimeAdapter:
 
 class PreviousResponseIdRuntimeAdapter:
     strategy = SERVER_RUNTIME_STATE
+    preserves_encrypted_reasoning = False
 
     def __init__(
         self, *, model_adapter: Any, descriptor: AdapterDescriptor

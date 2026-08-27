@@ -728,7 +728,6 @@ class TestModelConfig:
             "api": "responses",
             "state": "encrypted_replay",
         }
-        assert config["agent"]["include_carry_forward_instruction"] is False
         assert config["request"]["model"] == "gpt-5.6-sol"
         assert config["request"]["store"] is False
         assert config["request"]["include"] == ["reasoning.encrypted_content"]

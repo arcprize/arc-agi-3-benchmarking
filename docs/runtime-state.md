@@ -60,10 +60,11 @@ Encrypted replay configurations must:
 - set `reasoning.context: all_turns` and `reasoning.summary: auto`
 - avoid `previous_response_id`, conversations, and background mode
 
-The checked-in profiles cover low, medium, high, xhigh, and max reasoning. They
-disable the manual carry-forward instruction because native reasoning state is
-preserved across turns. Existing configurations remain unchanged on
-`manual_rolling`.
+The checked-in profiles cover low, medium, high, xhigh, and max reasoning. The
+harness automatically removes the manual carry-forward instruction when the
+selected adapter preserves encrypted reasoning. This is not a configurable
+model setting. Existing `manual_rolling` configurations keep the instruction
+because their visible replies are the state carried across turns.
 
 This flow is ZDR-compatible, but it does not enable Zero Data Retention for an
 organization. OpenAI must separately approve and configure ZDR for the

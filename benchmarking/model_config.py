@@ -171,12 +171,6 @@ def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> 
             raise ValueError(
                 f"Model config '{config_id}' agent.analysis_mode must be a boolean."
             )
-    if isinstance(agent, dict) and "include_carry_forward_instruction" in agent:
-        if not isinstance(agent["include_carry_forward_instruction"], bool):
-            raise ValueError(
-                f"Model config '{config_id}' "
-                "agent.include_carry_forward_instruction must be a boolean."
-            )
     if isinstance(agent, dict) and "MAX_RUNTIME_SECONDS" in agent:
         max_runtime = agent["MAX_RUNTIME_SECONDS"]
         if (

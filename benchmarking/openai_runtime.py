@@ -106,6 +106,7 @@ def validate_encrypted_replay_request(request_config: dict[str, Any]) -> None:
 
 class OpenAIEncryptedReplayRuntimeAdapter:
     strategy = ENCRYPTED_REPLAY_RUNTIME_STATE
+    preserves_encrypted_reasoning = True
 
     def __init__(self, *, model_adapter: Any, descriptor: AdapterDescriptor) -> None:
         self._model_adapter = model_adapter
