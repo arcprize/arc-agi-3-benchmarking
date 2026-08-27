@@ -207,3 +207,67 @@
   pricing:
     input: 2.00
     output: 12.00
+
+- &openai_sol_encrypted_replay
+  id: "openai-gpt-5-6-sol-responses-encrypted-replay-xhigh"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
+    MAX_CONTEXT_LENGTH: 175_000
+    include_carry_forward_instruction: false
+  runtime:
+    adapter_id: "openai.responses.v1"
+    sdk: "openai-python"
+    api: "responses"
+    state: "encrypted_replay"
+  client:
+    base_url: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+  request: &openai_sol_encrypted_replay_request
+    model: "gpt-5.6-sol"
+    max_output_tokens: 128_000
+    store: false
+    include: ["reasoning.encrypted_content"]
+    context_management:
+      - type: "compaction"
+        compact_threshold: 175_000
+    reasoning:
+      effort: "xhigh"
+      context: "all_turns"
+      summary: "auto"
+  pricing: {}
+
+- <<: *openai_sol_encrypted_replay
+  id: "openai-gpt-5-6-sol-responses-encrypted-replay-low"
+  request:
+    <<: *openai_sol_encrypted_replay_request
+    reasoning:
+      effort: "low"
+      context: "all_turns"
+      summary: "auto"
+
+- <<: *openai_sol_encrypted_replay
+  id: "openai-gpt-5-6-sol-responses-encrypted-replay-medium"
+  request:
+    <<: *openai_sol_encrypted_replay_request
+    reasoning:
+      effort: "medium"
+      context: "all_turns"
+      summary: "auto"
+
+- <<: *openai_sol_encrypted_replay
+  id: "openai-gpt-5-6-sol-responses-encrypted-replay-high"
+  request:
+    <<: *openai_sol_encrypted_replay_request
+    reasoning:
+      effort: "high"
+      context: "all_turns"
+      summary: "auto"
+
+- <<: *openai_sol_encrypted_replay
+  id: "openai-gpt-5-6-sol-responses-encrypted-replay-max"
+  request:
+    <<: *openai_sol_encrypted_replay_request
+    reasoning:
+      effort: "max"
+      context: "all_turns"
+      summary: "auto"

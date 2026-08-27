@@ -12,14 +12,15 @@ from .runtime_models import (
     normalize_google_genai_response,
     normalize_responses_response,
 )
+from .runtime_state import (
+    DEFAULT_RUNTIME_STATE,
+    ENCRYPTED_REPLAY_RUNTIME_STATE,
+    SERVER_RUNTIME_STATE,
+    SUPPORTED_RUNTIME_STATES,
+)
 
-DEFAULT_RUNTIME_STATE = "manual_rolling"
-SERVER_RUNTIME_STATE = "previous_response_id"
 # Backwards-compatible alias for the default (client-managed) state.
 SUPPORTED_RUNTIME_STATE = DEFAULT_RUNTIME_STATE
-SUPPORTED_RUNTIME_STATES = frozenset(
-    {DEFAULT_RUNTIME_STATE, SERVER_RUNTIME_STATE}
-)
 # Server-managed state is only available on the OpenAI Responses runtime.
 SERVER_STATE_RUNTIME_KEYS = frozenset({("openai-python", "responses")})
 
@@ -53,10 +54,18 @@ class OpenAIResponsesAdapter:
         messages = [message.model_dump() for message in request.messages]
         if request.messages and request.messages[0].role == "system":
             request_kwargs["instructions"] = request.messages[0].content
-            request_kwargs["input"] = messages[1:]
+            request_kwargs["input"] = (
+                list(request.native_input)
+                if request.native_input is not None
+                else messages[1:]
+            )
             return request_kwargs
 
-        request_kwargs["input"] = messages
+        request_kwargs["input"] = (
+            list(request.native_input)
+            if request.native_input is not None
+            else messages
+        )
         return request_kwargs
 
     def invoke(self, request: ModelRequest) -> ModelResponse:
@@ -306,6 +315,16 @@ def build_model_runtime_adapter(
                 f"(sdk='openai-python', api='responses')."
             )
         return OpenAIResponsesServerStateAdapter(client)
+
+    if runtime_state == ENCRYPTED_REPLAY_RUNTIME_STATE:
+        if runtime_key not in SERVER_STATE_RUNTIME_KEYS:
+            raise ValueError(
+                f"Model config '{config_id}' uses runtime.state="
+                f"{ENCRYPTED_REPLAY_RUNTIME_STATE!r}, which is only supported "
+                f"on the OpenAI Responses runtime "
+                f"(sdk='openai-python', api='responses')."
+            )
+        return OpenAIResponsesAdapter(client)
 
     if runtime_key == ("openai-python", "chat_completions"):
         return OpenAIChatCompletionsAdapter(client)

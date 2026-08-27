@@ -20,6 +20,7 @@ from benchmarking.runtime_models import (
     ModelResponse,
     NormalizedUsage,
 )
+from benchmarking.runtime_registry import build_stateful_runtime_adapter
 
 
 class _FakeAdapter:
@@ -252,6 +253,13 @@ class TestBenchmarkingAgentRuntimeClient:
         assert calls["adapter_client"] is fake_client
         assert calls["adapter_runtime_config"] == calls["client_runtime_config"]
         assert calls["adapter_config_id"] == "fake-openai-config"
+        assert agent.run_record.runtime is not None
+        assert agent.run_record.runtime["adapter_id"] == "openai.chat_completions.v1"
+        assert agent.run_record.runtime["state_strategy"] == "manual_rolling"
+        assert agent.run_record.runtime["config_id"] == "fake-openai-config"
+        assert agent.run_record.runtime["implementation_path"] == (
+            "benchmarking/runtime_adapters.py"
+        )
 
 
 @pytest.mark.unit
@@ -1160,6 +1168,82 @@ class TestBenchmarkingAgentServerState:
         action = agent.choose_action([], _playable_frame())
 
         assert action == GameAction.ACTION1
+
+
+@pytest.mark.unit
+class TestBenchmarkingAgentEncryptedReplayState:
+    def test_retries_commit_only_state_that_produced_a_valid_action(self):
+        orphan_output = [
+            {
+                "type": "reasoning",
+                "id": "rs_orphan",
+                "encrypted_content": "orphan-secret",
+            },
+            {"type": "message", "id": "msg_orphan"},
+        ]
+        accepted_output = [
+            {
+                "type": "reasoning",
+                "id": "rs_accepted",
+                "encrypted_content": "accepted-secret",
+            },
+            {"type": "message", "id": "msg_accepted"},
+        ]
+        agent = _agent_for_choose_action(
+            analysis_mode=False,
+            responses=[
+                ModelResponse(
+                    output_text="not an action",
+                    reasoning_text="orphan summary",
+                    usage=NormalizedUsage(total_tokens=5),
+                    raw_response={"output": orphan_output},
+                ),
+                ModelResponse(
+                    output_text="ACTION1",
+                    reasoning_text="accepted summary",
+                    usage=NormalizedUsage(total_tokens=7),
+                    raw_response={"output": accepted_output},
+                ),
+            ],
+        )
+        runtime = {
+            "adapter_id": "openai.responses.v1",
+            "sdk": "openai-python",
+            "api": "responses",
+            "state": "encrypted_replay",
+        }
+        agent._stateful_adapter = build_stateful_runtime_adapter(
+            model_adapter=agent._adapter,
+            runtime_config=runtime,
+            config_id="encrypted-test",
+        )
+        agent._runtime_state = agent._stateful_adapter.initial_state()
+        agent._pending_turn_messages = []
+        agent._last_turn_result = None
+        agent._request_kwargs = {
+            "model": "gpt-5.6-sol",
+            "store": False,
+            "include": ["reasoning.encrypted_content"],
+            "reasoning": {"context": "all_turns", "summary": "auto"},
+        }
+
+        action = agent.choose_action([], _playable_frame())
+
+        assert action == GameAction.ACTION1
+        assert (
+            agent._adapter.requests[0].native_input
+            == agent._adapter.requests[1].native_input
+        )
+        state_json = agent._runtime_state.model_dump_json()
+        assert "accepted-secret" in state_json
+        assert "orphan-secret" not in state_json
+        step_json = agent._saved_steps[0].model_dump_json()
+        assert "accepted-secret" not in step_json
+        assert "orphan-secret" not in step_json
+        assert agent._pending_action_reasoning["reasoning_summary"] == (
+            "accepted summary"
+        )
+        assert "reasoning" not in agent._pending_action_reasoning
 
 
 def _agent_with_env(step_frame: FrameData) -> BenchmarkingAgent:

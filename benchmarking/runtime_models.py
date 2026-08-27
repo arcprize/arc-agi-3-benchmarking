@@ -23,6 +23,9 @@ class Message(BaseModel):
 class ModelRequest(BaseModel):
     messages: list[Message]
     request_config: dict[str, Any]
+    # Provider-native input items used by state strategies that cannot be
+    # represented as a normalized role/content transcript.
+    native_input: list[dict[str, Any]] | None = None
 
 
 class NormalizedUsage(BaseModel):
@@ -327,11 +330,6 @@ def _extract_responses_reasoning_text(response: Any) -> str | None:
 
         for summary_item in _value_from_response_object(item, "summary", []) or []:
             fragment = _extract_reasoning_text_fragment(summary_item)
-            if fragment:
-                reasoning_parts.append(fragment)
-
-        for content_item in _value_from_response_object(item, "content", []) or []:
-            fragment = _extract_reasoning_text_fragment(content_item)
             if fragment:
                 reasoning_parts.append(fragment)
 
