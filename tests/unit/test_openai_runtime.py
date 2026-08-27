@@ -157,6 +157,8 @@ class TestOpenAIContinuousConversation:
 
         assert "encrypted-1" not in persisted_shape
         assert '"encrypted_content":' not in persisted_shape
+        assert "strategy" not in result.transition.model_dump()
+        assert "strategy" not in result.action_state
         assert result.transition.sanitized_items == [
             {"type": "message", "role": "user"}
         ]

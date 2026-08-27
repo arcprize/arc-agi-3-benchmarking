@@ -7,7 +7,7 @@ from typing import Any
 
 # ARC rejects reasoning payloads above 16,384 bytes. Keep a 384-byte margin.
 MAX_ACTION_METADATA_BYTES = 16_000
-TEXT_FIELDS = ("output", "reasoning", "reasoning_summary")
+TEXT_FIELDS = ("output", "reasoning")
 TRUNCATION_MARKER = "\n\n... truncated {removed_chars} characters ...\n\n"
 
 

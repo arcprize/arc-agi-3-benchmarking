@@ -74,7 +74,6 @@ class ModelTurnRequest(BaseModel):
 
 
 class StateTransitionTelemetry(BaseModel):
-    strategy: str
     input_items_sent: int = 0
     compaction_items_returned: int = 0
     history_items_before_prune: int | None = None
@@ -89,7 +88,6 @@ class ModelTurnResult(BaseModel):
     state: RuntimeState
     sanitized_request: dict[str, Any]
     transition: StateTransitionTelemetry
-    reasoning_record_field: str = "reasoning"
     action_state: dict[str, Any] | None = None
 
 

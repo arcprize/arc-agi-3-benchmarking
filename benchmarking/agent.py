@@ -715,14 +715,11 @@ class BenchmarkingAgent(Agent):
             pricing=self._pricing,
         )
         action_metadata = metadata.model_dump()
-        if self._last_turn_result is not None:
-            reasoning_field = self._last_turn_result.reasoning_record_field
-            if reasoning_field != "reasoning":
-                action_metadata[reasoning_field] = action_metadata.pop(
-                    "reasoning", None
-                )
-            if self._last_turn_result.action_state is not None:
-                action_metadata["state"] = self._last_turn_result.action_state
+        if (
+            self._last_turn_result is not None
+            and self._last_turn_result.action_state is not None
+        ):
+            action_metadata["state"] = self._last_turn_result.action_state
         self._pending_action_reasoning = fit_action_metadata_payload(action_metadata)
         total_cost = metadata.cost.total_cost
         input_cost = metadata.cost.input_cost

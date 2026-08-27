@@ -189,16 +189,13 @@ class OpenAIContinuousConversationRuntimeAdapter:
                 "settings": sanitize_settings(request.request_config),
             },
             transition=StateTransitionTelemetry(
-                strategy=self.strategy,
                 input_items_sent=len(input_items),
                 compaction_items_returned=compaction_count,
                 history_items_before_prune=history_before,
                 history_items_after_prune=len(next_items),
                 sanitized_items=descriptors,
             ),
-            reasoning_record_field="reasoning_summary",
             action_state={
-                "strategy": self.strategy,
                 "input_items_sent": len(input_items),
                 "compaction_items_returned": compaction_count,
                 "history_items_before_prune": history_before,

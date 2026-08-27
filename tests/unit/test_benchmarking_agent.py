@@ -1341,10 +1341,8 @@ class TestBenchmarkingAgentContinuousConversationState:
         step_json = agent._saved_steps[0].model_dump_json()
         assert "accepted-secret" not in step_json
         assert "orphan-secret" not in step_json
-        assert agent._pending_action_reasoning["reasoning_summary"] == (
-            "accepted summary"
-        )
-        assert "reasoning" not in agent._pending_action_reasoning
+        assert agent._pending_action_reasoning["reasoning"] == "accepted summary"
+        assert "reasoning_summary" not in agent._pending_action_reasoning
 
 
 def _agent_with_env(step_frame: FrameData) -> BenchmarkingAgent:
