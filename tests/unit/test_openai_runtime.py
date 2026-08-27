@@ -78,7 +78,7 @@ def _turn(adapter, state, content="frame"):
             "model": "gpt-5.6-sol",
             "store": False,
             "include": ["reasoning.encrypted_content"],
-            "reasoning": {"context": "all_turns", "summary": "auto"},
+            "reasoning": {"context": "auto", "summary": "auto"},
         },
         previous_state=state,
     )
@@ -177,8 +177,8 @@ class TestOpenAIContinuousConversation:
             {"previous_response_id": "resp"},
             {"conversation": "conv"},
             {"include": []},
-            {"reasoning": {"context": "auto", "summary": "auto"}},
-            {"reasoning": {"context": "all_turns", "summary": "detailed"}},
+            {"reasoning": {"context": "all_turns", "summary": "auto"}},
+            {"reasoning": {"context": "auto", "summary": "detailed"}},
         ],
     )
     def test_rejects_invalid_request_at_provider_boundary(self, request_update):

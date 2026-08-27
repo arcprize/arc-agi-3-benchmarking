@@ -1325,7 +1325,7 @@ class TestBenchmarkingAgentContinuousConversationState:
             "model": "gpt-5.6-sol",
             "store": False,
             "include": ["reasoning.encrypted_content"],
-            "reasoning": {"context": "all_turns", "summary": "auto"},
+            "reasoning": {"context": "auto", "summary": "auto"},
         }
 
         action = agent.choose_action([], _playable_frame())

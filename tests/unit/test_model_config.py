@@ -309,11 +309,11 @@ class TestModelConfig:
             ({"conversation": "conv"}, "incompatible request field"),
             ({"include": []}, "reasoning.encrypted_content"),
             (
-                {"reasoning": {"context": "auto", "summary": "auto"}},
-                "context='all_turns'",
+                {"reasoning": {"context": "all_turns", "summary": "auto"}},
+                "context='auto'",
             ),
             (
-                {"reasoning": {"context": "all_turns", "summary": "detailed"}},
+                {"reasoning": {"context": "auto", "summary": "detailed"}},
                 "summary='auto'",
             ),
         ],
@@ -325,7 +325,7 @@ class TestModelConfig:
             "model": "gpt-5.6-sol",
             "store": False,
             "include": ["reasoning.encrypted_content"],
-            "reasoning": {"context": "all_turns", "summary": "auto"},
+            "reasoning": {"context": "auto", "summary": "auto"},
         }
         request.update(request_override)
         config = _valid_config(
@@ -735,7 +735,7 @@ class TestModelConfig:
         assert config["request"]["include"] == ["reasoning.encrypted_content"]
         assert config["request"]["reasoning"] == {
             "effort": effort,
-            "context": "all_turns",
+            "context": "auto",
             "summary": "auto",
         }
         assert config["request"]["context_management"] == [

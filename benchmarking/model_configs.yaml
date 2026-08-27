@@ -231,7 +231,7 @@
         compact_threshold: 175_000
     reasoning:
       effort: "xhigh"
-      context: "all_turns"
+      context: "auto"
       summary: "auto"
   pricing: {}
 
@@ -241,7 +241,7 @@
     <<: *openai_sol_continuous_conversation_request
     reasoning:
       effort: "low"
-      context: "all_turns"
+      context: "auto"
       summary: "auto"
 
 - <<: *openai_sol_continuous_conversation
@@ -250,7 +250,7 @@
     <<: *openai_sol_continuous_conversation_request
     reasoning:
       effort: "medium"
-      context: "all_turns"
+      context: "auto"
       summary: "auto"
 
 - <<: *openai_sol_continuous_conversation
@@ -259,7 +259,7 @@
     <<: *openai_sol_continuous_conversation_request
     reasoning:
       effort: "high"
-      context: "all_turns"
+      context: "auto"
       summary: "auto"
 
 - <<: *openai_sol_continuous_conversation
@@ -268,5 +268,5 @@
     <<: *openai_sol_continuous_conversation_request
     reasoning:
       effort: "max"
-      context: "all_turns"
+      context: "auto"
       summary: "auto"

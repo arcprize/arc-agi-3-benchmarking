@@ -112,9 +112,9 @@ def validate_continuous_conversation_request(
     reasoning = request_config.get("reasoning")
     if not isinstance(reasoning, dict):
         raise ValueError("OpenAI continuous conversation requires reasoning settings.")
-    if reasoning.get("context") != "all_turns":
+    if reasoning.get("context") != "auto":
         raise ValueError(
-            "OpenAI continuous conversation requires reasoning.context=all_turns."
+            "OpenAI continuous conversation requires reasoning.context=auto."
         )
     if reasoning.get("summary") != "auto":
         raise ValueError(

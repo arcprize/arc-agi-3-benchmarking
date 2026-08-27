@@ -119,10 +119,10 @@ def _validate_continuous_conversation_config(
             f"Model config '{config_id}' uses continuous_conversation and must configure "
             "request.reasoning."
         )
-    if reasoning.get("context") != "all_turns":
+    if reasoning.get("context") != "auto":
         raise ValueError(
             f"Model config '{config_id}' uses continuous_conversation and must set "
-            "request.reasoning.context='all_turns'."
+            "request.reasoning.context='auto'."
         )
     if reasoning.get("summary") != "auto":
         raise ValueError(
