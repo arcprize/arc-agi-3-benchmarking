@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .openai_runtime import OpenAIEncryptedReplayRuntimeAdapter
+from .openai_runtime import OpenAIContinuousConversationRuntimeAdapter
 from .runtime_state import (
     CONTINUOUS_CONVERSATION_RUNTIME_STATE,
     AdapterDescriptor,
@@ -98,7 +98,7 @@ def build_stateful_runtime_adapter(
                 f"adapter_id={adapter_id!r}; only {OPENAI_RESPONSES_ADAPTER_ID!r} "
                 "supports it."
             )
-        return OpenAIEncryptedReplayRuntimeAdapter(
+        return OpenAIContinuousConversationRuntimeAdapter(
             model_adapter=model_adapter, descriptor=descriptor
         )
     raise ValueError(

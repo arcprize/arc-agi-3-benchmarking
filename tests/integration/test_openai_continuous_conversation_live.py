@@ -1,4 +1,4 @@
-"""Opt-in paid tests for OpenAI encrypted replay and compaction."""
+"""Opt-in paid tests for OpenAI continuous conversation and compaction."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from benchmarking.runtime_registry import build_stateful_runtime_adapter
 from benchmarking.runtime_state import ModelTurnRequest
 
 CONFIG_ID = "openai-gpt-5-6-sol-responses-continuous-conversation-low"
-MEMORY_TOKEN = "ARC-ENCRYPTED-REPLAY-7Q"
+MEMORY_TOKEN = "ARC-CONTINUOUS-CONVERSATION-7Q"
 
 
 def _require_paid_test(environment_variable: str) -> None:
@@ -67,7 +67,7 @@ def _turn(adapter, state, request_config, content):
 
 @pytest.mark.integration
 @pytest.mark.slow
-def test_openai_encrypted_replay_two_turn_live() -> None:
+def test_openai_continuous_conversation_two_turn_live() -> None:
     _require_paid_test("RUN_OPENAI_LIVE_TESTS")
     adapter, request_config = _build_live_adapter()
 
@@ -96,7 +96,7 @@ def test_openai_encrypted_replay_two_turn_live() -> None:
 
 @pytest.mark.integration
 @pytest.mark.slow
-def test_openai_encrypted_replay_compaction_end_to_end_live() -> None:
+def test_openai_continuous_conversation_compaction_end_to_end_live() -> None:
     _require_paid_test("RUN_OPENAI_COMPACTION_LIVE_TESTS")
     adapter, request_config = _build_live_adapter(compact_threshold=5_000)
     state = adapter.initial_state()

@@ -572,7 +572,7 @@ class TestOpenAIResponsesAdapter:
         assert "previous_response_id" not in client.responses.calls[0]
         assert "conversation" not in client.responses.calls[0]
 
-    def test_sends_provider_native_input_for_encrypted_replay(self):
+    def test_sends_provider_native_input_for_continuous_conversation(self):
         client = _FakeResponsesOpenAIClient(_responses_output())
         adapter = OpenAIResponsesAdapter(client)
         native_input = [

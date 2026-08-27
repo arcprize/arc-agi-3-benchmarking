@@ -45,9 +45,10 @@ server response handle and any inputs waiting for the next API turn.
 
 `continuous_conversation` carries provider-native conversation and reasoning
 state from one accepted turn to the next. It is currently implemented only by
-`openai.responses.v1`. The OpenAI adapter uses encrypted replay through the
-Responses API with `store: false`, requests `reasoning.encrypted_content`, and
-replays each accepted user input plus every native `response.output` item.
+`openai.responses.v1`. The OpenAI adapter implements continuous conversation
+through the Responses API with `store: false`. It requests
+`reasoning.encrypted_content` and sends each accepted user input plus every
+native `response.output` item into the following turn.
 Replaying only serialized reasoning is not enough: message, tool, and other
 native output items can also be part of the model's state.
 

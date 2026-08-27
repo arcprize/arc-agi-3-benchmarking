@@ -1,4 +1,4 @@
-"""OpenAI-specific encrypted Responses replay state strategy."""
+"""OpenAI-specific continuous-conversation state strategy."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def _response_output(response: ModelResponse) -> list[Any]:
     return list(getattr(raw_response, "output", []) or [])
 
 
-def serialize_replay_output(response: ModelResponse) -> list[dict[str, Any]]:
+def serialize_response_output_items(response: ModelResponse) -> list[dict[str, Any]]:
     """Serialize every native output item, dropping only rejected SDK fields."""
 
     serialized: list[dict[str, Any]] = []
@@ -43,10 +43,14 @@ def serialize_replay_output(response: ModelResponse) -> list[dict[str, Any]]:
             value = dict(vars(item))
         else:
             raise TypeError(
-                "Encrypted replay output items must be mappings or support model_dump()."
+                "OpenAI continuous conversation output items must be mappings or "
+                "support model_dump()."
             )
         if not isinstance(value, dict):
-            raise TypeError("Encrypted replay output items must serialize to mappings.")
+            raise TypeError(
+                "OpenAI continuous conversation output items must serialize to "
+                "mappings."
+            )
         if value.get("type") == "reasoning":
             value.pop("status", None)
         elif value.get("type") == "compaction":
@@ -54,7 +58,8 @@ def serialize_replay_output(response: ModelResponse) -> list[dict[str, Any]]:
         serialized.append(value)
     if not serialized:
         raise RuntimeError(
-            "Encrypted replay response did not contain replayable output items."
+            "OpenAI continuous conversation response did not contain reusable "
+            "output items."
         )
     return serialized
 
@@ -78,13 +83,17 @@ def sanitized_item_descriptor(item: dict[str, Any]) -> dict[str, Any]:
     return descriptor
 
 
-def validate_encrypted_replay_request(request_config: dict[str, Any]) -> None:
-    """Enforce stateless replay invariants at the provider boundary."""
+def validate_continuous_conversation_request(
+    request_config: dict[str, Any],
+) -> None:
+    """Enforce continuous-conversation invariants at the provider boundary."""
 
     if request_config.get("store") is not False:
-        raise ValueError("OpenAI encrypted replay requires store=false.")
+        raise ValueError("OpenAI continuous conversation requires store=false.")
     if request_config.get("background") is True:
-        raise ValueError("OpenAI encrypted replay does not support background mode.")
+        raise ValueError(
+            "OpenAI continuous conversation does not support background mode."
+        )
     incompatible = sorted(
         field
         for field in ("conversation", "previous_response_id")
@@ -92,24 +101,28 @@ def validate_encrypted_replay_request(request_config: dict[str, Any]) -> None:
     )
     if incompatible:
         raise ValueError(
-            "OpenAI encrypted replay does not support request field(s): "
+            "OpenAI continuous conversation does not support request field(s): "
             f"{', '.join(incompatible)}."
         )
     include = request_config.get("include")
     if not isinstance(include, list) or "reasoning.encrypted_content" not in include:
         raise ValueError(
-            "OpenAI encrypted replay must include reasoning.encrypted_content."
+            "OpenAI continuous conversation must include reasoning.encrypted_content."
         )
     reasoning = request_config.get("reasoning")
     if not isinstance(reasoning, dict):
-        raise ValueError("OpenAI encrypted replay requires reasoning settings.")
+        raise ValueError("OpenAI continuous conversation requires reasoning settings.")
     if reasoning.get("context") != "all_turns":
-        raise ValueError("OpenAI encrypted replay requires reasoning.context=all_turns.")
+        raise ValueError(
+            "OpenAI continuous conversation requires reasoning.context=all_turns."
+        )
     if reasoning.get("summary") != "auto":
-        raise ValueError("OpenAI encrypted replay requires reasoning.summary=auto.")
+        raise ValueError(
+            "OpenAI continuous conversation requires reasoning.summary=auto."
+        )
 
 
-class OpenAIEncryptedReplayRuntimeAdapter:
+class OpenAIContinuousConversationRuntimeAdapter:
     strategy = CONTINUOUS_CONVERSATION_RUNTIME_STATE
     provides_continuous_conversation = True
 
@@ -138,7 +151,7 @@ class OpenAIEncryptedReplayRuntimeAdapter:
         request.previous_state.validate_for(
             adapter_id=self.descriptor.adapter_id, strategy=self.strategy
         )
-        validate_encrypted_replay_request(request.request_config)
+        validate_continuous_conversation_request(request.request_config)
         input_items = runtime_payload_items(request.previous_state, "input_items")
         input_items.extend(message.model_dump() for message in request.new_messages)
         model_request = ModelRequest(
@@ -157,7 +170,7 @@ class OpenAIEncryptedReplayRuntimeAdapter:
                 )
             }
         )
-        output_items = serialize_replay_output(response)
+        output_items = serialize_response_output_items(response)
         all_items = [*input_items, *output_items]
         history_before = len(all_items)
         next_items = prune_after_latest_compaction(all_items)

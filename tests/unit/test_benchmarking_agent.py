@@ -1271,7 +1271,7 @@ class TestBenchmarkingAgentServerState:
 
 
 @pytest.mark.unit
-class TestBenchmarkingAgentEncryptedReplayState:
+class TestBenchmarkingAgentContinuousConversationState:
     def test_retries_commit_only_state_that_produced_a_valid_action(self):
         orphan_output = [
             {

@@ -4,9 +4,9 @@ from types import SimpleNamespace
 import pytest
 
 from benchmarking.openai_runtime import (
-    OpenAIEncryptedReplayRuntimeAdapter,
+    OpenAIContinuousConversationRuntimeAdapter,
     prune_after_latest_compaction,
-    serialize_replay_output,
+    serialize_response_output_items,
 )
 from benchmarking.runtime_models import Message, ModelResponse, NormalizedUsage
 from benchmarking.runtime_registry import ADAPTER_DESCRIPTORS
@@ -63,7 +63,7 @@ def _response(turn: int, *, output=None):
 
 def _adapter(responses):
     low_level = _FakeModelAdapter(responses)
-    adapter = OpenAIEncryptedReplayRuntimeAdapter(
+    adapter = OpenAIContinuousConversationRuntimeAdapter(
         model_adapter=low_level,
         descriptor=ADAPTER_DESCRIPTORS["openai.responses.v1"],
     )
@@ -85,7 +85,7 @@ def _turn(adapter, state, content="frame"):
 
 
 @pytest.mark.unit
-class TestOpenAIEncryptedReplay:
+class TestOpenAIContinuousConversation:
     def test_first_and_later_turns_preserve_all_native_output_items(self):
         adapter, low_level = _adapter([_response(1), _response(2)])
 
@@ -164,7 +164,7 @@ class TestOpenAIEncryptedReplay:
     def test_malformed_empty_output_fails_closed(self):
         adapter, _ = _adapter([_response(1, output=[])])
 
-        with pytest.raises(RuntimeError, match="replayable output items"):
+        with pytest.raises(RuntimeError, match="reusable output items"):
             adapter.invoke_turn(_turn(adapter, adapter.initial_state()))
 
     @pytest.mark.parametrize(
@@ -184,14 +184,14 @@ class TestOpenAIEncryptedReplay:
         request = _turn(adapter, adapter.initial_state())
         request.request_config.update(request_update)
 
-        with pytest.raises(ValueError, match="OpenAI encrypted replay"):
+        with pytest.raises(ValueError, match="OpenAI continuous conversation"):
             adapter.invoke_turn(request)
 
         assert low_level.requests == []
 
 
 @pytest.mark.unit
-class TestOpenAIReplaySerialization:
+class TestOpenAIResponseOutputSerialization:
     def test_sdk_response_only_fields_are_removed_without_dropping_nulls(self):
         class _SDKItem:
             def __init__(self, value):
@@ -227,7 +227,7 @@ class TestOpenAIReplaySerialization:
             ),
         )
 
-        assert serialize_replay_output(response) == [
+        assert serialize_response_output_items(response) == [
             {
                 "type": "reasoning",
                 "id": "rs",
