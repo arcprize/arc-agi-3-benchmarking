@@ -318,7 +318,7 @@ class TestModelConfig:
             ),
         ],
     )
-    def test_encrypted_replay_rejects_non_zdr_or_incomplete_settings(
+    def test_continuous_conversation_rejects_non_zdr_or_incomplete_settings(
         self, tmp_path, monkeypatch, request_override, message
     ):
         request = {
@@ -335,7 +335,7 @@ class TestModelConfig:
                 "adapter_id": "openai.responses.v1",
                 "sdk": "openai-python",
                 "api": "responses",
-                "state": "encrypted_replay",
+                "state": "continuous_conversation",
             },
             request=request,
         )
@@ -717,16 +717,18 @@ class TestModelConfig:
         }
 
     @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
-    def test_checked_in_encrypted_replay_profiles_are_zdr_compatible(self, effort):
+    def test_checked_in_continuous_conversation_profiles_are_zdr_compatible(
+        self, effort
+    ):
         config = model_config.get_model_config(
-            f"openai-gpt-5-6-sol-responses-encrypted-replay-{effort}"
+            f"openai-gpt-5-6-sol-responses-continuous-conversation-{effort}"
         )
 
         assert config["runtime"] == {
             "adapter_id": "openai.responses.v1",
             "sdk": "openai-python",
             "api": "responses",
-            "state": "encrypted_replay",
+            "state": "continuous_conversation",
         }
         assert config["request"]["model"] == "gpt-5.6-sol"
         assert config["request"]["store"] is False

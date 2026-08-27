@@ -276,7 +276,7 @@ class TestBenchmarkingAgentModelRequests:
     def test_encrypted_reasoning_uses_prompt_without_carry_forward_guidance(self):
         agent = _agent_for_request_kwargs({"model": "gpt-5.6-sol"})
         agent._stateful_adapter = SimpleNamespace(
-            preserves_encrypted_reasoning=True
+            provides_continuous_conversation=True
         )
 
         system_prompt = agent._build_system_prompt()
@@ -1224,7 +1224,7 @@ class TestBenchmarkingAgentEncryptedReplayState:
             "adapter_id": "openai.responses.v1",
             "sdk": "openai-python",
             "api": "responses",
-            "state": "encrypted_replay",
+            "state": "continuous_conversation",
         }
         agent._stateful_adapter = build_stateful_runtime_adapter(
             model_adapter=agent._adapter,

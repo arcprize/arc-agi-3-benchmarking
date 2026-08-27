@@ -22,7 +22,7 @@ reasoning item or response ID to later turns.
 
 - `schema_version`: the common state schema version
 - `adapter_id`: the stable local implementation identifier
-- `strategy`: `manual_rolling`, `previous_response_id`, or `encrypted_replay`
+- `strategy`: `manual_rolling`, `previous_response_id`, or `continuous_conversation`
 - `payload`: state owned and validated by the selected adapter
 
 The harness validates schema versions, adapter IDs, strategies, and JSON
@@ -36,14 +36,15 @@ existing estimated-token limit by removing the oldest complete turns. It is not
 defined as "the last 10 messages". `previous_response_id` stores the latest
 server response handle and any inputs waiting for the next API turn.
 
-## OpenAI encrypted replay
+## Continuous conversation
 
-`encrypted_replay` is currently implemented only by
-`openai.responses.v1`. It uses the OpenAI Responses API with `store: false`,
-requests `reasoning.encrypted_content`, and replays each accepted user input
-plus every native `response.output` item. Replaying only serialized reasoning
-is not enough: message, tool, and other native output items can also be part of
-the model's state.
+`continuous_conversation` carries provider-native conversation and reasoning
+state from one accepted turn to the next. It is currently implemented only by
+`openai.responses.v1`. The OpenAI adapter uses encrypted replay through the
+Responses API with `store: false`, requests `reasoning.encrypted_content`, and
+replays each accepted user input plus every native `response.output` item.
+Replaying only serialized reasoning is not enough: message, tool, and other
+native output items can also be part of the model's state.
 
 The adapter removes only two SDK response fields that the input schema rejects:
 `status` from reasoning items and `created_by` from compaction items. When a
@@ -52,7 +53,7 @@ everything after it. Compaction remains a separate request setting under
 `request.context_management`; the supplied GPT-5.6 Sol profiles use a 175k
 threshold.
 
-Encrypted replay configurations must:
+The OpenAI continuous-conversation configuration must:
 
 - use the OpenAI Responses API and `runtime.adapter_id: openai.responses.v1`
 - set `request.store: false`
@@ -62,7 +63,7 @@ Encrypted replay configurations must:
 
 The checked-in profiles cover low, medium, high, xhigh, and max reasoning. The
 harness automatically removes the manual carry-forward instruction when the
-selected adapter preserves encrypted reasoning. This is not a configurable
+selected adapter provides continuous conversation. This is not a configurable
 model setting. Existing `manual_rolling` configurations keep the instruction
 because their visible replies are the state carried across turns.
 

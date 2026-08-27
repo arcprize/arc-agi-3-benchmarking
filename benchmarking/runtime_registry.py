@@ -6,8 +6,8 @@ from typing import Any
 
 from .openai_runtime import OpenAIEncryptedReplayRuntimeAdapter
 from .runtime_state import (
+    CONTINUOUS_CONVERSATION_RUNTIME_STATE,
     DEFAULT_RUNTIME_STATE,
-    ENCRYPTED_REPLAY_RUNTIME_STATE,
     SERVER_RUNTIME_STATE,
     AdapterDescriptor,
     ManualRollingRuntimeAdapter,
@@ -103,10 +103,10 @@ def build_stateful_runtime_adapter(
         return PreviousResponseIdRuntimeAdapter(
             model_adapter=model_adapter, descriptor=descriptor
         )
-    if strategy == ENCRYPTED_REPLAY_RUNTIME_STATE:
+    if strategy == CONTINUOUS_CONVERSATION_RUNTIME_STATE:
         if adapter_id != OPENAI_RESPONSES_ADAPTER_ID:
             raise ValueError(
-                f"Model config '{config_id}' uses encrypted_replay with "
+                f"Model config '{config_id}' uses continuous_conversation with "
                 f"adapter_id={adapter_id!r}; only {OPENAI_RESPONSES_ADAPTER_ID!r} "
                 "supports it."
             )

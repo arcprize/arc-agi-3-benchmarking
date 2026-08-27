@@ -14,12 +14,12 @@ from .runtime_models import Message, ModelRequest, ModelResponse
 RUNTIME_STATE_SCHEMA_VERSION = 1
 DEFAULT_RUNTIME_STATE = "manual_rolling"
 SERVER_RUNTIME_STATE = "previous_response_id"
-ENCRYPTED_REPLAY_RUNTIME_STATE = "encrypted_replay"
+CONTINUOUS_CONVERSATION_RUNTIME_STATE = "continuous_conversation"
 SUPPORTED_RUNTIME_STATES = frozenset(
     {
         DEFAULT_RUNTIME_STATE,
         SERVER_RUNTIME_STATE,
-        ENCRYPTED_REPLAY_RUNTIME_STATE,
+        CONTINUOUS_CONVERSATION_RUNTIME_STATE,
     }
 )
 
@@ -106,7 +106,7 @@ class AdapterDescriptor(BaseModel):
 class StatefulRuntimeAdapter(Protocol):
     descriptor: AdapterDescriptor
     strategy: str
-    preserves_encrypted_reasoning: bool
+    provides_continuous_conversation: bool
 
     def initial_state(self) -> RuntimeState: ...
 
@@ -177,7 +177,7 @@ def _trim_messages(
 
 class ManualRollingRuntimeAdapter:
     strategy = DEFAULT_RUNTIME_STATE
-    preserves_encrypted_reasoning = False
+    provides_continuous_conversation = False
 
     def __init__(
         self, *, model_adapter: Any, descriptor: AdapterDescriptor
@@ -247,7 +247,7 @@ class ManualRollingRuntimeAdapter:
 
 class PreviousResponseIdRuntimeAdapter:
     strategy = SERVER_RUNTIME_STATE
-    preserves_encrypted_reasoning = False
+    provides_continuous_conversation = False
 
     def __init__(
         self, *, model_adapter: Any, descriptor: AdapterDescriptor

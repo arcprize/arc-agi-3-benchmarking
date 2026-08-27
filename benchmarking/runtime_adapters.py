@@ -13,8 +13,8 @@ from .runtime_models import (
     normalize_responses_response,
 )
 from .runtime_state import (
+    CONTINUOUS_CONVERSATION_RUNTIME_STATE,
     DEFAULT_RUNTIME_STATE,
-    ENCRYPTED_REPLAY_RUNTIME_STATE,
     SERVER_RUNTIME_STATE,
     SUPPORTED_RUNTIME_STATES,
 )
@@ -316,11 +316,11 @@ def build_model_runtime_adapter(
             )
         return OpenAIResponsesServerStateAdapter(client)
 
-    if runtime_state == ENCRYPTED_REPLAY_RUNTIME_STATE:
+    if runtime_state == CONTINUOUS_CONVERSATION_RUNTIME_STATE:
         if runtime_key not in SERVER_STATE_RUNTIME_KEYS:
             raise ValueError(
                 f"Model config '{config_id}' uses runtime.state="
-                f"{ENCRYPTED_REPLAY_RUNTIME_STATE!r}, which is only supported "
+                f"{CONTINUOUS_CONVERSATION_RUNTIME_STATE!r}, which is only supported "
                 f"on the OpenAI Responses runtime "
                 f"(sdk='openai-python', api='responses')."
             )

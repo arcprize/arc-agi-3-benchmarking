@@ -50,7 +50,7 @@ class TestRuntimeStateContract:
     def test_json_round_trip(self):
         state = RuntimeState(
             adapter_id="openai.responses.v1",
-            strategy="encrypted_replay",
+            strategy="continuous_conversation",
             payload={"input_items": [{"type": "reasoning", "id": "rs_1"}]},
         )
 
@@ -63,14 +63,14 @@ class TestRuntimeStateContract:
             RuntimeState(
                 schema_version=2,
                 adapter_id="openai.responses.v1",
-                strategy="encrypted_replay",
+                strategy="continuous_conversation",
             )
 
     def test_rejects_malformed_non_json_payload(self):
         with pytest.raises(ValidationError, match="JSON-serializable"):
             RuntimeState(
                 adapter_id="openai.responses.v1",
-                strategy="encrypted_replay",
+                strategy="continuous_conversation",
                 payload={"bad": {object()}},
             )
 

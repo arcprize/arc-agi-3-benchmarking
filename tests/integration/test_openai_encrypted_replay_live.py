@@ -15,7 +15,7 @@ from benchmarking.runtime_models import Message
 from benchmarking.runtime_registry import build_stateful_runtime_adapter
 from benchmarking.runtime_state import ModelTurnRequest
 
-CONFIG_ID = "openai-gpt-5-6-sol-responses-encrypted-replay-low"
+CONFIG_ID = "openai-gpt-5-6-sol-responses-continuous-conversation-low"
 MEMORY_TOKEN = "ARC-ENCRYPTED-REPLAY-7Q"
 
 

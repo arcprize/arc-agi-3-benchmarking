@@ -6,8 +6,9 @@ To run the tests, you will need to have `pytest` installed. Run the tests like t
 pytest
 ```
 
-Paid OpenAI encrypted replay tests are skipped by default. Run them explicitly
-with a real ZDR-enabled OpenAI key:
+Paid OpenAI continuous-conversation tests are skipped by default. The OpenAI
+implementation uses encrypted replay. Run them explicitly with a real
+ZDR-enabled OpenAI key:
 
 ```bash
 RUN_OPENAI_LIVE_TESTS=1 uv run pytest -q \

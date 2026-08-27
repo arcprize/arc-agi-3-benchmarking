@@ -6,7 +6,7 @@ from typing import Any
 
 from .runtime_models import Message, ModelRequest, ModelResponse
 from .runtime_state import (
-    ENCRYPTED_REPLAY_RUNTIME_STATE,
+    CONTINUOUS_CONVERSATION_RUNTIME_STATE,
     AdapterDescriptor,
     ModelTurnRequest,
     ModelTurnResult,
@@ -105,8 +105,8 @@ def validate_encrypted_replay_request(request_config: dict[str, Any]) -> None:
 
 
 class OpenAIEncryptedReplayRuntimeAdapter:
-    strategy = ENCRYPTED_REPLAY_RUNTIME_STATE
-    preserves_encrypted_reasoning = True
+    strategy = CONTINUOUS_CONVERSATION_RUNTIME_STATE
+    provides_continuous_conversation = True
 
     def __init__(self, *, model_adapter: Any, descriptor: AdapterDescriptor) -> None:
         self._model_adapter = model_adapter

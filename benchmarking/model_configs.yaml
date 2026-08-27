@@ -208,8 +208,8 @@
     input: 2.00
     output: 12.00
 
-- &openai_sol_encrypted_replay
-  id: "openai-gpt-5-6-sol-responses-encrypted-replay-xhigh"
+- &openai_sol_continuous_conversation
+  id: "openai-gpt-5-6-sol-responses-continuous-conversation-xhigh"
   agent:
     MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
     MAX_CONTEXT_LENGTH: 175_000
@@ -217,11 +217,11 @@
     adapter_id: "openai.responses.v1"
     sdk: "openai-python"
     api: "responses"
-    state: "encrypted_replay"
+    state: "continuous_conversation"
   client:
     base_url: "https://api.openai.com/v1"
     api_key_env: "OPENAI_API_KEY"
-  request: &openai_sol_encrypted_replay_request
+  request: &openai_sol_continuous_conversation_request
     model: "gpt-5.6-sol"
     max_output_tokens: 128_000
     store: false
@@ -235,37 +235,37 @@
       summary: "auto"
   pricing: {}
 
-- <<: *openai_sol_encrypted_replay
-  id: "openai-gpt-5-6-sol-responses-encrypted-replay-low"
+- <<: *openai_sol_continuous_conversation
+  id: "openai-gpt-5-6-sol-responses-continuous-conversation-low"
   request:
-    <<: *openai_sol_encrypted_replay_request
+    <<: *openai_sol_continuous_conversation_request
     reasoning:
       effort: "low"
       context: "all_turns"
       summary: "auto"
 
-- <<: *openai_sol_encrypted_replay
-  id: "openai-gpt-5-6-sol-responses-encrypted-replay-medium"
+- <<: *openai_sol_continuous_conversation
+  id: "openai-gpt-5-6-sol-responses-continuous-conversation-medium"
   request:
-    <<: *openai_sol_encrypted_replay_request
+    <<: *openai_sol_continuous_conversation_request
     reasoning:
       effort: "medium"
       context: "all_turns"
       summary: "auto"
 
-- <<: *openai_sol_encrypted_replay
-  id: "openai-gpt-5-6-sol-responses-encrypted-replay-high"
+- <<: *openai_sol_continuous_conversation
+  id: "openai-gpt-5-6-sol-responses-continuous-conversation-high"
   request:
-    <<: *openai_sol_encrypted_replay_request
+    <<: *openai_sol_continuous_conversation_request
     reasoning:
       effort: "high"
       context: "all_turns"
       summary: "auto"
 
-- <<: *openai_sol_encrypted_replay
-  id: "openai-gpt-5-6-sol-responses-encrypted-replay-max"
+- <<: *openai_sol_continuous_conversation
+  id: "openai-gpt-5-6-sol-responses-continuous-conversation-max"
   request:
-    <<: *openai_sol_encrypted_replay_request
+    <<: *openai_sol_continuous_conversation_request
     reasoning:
       effort: "max"
       context: "all_turns"

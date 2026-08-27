@@ -227,7 +227,7 @@ class BenchmarkingAgent(Agent):
     def _build_system_prompt(self) -> str:
         if getattr(
             getattr(self, "_stateful_adapter", None),
-            "preserves_encrypted_reasoning",
+            "provides_continuous_conversation",
             False,
         ):
             return textwrap.dedent("""\

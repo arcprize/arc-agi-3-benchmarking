@@ -4,8 +4,8 @@ from typing import Any
 import yaml
 
 from .runtime_state import (
+    CONTINUOUS_CONVERSATION_RUNTIME_STATE,
     DEFAULT_RUNTIME_STATE,
-    ENCRYPTED_REPLAY_RUNTIME_STATE,
     SERVER_RUNTIME_STATE,
     SUPPORTED_RUNTIME_STATES,
 )
@@ -84,19 +84,19 @@ def _validate_anthropic_messages_config(config_id: str, entry: dict[str, Any]) -
         )
 
 
-def _validate_encrypted_replay_config(
+def _validate_continuous_conversation_config(
     config_id: str, entry: dict[str, Any]
 ) -> None:
     request = entry["request"]
     if request.get("store") is not False:
         raise ValueError(
             f"Model config '{config_id}' uses runtime.state="
-            f"{ENCRYPTED_REPLAY_RUNTIME_STATE!r} and must set request.store=false."
+            f"{CONTINUOUS_CONVERSATION_RUNTIME_STATE!r} and must set request.store=false."
         )
     if request.get("background") is True:
         raise ValueError(
             f"Model config '{config_id}' uses runtime.state="
-            f"{ENCRYPTED_REPLAY_RUNTIME_STATE!r} and cannot enable request.background."
+            f"{CONTINUOUS_CONVERSATION_RUNTIME_STATE!r} and cannot enable request.background."
         )
     incompatible = sorted(
         field for field in ("conversation", "previous_response_id") if field in request
@@ -104,29 +104,29 @@ def _validate_encrypted_replay_config(
     if incompatible:
         raise ValueError(
             f"Model config '{config_id}' uses runtime.state="
-            f"{ENCRYPTED_REPLAY_RUNTIME_STATE!r} with incompatible request field(s): "
+            f"{CONTINUOUS_CONVERSATION_RUNTIME_STATE!r} with incompatible request field(s): "
             f"{', '.join(incompatible)}."
         )
     include = request.get("include", [])
     if not isinstance(include, list) or "reasoning.encrypted_content" not in include:
         raise ValueError(
-            f"Model config '{config_id}' uses encrypted_replay and must include "
+            f"Model config '{config_id}' uses continuous_conversation and must include "
             "'reasoning.encrypted_content'."
         )
     reasoning = request.get("reasoning")
     if not isinstance(reasoning, dict):
         raise ValueError(
-            f"Model config '{config_id}' uses encrypted_replay and must configure "
+            f"Model config '{config_id}' uses continuous_conversation and must configure "
             "request.reasoning."
         )
     if reasoning.get("context") != "all_turns":
         raise ValueError(
-            f"Model config '{config_id}' uses encrypted_replay and must set "
+            f"Model config '{config_id}' uses continuous_conversation and must set "
             "request.reasoning.context='all_turns'."
         )
     if reasoning.get("summary") != "auto":
         raise ValueError(
-            f"Model config '{config_id}' uses encrypted_replay and must set "
+            f"Model config '{config_id}' uses continuous_conversation and must set "
             "request.reasoning.summary='auto'."
         )
 
@@ -213,7 +213,7 @@ def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> 
             f"but only {supported} are supported."
         )
     if (
-        runtime_state in {SERVER_RUNTIME_STATE, ENCRYPTED_REPLAY_RUNTIME_STATE}
+        runtime_state in {SERVER_RUNTIME_STATE, CONTINUOUS_CONVERSATION_RUNTIME_STATE}
         and runtime_pair not in SERVER_STATE_RUNTIME_PAIRS
     ):
         raise ValueError(
@@ -221,8 +221,8 @@ def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> 
             f"which is only supported on the OpenAI Responses runtime "
             f"(sdk='openai-python', api='responses')."
         )
-    if runtime_state == ENCRYPTED_REPLAY_RUNTIME_STATE:
-        _validate_encrypted_replay_config(config_id, entry)
+    if runtime_state == CONTINUOUS_CONVERSATION_RUNTIME_STATE:
+        _validate_continuous_conversation_config(config_id, entry)
     if runtime_pair == ("anthropic-python", "messages"):
         _validate_anthropic_messages_config(config_id, entry)
 
