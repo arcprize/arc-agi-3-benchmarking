@@ -240,7 +240,7 @@ class BenchmarkingAgent(Agent):
             False,
         ):
             return textwrap.dedent("""\
-                You are playing a game. Your goal is to win. The final action mentioned in your reply will be executed next turn.
+                You are playing a game. Your goal is to win. Include any context you want to carry forward in your reply, along with the action you want to take. The final action mentioned in your reply will be executed next turn.
             """)
         if self.analysis_mode:
             return textwrap.dedent("""\

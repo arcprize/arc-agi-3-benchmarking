@@ -359,7 +359,7 @@ class TestBenchmarkingAgentModelRequests:
         assert "<reasoning_summary>" not in system_prompt
         assert "compact helper context" not in system_prompt
 
-    def test_encrypted_reasoning_uses_prompt_without_carry_forward_guidance(self):
+    def test_continuous_conversation_uses_carry_forward_guidance(self):
         agent = _agent_for_request_kwargs({"model": "gpt-5.6-sol"})
         agent._stateful_adapter = SimpleNamespace(
             provides_continuous_conversation=True
@@ -369,9 +369,10 @@ class TestBenchmarkingAgentModelRequests:
 
         assert system_prompt == (
             "You are playing a game. Your goal is to win. "
+            "Include any context you want to carry forward in your reply, "
+            "along with the action you want to take. "
             "The final action mentioned in your reply will be executed next turn.\n"
         )
-        assert "carry forward" not in system_prompt
 
     def test_build_system_prompt_uses_helper_prompt_in_analysis_mode(self):
         agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
