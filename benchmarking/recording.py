@@ -16,6 +16,7 @@ class StepUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    compute_units: float = 0.0
     reasoning_tokens: int = 0
     cached_tokens: int = 0
     cache_write_tokens: int = 0
@@ -34,6 +35,7 @@ class StepUsage(BaseModel):
             prompt_tokens=self.prompt_tokens + other.prompt_tokens,
             completion_tokens=self.completion_tokens + other.completion_tokens,
             total_tokens=self.total_tokens + other.total_tokens,
+            compute_units=self.compute_units + other.compute_units,
             reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
             cached_tokens=self.cached_tokens + other.cached_tokens,
             cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
@@ -51,6 +53,7 @@ class StepUsage(BaseModel):
             "prompt_tokens": usage.prompt_tokens or 0,
             "completion_tokens": usage.completion_tokens or 0,
             "total_tokens": usage.total_tokens or 0,
+            "compute_units": getattr(usage, "compute_units", 0) or 0,
         }
         if usage.completion_tokens_details:
             kwargs["reasoning_tokens"] = (
@@ -74,6 +77,7 @@ class StepUsage(BaseModel):
             prompt_tokens=usage.input_tokens,
             completion_tokens=usage.output_tokens,
             total_tokens=usage.total_tokens,
+            compute_units=usage.compute_units,
             reasoning_tokens=usage.reasoning_tokens,
             cached_tokens=usage.cached_tokens,
             cache_write_tokens=usage.cache_write_tokens,

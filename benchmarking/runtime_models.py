@@ -32,6 +32,7 @@ class NormalizedUsage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+    compute_units: float = 0.0
     reasoning_tokens: int = 0
     cached_tokens: int = 0
     cache_write_tokens: int = 0
@@ -50,6 +51,7 @@ class NormalizedUsage(BaseModel):
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
             total_tokens=self.total_tokens + other.total_tokens,
+            compute_units=self.compute_units + other.compute_units,
             reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
             cached_tokens=self.cached_tokens + other.cached_tokens,
             cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
@@ -82,6 +84,7 @@ def _normalize_chat_usage(usage: Any) -> dict[str, Any]:
         "input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
         "output_tokens": getattr(usage, "completion_tokens", 0) or 0,
         "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+        "compute_units": getattr(usage, "compute_units", 0) or 0,
     }
     if getattr(usage, "completion_tokens_details", None):
         normalized_usage_kwargs["reasoning_tokens"] = (
@@ -110,6 +113,7 @@ def _normalize_responses_usage(usage: Any) -> dict[str, Any]:
         "input_tokens": _value_from_response_object(usage, "input_tokens", 0) or 0,
         "output_tokens": _value_from_response_object(usage, "output_tokens", 0) or 0,
         "total_tokens": _value_from_response_object(usage, "total_tokens", 0) or 0,
+        "compute_units": _value_from_response_object(usage, "compute_units", 0) or 0,
     }
     output_tokens_details = _value_from_response_object(
         usage,
@@ -439,6 +443,7 @@ def action_metadata_from_model_response(
                 reasoning_tokens=model_response.usage.reasoning_tokens,
             ),
             total_tokens=model_response.usage.total_tokens,
+            compute_units=model_response.usage.compute_units,
         ),
         cost=CostDetails(
             input_cost=input_cost,

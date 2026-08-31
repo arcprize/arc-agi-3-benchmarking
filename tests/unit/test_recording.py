@@ -17,6 +17,7 @@ def _model_response() -> ModelResponse:
             input_tokens=11,
             output_tokens=7,
             total_tokens=18,
+            compute_units=559,
             reasoning_tokens=3,
             cached_tokens=5,
             cache_write_tokens=2,
@@ -34,6 +35,7 @@ class TestRecordingModels:
                 prompt_tokens=123,
                 completion_tokens=45,
                 total_tokens=168,
+                compute_units=559,
                 prompt_tokens_details=SimpleNamespace(
                     cached_tokens=7,
                     cache_write_tokens=3,
@@ -48,6 +50,7 @@ class TestRecordingModels:
         assert usage.prompt_tokens == 123
         assert usage.completion_tokens == 45
         assert usage.total_tokens == 168
+        assert usage.compute_units == 559
         assert usage.cached_tokens == 7
         assert usage.cache_write_tokens == 3
         assert usage.reasoning_tokens == 11
@@ -92,6 +95,10 @@ class TestRecordingModels:
 
         assert '"assistant_response":"RESET"' in step_json
         assert f'"total_tokens":{model_response.usage.total_tokens}' in run_json
+        compute_units = model_response.usage.compute_units
+        assert json.loads(step_json)["usage"]["compute_units"] == compute_units
+        assert json.loads(run_json)["total_usage"]["compute_units"] == compute_units
+        assert (step.usage + step.usage).compute_units == 2 * compute_units
 
     def test_legacy_recording_files_omit_new_opt_in_fields(self, tmp_path):
         agent = BenchmarkingAgent.__new__(BenchmarkingAgent)
