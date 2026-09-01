@@ -80,7 +80,7 @@ uv run main.py --list-configs
 
 5. Run the official benchmarking agent against a game:
 
-```bash
+```uv
 uv run main.py --game=ls20 --config=openai-gpt-5-4-2026-03-05
 ```
 
