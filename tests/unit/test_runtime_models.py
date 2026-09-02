@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 
 import pytest
-from openai.types.responses import ResponseUsage as OpenAIResponseUsage
 from pydantic import ValidationError
 
 from benchmarking.exceptions import EmptyResponseError
@@ -230,22 +229,17 @@ class TestRuntimeModels:
         assert model_response.output_text == "FIRST"
         assert model_response.reasoning_text == "first-reasoning"
 
-    @pytest.mark.parametrize("compute_units", [None, 0, 559.25])
-    def test_chat_and_responses_metadata_projection_have_same_schema(self, compute_units):
-        chat_response, responses_response = _chat_response(), _responses_response()
-        chat_response.usage.compute_units = compute_units
-        responses_response.usage.compute_units = compute_units
+    def test_chat_and_responses_metadata_projection_have_same_schema(self):
         chat_metadata = action_metadata_from_model_response(
-            normalize_chat_completion_response(chat_response),
+            normalize_chat_completion_response(_chat_response()),
             pricing={"input": 2.50, "output": 15.00},
         )
         responses_metadata = action_metadata_from_model_response(
-            normalize_responses_response(responses_response),
+            normalize_responses_response(_responses_response()),
             pricing={"input": 2.50, "output": 15.00},
         )
 
         assert chat_metadata.model_dump() == responses_metadata.model_dump()
-        assert chat_metadata.usage.compute_units == (compute_units or 0)
 
     def test_chat_usage_total_matches_input_plus_output_tokens(self):
         model_response = normalize_chat_completion_response(_chat_response())
@@ -254,7 +248,6 @@ class TestRuntimeModels:
             model_response.usage.input_tokens + model_response.usage.output_tokens
         )
         assert model_response.usage.total_tokens == 18
-        assert model_response.usage.compute_units == 0
 
     def test_responses_usage_total_matches_input_plus_output_tokens(self):
         model_response = normalize_responses_response(_responses_response())
@@ -263,7 +256,6 @@ class TestRuntimeModels:
             model_response.usage.input_tokens + model_response.usage.output_tokens
         )
         assert model_response.usage.total_tokens == 18
-        assert model_response.usage.compute_units == 0
 
     def test_responses_normalizer_extracts_response_id_when_present(self):
         raw_response = _responses_response()
@@ -278,10 +270,7 @@ class TestRuntimeModels:
 
         assert model_response.response_id is None
 
-    @pytest.mark.parametrize("compute_units", [None, 0, 559, 559.25])
-    def test_responses_metadata_projection_maps_reasoning_usage_and_cost(
-        self, compute_units
-    ):
+    def test_responses_metadata_projection_maps_reasoning_usage_and_cost(self):
         raw_response = SimpleNamespace(
             output=[
                 SimpleNamespace(
@@ -299,7 +288,6 @@ class TestRuntimeModels:
                 input_tokens=1_000,
                 output_tokens=200,
                 total_tokens=1_200,
-                compute_units=compute_units,
                 input_tokens_details=SimpleNamespace(cached_tokens=50),
                 output_tokens_details=SimpleNamespace(reasoning_tokens=25),
             ),
@@ -315,7 +303,6 @@ class TestRuntimeModels:
         assert metadata.usage.input_tokens == 1_000
         assert metadata.usage.output_tokens == 200
         assert metadata.usage.total_tokens == 1_200
-        assert metadata.usage.compute_units == (compute_units or 0)
         assert metadata.usage.input_tokens_details.cached_tokens == 50
         assert metadata.usage.output_tokens_details.reasoning_tokens == 25
         assert metadata.cost.input_cost == pytest.approx(0.0025)
@@ -382,10 +369,8 @@ class TestRuntimeModels:
 
         assert model_response.reasoning_text == "summary\ncontent"
 
-    @pytest.mark.parametrize("sdk_usage", [False, True])
     def test_responses_normalizer_maps_dict_usage_schema_and_cost_without_double_counting_reasoning_tokens(
         self,
-        sdk_usage,
     ):
         raw_response = {
             "id": "resp_67ccd2bed1ec8190b14f964abc0542670bb6a6b452d3795b",
@@ -421,13 +406,8 @@ class TestRuntimeModels:
                     "reasoning_tokens": 10,
                 },
                 "total_tokens": 123,
-                "compute_units": 559,
             },
         }
-        if sdk_usage:
-            raw_response["usage"] = OpenAIResponseUsage.model_validate(
-                raw_response["usage"]
-            )
 
         model_response = normalize_responses_response(raw_response)
         metadata = action_metadata_from_model_response(
@@ -441,8 +421,6 @@ class TestRuntimeModels:
         assert model_response.usage.output_tokens == 87
         assert model_response.usage.reasoning_tokens == 10
         assert model_response.usage.total_tokens == 123
-        assert model_response.usage.compute_units == 559
-        assert metadata.usage.compute_units == 559
         assert model_response.usage.total_tokens == (
             model_response.usage.input_tokens + model_response.usage.output_tokens
         )

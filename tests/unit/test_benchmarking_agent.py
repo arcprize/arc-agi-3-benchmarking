@@ -604,11 +604,11 @@ class TestBenchmarkingAgentRetries:
         responses = [
             ModelResponse(
                 output_text="not an action",
-                usage=NormalizedUsage(total_tokens=4, compute_units=200),
+                usage=NormalizedUsage(total_tokens=4),
             ),
             ModelResponse(
                 output_text="RESET",
-                usage=NormalizedUsage(total_tokens=6, compute_units=359),
+                usage=NormalizedUsage(total_tokens=6),
             ),
         ]
 
@@ -623,7 +623,6 @@ class TestBenchmarkingAgentRetries:
 
         assert model_response.output_text == "RESET"
         assert model_response.usage.total_tokens == 10
-        assert model_response.usage.compute_units == 559
         assert action == GameAction.RESET
         assert retries == 1
         assert messages_sent == [
@@ -1394,24 +1393,20 @@ class TestBenchmarkingAgentExitReason:
 class TestDoubleResetPrevention:
     def test_do_action_request_sends_and_records_pending_action_reasoning(self):
         env = _CapturingRawEnv()
-        agent = _agent_for_choose_action(
-            analysis_mode=False,
-            responses=[
-                ModelResponse(
-                    output_text="ACTION1", usage=NormalizedUsage(compute_units=559)
-                )
-            ],
-        )
+        agent = _agent_for_choose_action(analysis_mode=False, responses=[])
         agent.arc_env = env
-        action = agent.choose_action([], _playable_frame())
-        reasoning = agent._pending_action_reasoning
+        reasoning = {
+            "output": "ACTION1",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "total_tokens": 12,
+            },
+        }
+        agent._pending_action_reasoning = reasoning
 
-        frame = agent.do_action_request(action)
+        frame = agent.do_action_request(GameAction.ACTION1)
 
-        assert agent._saved_steps[0].usage.compute_units == 559
-        assert env.reasonings[0]["usage"]["compute_units"] == 559
-        recorded_reasoning = frame.model_dump(mode="json")["action_input"]["reasoning"]
-        assert recorded_reasoning["usage"]["compute_units"] == 559
         assert env.reasonings == [reasoning]
         assert frame.action_input.id is GameAction.ACTION1
         assert frame.action_input.reasoning == reasoning

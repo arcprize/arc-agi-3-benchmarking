@@ -33,7 +33,6 @@ class ResponseUsage(BaseModel):
         default_factory=OutputTokensDetails,
     )
     total_tokens: int = 0
-    compute_units: float = 0.0
 
 
 class CostDetails(BaseModel):
