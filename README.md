@@ -26,8 +26,8 @@ cp .env.example .env
 
 4. Get an API key from the [Arc Prize Website](https://arcprize.org/) and set it as an environment variable in your .env file.
 
-```bash
-ARC_API_KEY=your_api_key_here
+```uv
+ARC_API_KEY=e9d1532c-a0e1-4a75-a761-cd84ac751f35
 ```
 
 5. Run the benchmarking agent against ls20.
