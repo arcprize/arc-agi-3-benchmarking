@@ -69,7 +69,7 @@ See [Kaggle CLI model download documentation](https://github.com/Kaggle/kagglehu
 
 #### Method 3. Calling the API directly
 
-```
+```bash
 # Authenticate with credentials
 export KAGGLE_USERNAME=xyz
 export KAGGLE_KEY=xyz
@@ -80,7 +80,14 @@ curl -L -o ~/Downloads/model.tar.gz  https://www.kaggle.com/api/v1/models/google
 # Download specific version (here version 1)
 wget https://www.kaggle.com/api/v1/models/google/gemma/pyTorch/2b/1/download --user=$KAGGLE_USERNAME --password=$KAGGLE_KEY --auth-no-challenge
 ```
+```python
+import kagglehub
 
+# Download latest version
+path = kagglehub.model_download("google/bert/tensorFlow2/answer-equivalence-bem")
+
+print("Path to model files:", path)
+```
 ***
 
 ### Creating a Model
