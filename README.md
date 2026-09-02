@@ -89,6 +89,7 @@ Native Anthropic configs are also available:
 ```bash
 uv run main.py --game=ls20 --config=anthropic-opus-4-7-low
 uv run main.py --game=ls20 --config=anthropic-opus-4-7-low-thinking
+https://arcprize.org/scorecards/17e98404-2c1c-4934-932a-3e58cc497d89about 
 ```
 
 6. Or on all games:
@@ -98,7 +99,7 @@ uv run main.py --config=openai-gpt-5-4-2026-03-05
 ```
 
 7. View your scorecard
-
+[run](https://arcprize.org/scorecards/17e98404-2c1c-4934-932a-3e58cc497d89)
 When you run a benchmark, a scorecard is saved on the ARC server. If you are logged in, you can browse your saved scorecards at [arcprize.org/scorecards](https://arcprize.org/scorecards).
 
 
