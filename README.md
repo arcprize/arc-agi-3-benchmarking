@@ -97,6 +97,15 @@ uv run main.py --game=ls20 --config=anthropic-opus-4-7-low-thinking
 uv run main.py --config=openai-gpt-5-4-2026-03-05
 ```
 
+### Runtime state and continuous conversation
+
+Existing model configurations continue to use the `manual_rolling` state
+strategy. OpenAI Responses configurations can opt into a ZDR-compatible
+continuous conversation implemented with encrypted reasoning replay and
+server-side compaction. See
+[Runtime state adapters](docs/runtime-state.md) for the interface, security
+boundary, configuration examples, and provider review process.
+
 7. View your scorecard
 
 When you run a benchmark, a scorecard is saved on the ARC server. If you are logged in, you can browse your saved scorecards at [arcprize.org/scorecards](https://arcprize.org/scorecards).

@@ -572,6 +572,38 @@ class TestOpenAIResponsesAdapter:
         assert "previous_response_id" not in client.responses.calls[0]
         assert "conversation" not in client.responses.calls[0]
 
+    def test_sends_provider_native_input_for_continuous_conversation(self):
+        client = _FakeResponsesOpenAIClient(_responses_output())
+        adapter = OpenAIResponsesAdapter(client)
+        native_input = [
+            {"role": "user", "content": "frame 1"},
+            {
+                "type": "reasoning",
+                "id": "rs_1",
+                "encrypted_content": "opaque",
+            },
+            {"role": "user", "content": "frame 2"},
+        ]
+
+        adapter.invoke(
+            ModelRequest(
+                messages=[
+                    Message(role="system", content="System prompt"),
+                    Message(role="user", content="frame 2"),
+                ],
+                request_config={
+                    "model": "gpt-5.6-sol",
+                    "store": False,
+                    "include": ["reasoning.encrypted_content"],
+                },
+                native_input=native_input,
+            )
+        )
+
+        assert client.responses.calls[0]["instructions"] == "System prompt"
+        assert client.responses.calls[0]["input"] == native_input
+        assert client.responses.calls[0]["store"] is False
+
 
 @pytest.mark.unit
 class TestOpenAIResponsesServerStateAdapter:

@@ -23,6 +23,9 @@ class Message(BaseModel):
 class ModelRequest(BaseModel):
     messages: list[Message]
     request_config: dict[str, Any]
+    # Provider-native input items used by state strategies that cannot be
+    # represented as a normalized role/content transcript.
+    native_input: list[dict[str, Any]] | None = None
 
 
 class NormalizedUsage(BaseModel):
@@ -317,7 +320,7 @@ def _extract_reasoning_text_fragment(item: Any) -> str | None:
     )
 
 
-def _extract_responses_reasoning_text(response: Any) -> str | None:
+def extract_responses_reasoning_summary(response: Any) -> str | None:
     output_items = _value_from_response_object(response, "output", []) or []
     reasoning_parts: list[str] = []
 
@@ -330,6 +333,22 @@ def _extract_responses_reasoning_text(response: Any) -> str | None:
             if fragment:
                 reasoning_parts.append(fragment)
 
+    if not reasoning_parts:
+        return None
+    return "\n".join(reasoning_parts)
+
+
+def _extract_responses_reasoning_text(response: Any) -> str | None:
+    output_items = _value_from_response_object(response, "output", []) or []
+    reasoning_parts: list[str] = []
+
+    summary = extract_responses_reasoning_summary(response)
+    if summary:
+        reasoning_parts.append(summary)
+
+    for item in output_items:
+        if _value_from_response_object(item, "type") != "reasoning":
+            continue
         for content_item in _value_from_response_object(item, "content", []) or []:
             fragment = _extract_reasoning_text_fragment(content_item)
             if fragment:

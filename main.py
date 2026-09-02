@@ -19,9 +19,20 @@ import requests
 
 from benchmarking import BenchmarkingAgent, Swarm
 from benchmarking.cli_list import print_requested_resource_lists
-from benchmarking.model_config import get_model_config, list_model_config_ids
+from benchmarking.model_config import (
+    get_model_config,
+)
+from benchmarking.model_config import (
+    list_model_config_ids as _list_model_config_ids,
+)
 
 logger = logging.getLogger()
+
+
+def list_model_config_ids() -> list[str]:
+    """Retain the CLI module's public config-listing helper."""
+
+    return _list_model_config_ids()
 
 DEFAULT_ARC_BASE_URL = "https://arcprize.org"
 SCHEME = os.environ.get("SCHEME", "http")
