@@ -62,12 +62,61 @@ The examples below allow you to download the `2b` PyTorch variation for the [goo
 #### Method 1. Via the kagglehub Python library
 
 See [kagglehub model download documentation](https://github.com/Kaggle/kagglehub?tab=readme-ov-file#download-model).
+# implementation
 
+```python
+import abc
+import typing as t
+
+
+class PathLike(abc.ABC):
+
+    """Abstract base class for implementing the file system path protocol."""
+
+    @abc.abstractmethod
+    def __fspath__(self) -> t.Union[str, bytes]:
+        """Return the file system path representation of the object."""
+        raise NotImplementedError
+```        
 #### Method 2. Via the Kaggle CLI
 
 See [Kaggle CLI model download documentation](https://github.com/Kaggle/kagglehub?tab=readme-ov-file#download-model).
 
 #### Method 3. Calling the API directly
+```python
+import typing as t
+
+
+def fspath(path: t.Union[PathLike, str, bytes]) -> t.Union[str, bytes]:
+    """Return the string representation of the path.
+
+    If str or bytes is passed in, it is returned unchanged. If __fspath__()
+    returns something other than str or bytes then TypeError is raised. If
+    this function is given something that is not str, bytes, or os.PathLike
+    then TypeError is raised.
+    """
+    if isinstance(path, (str, bytes)):
+        return path
+
+    # Work from the object's type to match method resolution of other magic
+    # methods.
+    path_type = type(path)
+    try:
+        path = path_type.__fspath__(path)
+    except AttributeError:
+        if hasattr(path_type, '__fspath__'):
+            raise
+    else:
+        if isinstance(path, (str, bytes)):
+            return path
+        else:
+            raise TypeError("expected __fspath__() to return str or bytes, "
+                            "not " + type(path).__name__)
+
+    raise TypeError("expected str, bytes or os.PathLike object, not "
+                    + path_type.__name__)
+                    
+```
 
 ```bash
 # Authenticate with credentials
