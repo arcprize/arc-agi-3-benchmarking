@@ -716,12 +716,9 @@ class TestModelConfig:
             "summary": "auto",
         }
 
-    @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
-    def test_checked_in_continuous_conversation_profiles_are_zdr_compatible(
-        self, effort
-    ):
+    def test_checked_in_provider_adapter_profile_is_zdr_compatible(self):
         config = model_config.get_model_config(
-            f"openai-gpt-5-6-sol-responses-continuous-conversation-{effort}"
+            "openai-gpt-5-6-sol-max-provider-adapter"
         )
 
         assert config["runtime"] == {
@@ -734,7 +731,7 @@ class TestModelConfig:
         assert config["request"]["store"] is False
         assert config["request"]["include"] == ["reasoning.encrypted_content"]
         assert config["request"]["reasoning"] == {
-            "effort": effort,
+            "effort": "max",
             "context": "auto",
             "summary": "auto",
         }

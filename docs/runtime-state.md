@@ -56,7 +56,7 @@ The adapter removes only two SDK response fields that the input schema rejects:
 `status` from reasoning items and `created_by` from compaction items. When a
 response contains compaction items, it retains the latest compaction item and
 everything after it. Compaction remains a separate request setting under
-`request.context_management`; the supplied GPT-5.6 Sol profiles use a 175k
+`request.context_management`; the supplied GPT-5.6 Sol profile uses a 175k
 threshold.
 
 The OpenAI continuous-conversation configuration must:
@@ -64,11 +64,11 @@ The OpenAI continuous-conversation configuration must:
 - use the OpenAI Responses API and `runtime.adapter_id: openai.responses.v1`
 - set `request.store: false`
 - include `reasoning.encrypted_content`
-- set `reasoning.context: all_turns` and `reasoning.summary: auto`
+- set `reasoning.context: auto` and `reasoning.summary: auto`
 - avoid `previous_response_id`, conversations, and background mode
 
-The checked-in profiles cover low, medium, high, xhigh, and max reasoning. The
-harness automatically removes the manual carry-forward instruction when the
+The checked-in profile uses max reasoning. The harness automatically removes
+the manual carry-forward instruction when the
 selected adapter provides continuous conversation. This is not a configurable
 model setting. Existing `manual_rolling` configurations keep the instruction
 because their visible replies are the state carried across turns.
