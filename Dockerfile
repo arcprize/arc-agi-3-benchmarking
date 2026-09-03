@@ -2,6 +2,8 @@ FROM ghcr.io/astral-sh/uv:0.11.2 AS uv
 
 FROM python:3.12
 
+ARG ARC_HARNESS_COMMIT_SHA=""
+
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
@@ -29,6 +31,7 @@ RUN mkdir -p results logs .checkpoint \
   && chown -R appuser:appuser /app
 
 ENV ARC_URL_BASE="https://arcprize.org"
+ENV ARC_HARNESS_COMMIT_SHA=${ARC_HARNESS_COMMIT_SHA}
 ENV PYTHONUNBUFFERED=1
 
 # Switch to non-root for runtime (this is the important part)

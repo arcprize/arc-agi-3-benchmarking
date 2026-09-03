@@ -97,6 +97,23 @@ uv run main.py --game=ls20 --config=anthropic-opus-4-7-low-thinking
 uv run main.py --config=openai-gpt-5-4-2026-03-05
 ```
 
+## Standard and Provider Adapter harnesses
+
+ARC-AGI-3 games span many model calls, so the harness must determine what
+carries forward between actions. The Standard harness uses a provider-neutral
+text history and asks the model to preserve useful discoveries in visible
+notes. These configurations use `manual_rolling`.
+
+The Provider Adapter harness uses the provider's native conversation,
+reasoning-state, and compaction capabilities. These configurations use
+`continuous_conversation`; `openai-gpt-5-6-sol-max-provider-adapter` is one
+example.
+
+Both harnesses use the same games, actions, limits, and scoring. The Standard
+harness supports controlled comparisons across providers, while the Provider
+Adapter harness measures performance using provider-native context management.
+Their results should be reported separately and clearly labeled.
+
 7. View your scorecard
 
 When you run a benchmark, a scorecard is saved on the ARC server. If you are logged in, you can browse your saved scorecards at [arcprize.org/scorecards](https://arcprize.org/scorecards).

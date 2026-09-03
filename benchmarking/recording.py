@@ -95,6 +95,8 @@ class StepRecord(BaseModel):
     parsed_action: str | dict[str, Any]
     usage: StepUsage = Field(default_factory=StepUsage)
     retries: int = 0
+    request_record: dict[str, Any] | None = None
+    state_transition: dict[str, Any] | None = None
 
 
 class RunRecord(BaseModel):
@@ -111,3 +113,4 @@ class RunRecord(BaseModel):
     total_usage: StepUsage = Field(default_factory=StepUsage)
     outcome: Optional[str] = None
     run_dir: str
+    runtime: dict[str, Any] | None = None

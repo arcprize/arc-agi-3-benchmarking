@@ -14,7 +14,7 @@ from arcengine import FrameData, GameAction, GameState
 from .action_metadata import fit_action_metadata_payload
 from .base import Agent, ExitReason
 from .exceptions import EmptyResponseError
-from .model_config import SERVER_RUNTIME_STATE, get_model_config
+from .model_config import get_model_config
 from .recording import RunRecord, StepRecord, StepUsage
 from .runtime_adapters import build_model_runtime_adapter
 from .runtime_clients import build_model_runtime_client
@@ -24,6 +24,16 @@ from .runtime_models import (
     ModelResponse,
     NormalizedUsage,
     action_metadata_from_model_response,
+)
+from .runtime_registry import build_stateful_runtime_adapter
+from .runtime_state import (
+    CONTINUOUS_CONVERSATION_RUNTIME_STATE,
+    SERVER_RUNTIME_STATE,
+    ModelTurnRequest,
+    ModelTurnResult,
+    harness_commit_sha,
+    sanitize_settings,
+    source_permalink,
 )
 
 logger = logging.getLogger()
@@ -44,6 +54,7 @@ class BenchmarkingAgent(Agent):
     MAX_CONTEXT_LENGTH: int = 100000
     MAX_ANIMATION_FRAMES: int = 7
     analysis_mode: bool = False
+    _continuous_conversation: bool = False
     # Empirically, rendered ARC grid payloads are close to 1 char per token.
     # Using 1.0 is intentionally conservative relative to observed runs.
     ESTIMATED_CHARS_PER_TOKEN: float = 1.0
@@ -70,6 +81,9 @@ class BenchmarkingAgent(Agent):
         # recording-only mirror and client-side trimming is disabled.
         self._server_state: bool = (
             runtime_cfg.get("state") == SERVER_RUNTIME_STATE
+        )
+        self._continuous_conversation = (
+            runtime_cfg.get("state") == CONTINUOUS_CONVERSATION_RUNTIME_STATE
         )
         self._previous_response_id: str | None = None
         self._pending_user_messages: list[dict[str, Any]] = []
@@ -131,11 +145,43 @@ class BenchmarkingAgent(Agent):
             runtime_config=runtime_cfg,
             config_id=self.MODEL_CONFIG_ID,
         )
+        self._last_turn_result: ModelTurnResult | None = None
+        if self._continuous_conversation:
+            self._stateful_adapter = build_stateful_runtime_adapter(
+                model_adapter=self._adapter,
+                runtime_config=runtime_cfg,
+                config_id=self.MODEL_CONFIG_ID,
+            )
+            self._runtime_state = self._stateful_adapter.initial_state()
+            self._pending_turn_messages: list[Message] = []
         # Per-step recording
         self.step_counter: int = 0
         run_id = uuid.uuid4()
         self.run_dir = os.path.join("recordings", f"{self.name}.{run_id}")
         os.makedirs(self.run_dir, exist_ok=True)
+        runtime_metadata = None
+        if self._continuous_conversation:
+            commit_sha = harness_commit_sha()
+            repository = "https://github.com/arcprize/arc-agi-3-benchmarking"
+            descriptor = self._stateful_adapter.descriptor
+            runtime_metadata = {
+                "adapter_id": descriptor.adapter_id,
+                "state_strategy": self._runtime_state.strategy,
+                "config_id": self.MODEL_CONFIG_ID,
+                "settings": sanitize_settings(request_cfg),
+                "provider": descriptor.provider,
+                "api_surface": descriptor.api_surface,
+                "implementation_path": descriptor.implementation_path,
+                "adapter_version": descriptor.version,
+                "approval_status": descriptor.approval_status,
+                "harness_commit_sha": commit_sha,
+                "source_repository": repository,
+                "source_permalink": source_permalink(
+                    repository=repository,
+                    implementation_path=descriptor.implementation_path,
+                    commit_sha=commit_sha,
+                ),
+            }
         self.run_record = RunRecord(
             run_id=str(run_id),
             game_id=self.game_id,
@@ -143,6 +189,7 @@ class BenchmarkingAgent(Agent):
             model=self.MODEL,
             started_at=datetime.now(timezone.utc),
             run_dir=self.run_dir,
+            runtime=runtime_metadata,
         )
         self._write_run_meta()
 
@@ -187,6 +234,14 @@ class BenchmarkingAgent(Agent):
     # ── Prompts ──────────────────────────────────────────────────────────
 
     def _build_system_prompt(self) -> str:
+        if getattr(
+            getattr(self, "_stateful_adapter", None),
+            "provides_continuous_conversation",
+            False,
+        ):
+            return textwrap.dedent("""\
+                You are playing a game. Your goal is to win. The final action mentioned in your reply will be executed next turn.
+            """)
         if self.analysis_mode:
             return textwrap.dedent("""\
                 You are playing a game. Your goal is to win. Include any context you want to carry forward in your reply, along with the action you want to take. The final action mentioned in your reply will be executed next turn.
@@ -393,7 +448,8 @@ class BenchmarkingAgent(Agent):
     def _write_run_meta(self) -> None:
         path = os.path.join(self.run_dir, "run_meta.json")
         with open(path, "w") as f:
-            f.write(self.run_record.model_dump_json(indent=2))
+            exclude = {"runtime"} if self.run_record.runtime is None else None
+            f.write(self.run_record.model_dump_json(indent=2, exclude=exclude))
 
     def _save_diagnostic(self, response: Any) -> None:
         """Dump a raw API response to a diagnostic file for post-mortem debugging."""
@@ -402,16 +458,34 @@ class BenchmarkingAgent(Agent):
             f"diagnostic_step_{self.step_counter + 1}_{int(time.time())}.json",
         )
         try:
-            raw = (
-                response.model_dump()
-                if hasattr(response, "model_dump")
-                else repr(response)
-            )
+            if self._continuous_conversation:
+                raw = (
+                    response.model_dump()
+                    if hasattr(response, "model_dump")
+                    else dict(response)
+                    if isinstance(response, dict)
+                    else {"response_type": type(response).__name__}
+                )
+                raw = sanitize_settings(raw)
+            else:
+                raw = (
+                    response.model_dump()
+                    if hasattr(response, "model_dump")
+                    else repr(response)
+                )
             with open(filename, "w") as f:
                 json.dump(raw, f, indent=2, default=str)
         except Exception as exc:
             with open(filename, "w") as f:
-                f.write(f"Failed to serialize response: {exc}\nrepr: {repr(response)}")
+                if self._continuous_conversation:
+                    f.write(
+                        "Failed to serialize redacted diagnostic response: "
+                        f"{type(exc).__name__}"
+                    )
+                else:
+                    f.write(
+                        f"Failed to serialize response: {exc}\nrepr: {repr(response)}"
+                    )
         logger.warning(f"Saved diagnostic response to {filename}")
 
     def _save_step(self, step: StepRecord) -> None:
@@ -420,7 +494,12 @@ class BenchmarkingAgent(Agent):
         self.run_record.total_steps = self.step_counter
         filename = os.path.join(self.run_dir, f"step_{self.step_counter:03d}.json")
         with open(filename, "w") as f:
-            f.write(step.model_dump_json(indent=2))
+            exclude = {
+                field
+                for field in ("request_record", "state_transition")
+                if getattr(step, field) is None
+            }
+            f.write(step.model_dump_json(indent=2, exclude=exclude))
         self._write_run_meta()
         logger.info(f"Saved step {self.step_counter} to {filename}")
 
@@ -472,6 +551,11 @@ class BenchmarkingAgent(Agent):
             # so buffer it for server-managed state too.
             if self._server_state:
                 self._pending_user_messages.append(frame_message)
+            if hasattr(self, "_stateful_adapter"):
+                self._runtime_state = self._stateful_adapter.buffer_inputs(
+                    self._runtime_state,
+                    [Message.model_validate(frame_message)],
+                )
 
         self._save_step(
             StepRecord(
@@ -549,6 +633,12 @@ class BenchmarkingAgent(Agent):
             self.conversation.append(
                 {"role": "system", "content": self._build_system_prompt()}
             )
+        elif self._continuous_conversation and self.conversation[0].get(
+            "role"
+        ) != "system":
+            self.conversation.insert(
+                0, {"role": "system", "content": self._build_system_prompt()}
+            )
 
         # Normal turn: append frame, call the model, parse action
         frame_message = {
@@ -558,6 +648,8 @@ class BenchmarkingAgent(Agent):
         self.conversation.append(frame_message)
         if self._server_state:
             self._pending_user_messages.append(frame_message)
+        if hasattr(self, "_stateful_adapter"):
+            self._pending_turn_messages.append(Message.model_validate(frame_message))
 
         actions = self._get_actions(latest_frame)
         start = time.monotonic()
@@ -569,7 +661,16 @@ class BenchmarkingAgent(Agent):
 
         # On success, advance server-side state and flush the pending buffer so
         # the next turn sends only its new message(s).
-        if self._server_state:
+        if hasattr(self, "_stateful_adapter"):
+            if self._server_state:
+                self._previous_response_id = self._runtime_state.payload.get(
+                    "response_id"
+                )
+                self._pending_user_messages = list(
+                    self._runtime_state.payload.get("pending_inputs", [])
+                )
+            self._pending_turn_messages = []
+        elif self._server_state:
             self._previous_response_id = model_response.response_id
             self._pending_user_messages = []
 
@@ -584,6 +685,13 @@ class BenchmarkingAgent(Agent):
         )
 
         logger.info(f"Parsed action: {self._format_parsed_action(action)}")
+        request_record = None
+        state_transition = None
+        if self._last_turn_result is not None:
+            request_record = self._last_turn_result.sanitized_request
+            state_transition = self._last_turn_result.transition.model_dump(
+                exclude_none=True
+            )
         self._save_step(
             StepRecord(
                 step=self.step_counter + 1,
@@ -596,6 +704,8 @@ class BenchmarkingAgent(Agent):
                 parsed_action=self._format_parsed_action(action),
                 usage=step_usage,
                 retries=retries,
+                request_record=request_record,
+                state_transition=state_transition,
             )
         )
 
@@ -604,9 +714,13 @@ class BenchmarkingAgent(Agent):
             model_response=model_response,
             pricing=self._pricing,
         )
-        self._pending_action_reasoning = fit_action_metadata_payload(
-            metadata.model_dump()
-        )
+        action_metadata = metadata.model_dump()
+        if (
+            self._last_turn_result is not None
+            and self._last_turn_result.action_state is not None
+        ):
+            action_metadata["state"] = self._last_turn_result.action_state
+        self._pending_action_reasoning = fit_action_metadata_payload(action_metadata)
         total_cost = metadata.cost.total_cost
         input_cost = metadata.cost.input_cost
         output_cost = metadata.cost.output_cost
@@ -653,14 +767,29 @@ class BenchmarkingAgent(Agent):
         attempt before the current assistant reply is appended locally.
         """
         accumulated_usage = NormalizedUsage()
+        self._last_turn_result = None
         for attempt in range(self.MAX_RETRIES + 1):
             try:
                 # Server-managed state compacts on OpenAI's side; the docs say not
                 # to manually prune when chaining via previous_response_id.
-                if not self._server_state:
+                if not hasattr(self, "_stateful_adapter") and not self._server_state:
                     self._trim_to_fit_context()
-                model_request = self._build_model_request()
-                model_response = self._call_api(model_request)
+                if hasattr(self, "_stateful_adapter"):
+                    turn_request = ModelTurnRequest(
+                        system_prompt=self._build_system_prompt(),
+                        new_messages=list(self._pending_turn_messages),
+                        request_config=dict(self._request_kwargs),
+                        previous_state=self._runtime_state,
+                        max_context_length=self.MAX_CONTEXT_LENGTH,
+                        estimated_chars_per_token=self.ESTIMATED_CHARS_PER_TOKEN,
+                        include_reasoning_summary_in_transcript=self.analysis_mode,
+                    )
+                    turn_result = self._stateful_adapter.invoke_turn(turn_request)
+                    model_response = turn_result.response
+                    model_request = None
+                else:
+                    model_request = self._build_model_request()
+                    model_response = self._call_api(model_request)
             except EmptyResponseError as e:
                 if e.response is not None:
                     self._save_diagnostic(e.response)
@@ -685,11 +814,25 @@ class BenchmarkingAgent(Agent):
 
             action = self._parse_action(model_response.output_text, actions)
             if action is not None:
+                if hasattr(self, "_stateful_adapter"):
+                    self._runtime_state = turn_result.state
+                    self._last_turn_result = turn_result
+                    sanitized_messages = turn_result.sanitized_request.get("messages")
+                    messages_sent = (
+                        sanitized_messages
+                        if isinstance(sanitized_messages, list)
+                        else list(self.conversation)
+                    )
+                else:
+                    assert model_request is not None
+                    messages_sent = [
+                        message.model_dump() for message in model_request.messages
+                    ]
                 return (
                     model_response,
                     action,
                     attempt,
-                    [message.model_dump() for message in model_request.messages],
+                    messages_sent,
                 )
 
             logger.warning(

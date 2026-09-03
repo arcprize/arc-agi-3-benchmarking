@@ -300,6 +300,50 @@ class TestModelConfig:
 
         assert configs[0]["runtime"]["state"] == "previous_response_id"
 
+    @pytest.mark.parametrize(
+        ("request_override", "message"),
+        [
+            ({"store": True}, "must set request.store=false"),
+            ({"background": True}, "cannot enable request.background"),
+            ({"previous_response_id": "resp"}, "incompatible request field"),
+            ({"conversation": "conv"}, "incompatible request field"),
+            ({"include": []}, "reasoning.encrypted_content"),
+            (
+                {"reasoning": {"context": "all_turns", "summary": "auto"}},
+                "context='auto'",
+            ),
+            (
+                {"reasoning": {"context": "auto", "summary": "detailed"}},
+                "summary='auto'",
+            ),
+        ],
+    )
+    def test_continuous_conversation_rejects_non_zdr_or_incomplete_settings(
+        self, tmp_path, monkeypatch, request_override, message
+    ):
+        request = {
+            "model": "gpt-5.6-sol",
+            "store": False,
+            "include": ["reasoning.encrypted_content"],
+            "reasoning": {"context": "auto", "summary": "auto"},
+        }
+        request.update(request_override)
+        config = _valid_config(
+            "encrypted",
+            runtime_api="responses",
+            runtime={
+                "adapter_id": "openai.responses.v1",
+                "sdk": "openai-python",
+                "api": "responses",
+                "state": "continuous_conversation",
+            },
+            request=request,
+        )
+        _write_model_configs(tmp_path, monkeypatch, [config])
+
+        with pytest.raises(ValueError, match=message):
+            model_config.load_model_configs()
+
     def test_load_model_configs_rejects_unknown_runtime_state(
         self,
         tmp_path,
@@ -671,6 +715,29 @@ class TestModelConfig:
             "effort": "low",
             "summary": "auto",
         }
+
+    def test_checked_in_provider_adapter_profile_is_zdr_compatible(self):
+        config = model_config.get_model_config(
+            "openai-gpt-5-6-sol-max-provider-adapter"
+        )
+
+        assert config["runtime"] == {
+            "adapter_id": "openai.responses.v1",
+            "sdk": "openai-python",
+            "api": "responses",
+            "state": "continuous_conversation",
+        }
+        assert config["request"]["model"] == "gpt-5.6-sol"
+        assert config["request"]["store"] is False
+        assert config["request"]["include"] == ["reasoning.encrypted_content"]
+        assert config["request"]["reasoning"] == {
+            "effort": "max",
+            "context": "auto",
+            "summary": "auto",
+        }
+        assert config["request"]["context_management"] == [
+            {"type": "compaction", "compact_threshold": 175_000}
+        ]
 
     def test_list_model_config_ids_supports_mixed_chat_and_responses_configs(
         self,

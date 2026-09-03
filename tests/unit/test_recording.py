@@ -1,8 +1,10 @@
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 
+from benchmarking.agent import BenchmarkingAgent
 from benchmarking.recording import RunRecord, StepRecord, StepUsage
 from benchmarking.runtime_models import ModelResponse, NormalizedUsage
 
@@ -90,3 +92,31 @@ class TestRecordingModels:
 
         assert '"assistant_response":"RESET"' in step_json
         assert f'"total_tokens":{model_response.usage.total_tokens}' in run_json
+
+    def test_legacy_recording_files_omit_new_opt_in_fields(self, tmp_path):
+        agent = BenchmarkingAgent.__new__(BenchmarkingAgent)
+        agent.run_dir = str(tmp_path)
+        agent.step_counter = 0
+        agent.run_record = RunRecord(
+            run_id="run-id",
+            game_id="game-id",
+            agent_name="agent",
+            model="legacy-model",
+            started_at=datetime.now(timezone.utc),
+            run_dir=str(tmp_path),
+        )
+        step = StepRecord(
+            step=1,
+            timestamp=datetime.now(timezone.utc),
+            model="legacy-model",
+            messages_sent=[{"role": "user", "content": "frame"}],
+            parsed_action="ACTION1",
+        )
+
+        agent._save_step(step)
+
+        run_payload = json.loads((tmp_path / "run_meta.json").read_text())
+        step_payload = json.loads((tmp_path / "step_001.json").read_text())
+        assert "runtime" not in run_payload
+        assert "request_record" not in step_payload
+        assert "state_transition" not in step_payload
