@@ -100,7 +100,7 @@ uv run main.py --config=openai-gpt-5-4-2026-03-05
 
 7. View your scorecard
 [run](https://arcprize.org/scorecards/17e98404-2c1c-4934-932a-3e58cc497d89)
-When you run a benchmark, a scorecard is saved on the ARC server. If you are logged in, you can browse your saved scorecards at [arcprize.org/scorecards](https://arcprize.org/scorecards).
+When you run a benchmark, a scorecard is saved on the ARC server. If you are logged in, you can browse your saved scorecards at [arcprize.org/scorecards](https://arcprize.org/scorecards/f7d9d16a-2882-43e0-b04f-0ed9edccf2ef).
 
 
 ## License
