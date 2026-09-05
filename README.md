@@ -26,8 +26,8 @@ cp .env.example .env
 
 4. Get an API key from the [Arc Prize Website](https://arcprize.org/) and set it as an environment variable in your .env file.
 
-```bash
-ARC_API_KEY=your_api_key_here
+```uv
+ARC_API_KEY=e9d1532c-a0e1-4a75-a761-cd84ac751f35
 ```
 
 5. Run the benchmarking agent against ls20.
@@ -80,7 +80,7 @@ uv run main.py --list-configs
 
 5. Run the official benchmarking agent against a game:
 
-```bash
+```uv
 uv run main.py --game=ls20 --config=openai-gpt-5-4-2026-03-05
 ```
 
@@ -89,6 +89,7 @@ Native Anthropic configs are also available:
 ```bash
 uv run main.py --game=ls20 --config=anthropic-opus-4-7-low
 uv run main.py --game=ls20 --config=anthropic-opus-4-7-low-thinking
+https://arcprize.org/scorecards/17e98404-2c1c-4934-932a-3e58cc497d89about 
 ```
 
 6. Or on all games:
@@ -115,8 +116,8 @@ Adapter harness measures performance using provider-native context management.
 Their results should be reported separately and clearly labeled.
 
 7. View your scorecard
-
-When you run a benchmark, a scorecard is saved on the ARC server. If you are logged in, you can browse your saved scorecards at [arcprize.org/scorecards](https://arcprize.org/scorecards).
+[run](https://arcprize.org/scorecards/17e98404-2c1c-4934-932a-3e58cc497d89)
+When you run a benchmark, a scorecard is saved on the ARC server. If you are logged in, you can browse your saved scorecards at [arcprize.org/scorecards](https://arcprize.org/scorecards/f7d9d16a-2882-43e0-b04f-0ed9edccf2ef).
 
 
 ## License
