@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from .models import calculate_cost
 from .runtime_models import NormalizedUsage
 
 
@@ -69,7 +70,27 @@ class StepUsage(BaseModel):
         return cls(**kwargs)
 
     @classmethod
-    def from_normalized_usage(cls, usage: NormalizedUsage) -> StepUsage:
+    def from_normalized_usage(
+        cls,
+        usage: NormalizedUsage,
+        pricing: dict[str, float] | None = None,
+    ) -> StepUsage:
+        cost = usage.cost
+        cost_details = dict(usage.cost_details)
+        if pricing:
+            input_cost = calculate_cost(
+                usage.input_tokens,
+                pricing.get("input", 0.0),
+            )
+            output_cost = calculate_cost(
+                usage.output_tokens,
+                pricing.get("output", 0.0),
+            )
+            cost = input_cost + output_cost
+            cost_details = {
+                "input_cost": input_cost,
+                "output_cost": output_cost,
+            }
         return cls(
             prompt_tokens=usage.input_tokens,
             completion_tokens=usage.output_tokens,
@@ -77,8 +98,8 @@ class StepUsage(BaseModel):
             reasoning_tokens=usage.reasoning_tokens,
             cached_tokens=usage.cached_tokens,
             cache_write_tokens=usage.cache_write_tokens,
-            cost=usage.cost,
-            cost_details=dict(usage.cost_details),
+            cost=cost,
+            cost_details=cost_details,
         )
 
 

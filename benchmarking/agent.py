@@ -657,7 +657,10 @@ class BenchmarkingAgent(Agent):
             actions
         )
         duration = round(time.monotonic() - start, 3)
-        step_usage = StepUsage.from_normalized_usage(model_response.usage)
+        step_usage = StepUsage.from_normalized_usage(
+            model_response.usage,
+            pricing=self._pricing,
+        )
 
         # On success, advance server-side state and flush the pending buffer so
         # the next turn sends only its new message(s).

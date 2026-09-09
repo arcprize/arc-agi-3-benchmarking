@@ -741,6 +741,30 @@ class TestBenchmarkingAgentConversationStorage:
         assert agent._saved_steps[0].assistant_response == "ACTION1"
         assert agent._saved_steps[0].reasoning == "choose the first action"
 
+    def test_choose_action_records_configured_cost_in_step_usage(self):
+        agent = _agent_for_choose_action(
+            analysis_mode=False,
+            responses=[
+                ModelResponse(
+                    output_text="ACTION1",
+                    usage=NormalizedUsage(
+                        input_tokens=1_000,
+                        output_tokens=2_000,
+                        total_tokens=3_000,
+                    ),
+                )
+            ],
+        )
+        agent._pricing = {"input": 0.75, "output": 3.75}
+
+        agent.choose_action([], _playable_frame())
+
+        assert agent._saved_steps[0].usage.cost == pytest.approx(0.00825)
+        assert agent._saved_steps[0].usage.cost_details == {
+            "input_cost": pytest.approx(0.00075),
+            "output_cost": pytest.approx(0.0075),
+        }
+
     def test_choose_action_appends_replay_xml_assistant_content_in_analysis_mode(self):
         agent = _agent_for_choose_action(
             analysis_mode=True,

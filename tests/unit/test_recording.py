@@ -54,6 +54,25 @@ class TestRecordingModels:
         assert usage.cost == 0.75
         assert usage.cost_details == {"provider_cost": 0.75}
 
+    def test_step_usage_from_normalized_usage_applies_configured_pricing(self):
+        usage = StepUsage.from_normalized_usage(
+            NormalizedUsage(
+                input_tokens=1_000,
+                output_tokens=2_000,
+                total_tokens=3_000,
+            ),
+            pricing={"input": 0.75, "output": 3.75},
+        )
+
+        assert usage.cost == pytest.approx(0.00825)
+        assert usage.cost_details == {
+            "input_cost": pytest.approx(0.00075),
+            "output_cost": pytest.approx(0.0075),
+        }
+        run_total = StepUsage() + usage
+        assert run_total.cost == pytest.approx(0.00825)
+        assert run_total.cost_details == usage.cost_details
+
     @pytest.mark.parametrize(
         "model_response",
         [
