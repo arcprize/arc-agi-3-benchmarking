@@ -5,6 +5,7 @@ import pytest
 
 from benchmarking.agent import BenchmarkingAgent
 from benchmarking.compaction import (
+    RECENT_CONTEXT_TEMPLATE,
     SUMMARY_BRIDGE_TEMPLATE,
     SUMMARY_REQUEST_PROMPT,
     SUMMARY_SYSTEM_PROMPT,
@@ -12,11 +13,12 @@ from benchmarking.compaction import (
     SummaryCompactor,
     request_config_with_output_limit,
 )
+from benchmarking.exceptions import ContextOverflowError
 from benchmarking.google_runtime import GoogleContinuousConversationRuntimeAdapter
 from benchmarking.recording import RunRecord
 from benchmarking.runtime_models import Message, ModelResponse, NormalizedUsage
 from benchmarking.runtime_registry import ADAPTER_DESCRIPTORS
-from benchmarking.runtime_state import RuntimeState
+from benchmarking.runtime_state import AcceptedTurn, ModelTurnRequest, RuntimeState
 
 
 class _FakeModelAdapter:
@@ -72,6 +74,13 @@ def _request_config():
     }
 
 
+def _policy(*, trigger_tokens=175_000):
+    return SummaryCompactionPolicy(
+        strategy="harness_summary",
+        trigger_tokens=trigger_tokens,
+    )
+
+
 @pytest.mark.unit
 class TestSummaryCompactor:
     def test_replaces_native_history_with_one_summary_bridge(self):
@@ -90,6 +99,7 @@ class TestSummaryCompactor:
         compactor = SummaryCompactor(
             SummaryCompactionPolicy(
                 strategy="harness_summary",
+                trigger_tokens=175_000,
                 summary_max_output_tokens=8_192,
             )
         )
@@ -99,7 +109,7 @@ class TestSummaryCompactor:
             state=state,
             request_config=_request_config(),
             trigger_tokens=175_100,
-            max_context_length=175_000,
+            max_context_length=1_048_576,
             max_retries=2,
         )
 
@@ -136,16 +146,14 @@ class TestSummaryCompactor:
             [_summary_response(" ", tokens=20), _summary_response("usable", tokens=30)]
         )
         state = adapter.initial_state()
-        compactor = SummaryCompactor(
-            SummaryCompactionPolicy(strategy="harness_summary")
-        )
+        compactor = SummaryCompactor(_policy(trigger_tokens=100))
 
         result = compactor.compact(
             adapter=adapter,
             state=state,
             request_config=_request_config(),
             trigger_tokens=200,
-            max_context_length=100,
+            max_context_length=100_000,
             max_retries=1,
         )
 
@@ -158,16 +166,14 @@ class TestSummaryCompactor:
         adapter, _ = _google_adapter(
             [_summary_response("first summary"), _summary_response("second summary")]
         )
-        compactor = SummaryCompactor(
-            SummaryCompactionPolicy(strategy="harness_summary")
-        )
+        compactor = SummaryCompactor(_policy(trigger_tokens=100))
 
         first = compactor.compact(
             adapter=adapter,
             state=adapter.initial_state(),
             request_config=_request_config(),
             trigger_tokens=200,
-            max_context_length=100,
+            max_context_length=100_000,
             max_retries=1,
         )
         state_after_more_history = adapter.buffer_inputs(
@@ -179,7 +185,7 @@ class TestSummaryCompactor:
             state=state_after_more_history,
             request_config=_request_config(),
             trigger_tokens=220,
-            max_context_length=100,
+            max_context_length=100_000,
             max_retries=1,
         )
 
@@ -190,9 +196,7 @@ class TestSummaryCompactor:
 
     def test_fails_closed_after_repeated_blank_summaries(self):
         adapter, _ = _google_adapter([_summary_response(""), _summary_response(" ")])
-        compactor = SummaryCompactor(
-            SummaryCompactionPolicy(strategy="harness_summary")
-        )
+        compactor = SummaryCompactor(_policy(trigger_tokens=100))
 
         with pytest.raises(RuntimeError, match="failed to produce non-empty text"):
             compactor.compact(
@@ -200,39 +204,180 @@ class TestSummaryCompactor:
                 state=adapter.initial_state(),
                 request_config=_request_config(),
                 trigger_tokens=200,
-                max_context_length=100,
+                max_context_length=100_000,
                 max_retries=1,
             )
 
-    def test_overflow_fails_immediately_without_replacing_accepted_state(self):
-        adapter, low_level = _google_adapter([RuntimeError("context overflow")])
-        state = adapter.buffer_inputs(
-            adapter.initial_state(),
-            [Message(role="user", content="accepted history")],
+    def test_overflow_unwinds_complete_turn_and_carries_readable_tail(self):
+        adapter, low_level = _google_adapter(
+            [ContextOverflowError("context overflow"), _summary_response("prefix")]
         )
-        compactor = SummaryCompactor(
-            SummaryCompactionPolicy(strategy="harness_summary")
+        state = RuntimeState(
+            adapter_id="google.interactions.v1",
+            strategy="continuous_conversation",
+            payload={
+                "steps": [
+                    {"type": "user_input", "content": "first"},
+                    {"type": "thought", "signature": "opaque-first"},
+                    {"type": "model_output", "content": "ACTION1"},
+                    {"type": "user_input", "content": "recent"},
+                    {"type": "thought", "signature": "opaque-recent"},
+                    {"type": "model_output", "content": "ACTION2"},
+                ]
+            },
+            accepted_turns=[
+                AcceptedTurn(
+                    start_item=0,
+                    end_item=3,
+                    messages=[
+                        Message(role="user", content="first"),
+                        Message(role="assistant", content="ACTION1"),
+                    ],
+                    reasoning_summary="first reasoning",
+                ),
+                AcceptedTurn(
+                    start_item=3,
+                    end_item=6,
+                    messages=[
+                        Message(role="user", content="recent"),
+                        Message(role="assistant", content="ACTION2"),
+                    ],
+                    reasoning_summary="recent reasoning",
+                ),
+            ],
+        )
+        original_state = state.model_copy(deep=True)
+        compactor = SummaryCompactor(_policy(trigger_tokens=100))
+
+        result = compactor.compact(
+            adapter=adapter,
+            state=state,
+            request_config=_request_config(),
+            trigger_tokens=200,
+            max_context_length=100_000,
+            max_retries=1,
         )
 
-        with pytest.raises(RuntimeError, match="context overflow"):
+        assert len(low_level.requests) == 2
+        assert len(low_level.requests[0].native_input) == 7
+        assert len(low_level.requests[1].native_input) == 4
+        assert result.attempts == 2
+        assert result.overflow_recoveries == 1
+        assert result.excluded_turns == 1
+        assert result.excluded_history_items == 3
+        bridge = result.state.payload["steps"][0]["content"][0]["text"]
+        assert "prefix" in bridge
+        assert "recent" in bridge
+        assert "ACTION2" in bridge
+        assert "recent reasoning" in bridge
+        assert "first reasoning" not in bridge
+        assert "opaque-recent" not in bridge
+        assert state == original_state
+
+    def test_overflow_at_protected_boundary_fails_without_mutating_state(self):
+        adapter, low_level = _google_adapter(
+            [ContextOverflowError("context overflow")]
+        )
+        state = adapter.buffer_inputs(
+            adapter.initial_state(),
+            [Message(role="user", content="protected continuation")],
+        )
+        compactor = SummaryCompactor(_policy(trigger_tokens=100))
+
+        with pytest.raises(ContextOverflowError, match="protected context boundary"):
             compactor.compact(
                 adapter=adapter,
                 state=state,
                 request_config=_request_config(),
                 trigger_tokens=200,
-                max_context_length=100,
-                max_retries=3,
+                max_context_length=100_000,
+                max_retries=1,
             )
 
         assert len(low_level.requests) == 1
-        assert "accepted history" in state.model_dump_json()
+        assert "protected continuation" in state.model_dump_json()
+
+    def test_repeated_overflow_preserves_excluded_turn_order(self):
+        adapter, _ = _google_adapter(
+            [
+                _summary_response("ACTION1"),
+                _summary_response("ACTION2"),
+                ContextOverflowError("first overflow"),
+                ContextOverflowError("second overflow"),
+                _summary_response("empty-prefix summary"),
+            ]
+        )
+        first = adapter.invoke_turn(
+            ModelTurnRequest(
+                system_prompt="system",
+                new_messages=[Message(role="user", content="first input")],
+                request_config=_request_config(),
+                previous_state=adapter.initial_state(),
+            )
+        )
+        second = adapter.invoke_turn(
+            ModelTurnRequest(
+                system_prompt="system",
+                new_messages=[Message(role="user", content="second input")],
+                request_config=_request_config(),
+                previous_state=first.state,
+            )
+        )
+        accepted_state = second.state.model_copy(deep=True)
+        compactor = SummaryCompactor(_policy(trigger_tokens=100))
+
+        result = compactor.compact(
+            adapter=adapter,
+            state=second.state,
+            request_config=_request_config(),
+            trigger_tokens=200,
+            max_context_length=100_000,
+            max_retries=1,
+        )
+
+        bridge = result.state.payload["steps"][0]["content"][0]["text"]
+        assert bridge.index("first input") < bridge.index("second input")
+        assert result.overflow_recoveries == 2
+        assert result.excluded_turns == 2
+        assert result.attempts == 3
+        assert second.state == accepted_state
+
+    def test_non_overflow_error_does_not_remove_history(self):
+        adapter, _ = _google_adapter([RuntimeError("service unavailable")])
+        state = adapter.initial_state()
+        compactor = SummaryCompactor(_policy(trigger_tokens=100))
+
+        with pytest.raises(RuntimeError, match="service unavailable"):
+            compactor.compact(
+                adapter=adapter,
+                state=state,
+                request_config=_request_config(),
+                trigger_tokens=200,
+                max_context_length=100_000,
+                max_retries=1,
+            )
+
+    def test_oversized_continuation_bridge_fails_closed(self):
+        adapter, _ = _google_adapter([_summary_response("large summary")])
+        state = adapter.initial_state()
+        compactor = SummaryCompactor(_policy(trigger_tokens=10))
+
+        with pytest.raises(ContextOverflowError, match="continuation bridge"):
+            compactor.compact(
+                adapter=adapter,
+                state=state,
+                request_config=_request_config(),
+                trigger_tokens=20,
+                max_context_length=10,
+                max_retries=1,
+            )
 
     def test_trigger_uses_reported_total_tokens(self):
-        assert SummaryCompactor.should_compact(
-            NormalizedUsage(total_tokens=175_000), 175_000
-        )
-        assert not SummaryCompactor.should_compact(
-            NormalizedUsage(total_tokens=174_999), 175_000
+        compactor = SummaryCompactor(_policy())
+
+        assert compactor.should_compact(NormalizedUsage(total_tokens=175_000))
+        assert not compactor.should_compact(
+            NormalizedUsage(total_tokens=174_999)
         )
 
     def test_output_limit_override_does_not_mutate_request(self):
@@ -244,7 +389,10 @@ class TestSummaryCompactor:
         assert request["generation_config"]["max_output_tokens"] == 65_536
 
     def test_prompts_are_domain_neutral(self):
-        prompt = f"{SUMMARY_SYSTEM_PROMPT}\n{SUMMARY_REQUEST_PROMPT}\n{SUMMARY_BRIDGE_TEMPLATE}".lower()
+        prompt = (
+            f"{SUMMARY_SYSTEM_PROMPT}\n{SUMMARY_REQUEST_PROMPT}\n"
+            f"{SUMMARY_BRIDGE_TEMPLATE}\n{RECENT_CONTEXT_TEMPLATE}"
+        ).lower()
 
         for excluded in ("arc", "game", "level", "frame", "coordinate"):
             assert excluded not in prompt
@@ -261,11 +409,11 @@ def test_agent_persists_compaction_usage_without_estimating_cost(tmp_path):
         payload={"steps": [{"type": "thought", "signature": "opaque"}]},
     )
     agent._summary_compactor = SummaryCompactor(
-        SummaryCompactionPolicy(strategy="harness_summary")
+        _policy()
     )
     agent._pending_compaction_trigger_tokens = 175_100
     agent._request_kwargs = _request_config()
-    agent.MAX_CONTEXT_LENGTH = 175_000
+    agent.MAX_CONTEXT_LENGTH = 1_048_576
     agent.MAX_RETRIES = 1
     agent.MODEL = "gemini-3.8-flash"
     agent._pricing = {"input": 0.75, "output": 3.75}
@@ -291,6 +439,8 @@ def test_agent_persists_compaction_usage_without_estimating_cost(tmp_path):
     assert payload["before_step"] == 3
     assert payload["mechanism"] == "harness_summary"
     assert payload["opaque_continuity_preserved"] is False
+    assert payload["overflow_recoveries"] == 0
+    assert payload["excluded_turns"] == 0
     assert payload["usage"]["total_tokens"] == 140
     assert payload["usage"]["cost"] == 0
     assert payload["usage"]["cost_details"] == {}

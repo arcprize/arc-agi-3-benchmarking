@@ -94,27 +94,40 @@ and [Zero Data Retention](https://ai.google.dev/gemini-api/docs/zdr).
 ## Harness summary compaction
 
 Providers without native compaction can select `runtime.compaction.strategy:
-harness_summary`. After a successful model response reaches the configured
-`agent.MAX_CONTEXT_LENGTH`, the harness schedules compaction before the next
-model turn. The selected model receives a separate, domain-neutral request to
-summarize the objective, established facts and decisions, progress, current
-state, constraints, unsuccessful approaches, identifiers, and next steps.
+harness_summary`. `runtime.compaction.trigger_tokens` controls when the harness
+schedules compaction, while `agent.MAX_CONTEXT_LENGTH` records the provider's
+hard context capacity. Configuration validation reserves the requested summary
+output plus `summary_input_headroom_tokens` between those values. The supplied
+Gemini 3.8 Flash profile triggers at 175k against the model's
+[documented 1,048,576-token input limit](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash).
+The selected model receives a separate,
+domain-neutral request to summarize the objective, established facts and
+decisions, progress, current state, constraints, unsuccessful approaches,
+identifiers, and next steps.
 
 The resulting plain-text summary is inserted as one user-role continuation
 message in a fresh provider state. This intentionally ends opaque reasoning
 continuity at the boundary, so recordings label it with
 `opaque_continuity_preserved: false`. Newer input takes precedence over the
 summary if they conflict. Empty summaries are retried from unchanged accepted
-state; overflow or retry exhaustion fails closed without deleting accepted
-turns.
+state. Provider adapters classify context-limit rejections separately from
+other failures. On a context overflow, compaction retries against progressively
+shorter candidate states using explicit accepted-turn boundaries. Removed
+recent turns are carried into the same continuation message in readable form,
+in chronological order, without opaque provider state. The accepted state is
+not replaced until compaction succeeds. Reaching the protected continuation
+boundary, producing an oversized continuation message, or exhausting empty
+summary retries fails closed.
 
 Each harness compaction is written to `compaction_NNN.json` with its summary,
-trigger, item counts, attempts, and token usage. The usage is also added to the
-run total. Monetary cost remains provider-reported only; the harness does not
-write a configured-price estimate into the provider cost field. The
-summary-and-bridge structure is inspired by
+trigger, item counts, attempts, overflow recoveries, excluded-turn counts, and
+token usage. The usage is also added to the run total. Monetary cost remains
+provider-reported only; the harness does not write a configured-price estimate
+into the provider cost field. The summary-and-bridge structure and completed
+turn unwinding are inspired by
 [Stirrup](https://github.com/ArtificialAnalysis/Stirrup), which is MIT licensed;
-the prompts here are independently adapted and domain-neutral.
+the prompts and readable-tail preservation here are independently adapted and
+domain-neutral.
 
 ## Recording and provenance
 

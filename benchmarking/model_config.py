@@ -190,10 +190,15 @@ def _validate_continuous_conversation_config(
                 f"Model config '{config_id}' uses harness summary compaction and "
                 "must set agent.MAX_CONTEXT_LENGTH to a positive integer."
             )
-        if policy.summary_max_output_tokens >= max_context_length:
+        reserved_tokens = (
+            policy.trigger_tokens
+            + policy.summary_max_output_tokens
+            + policy.summary_input_headroom_tokens
+        )
+        if reserved_tokens >= max_context_length:
             raise ValueError(
-                f"Model config '{config_id}' runtime.compaction."
-                "summary_max_output_tokens must be less than "
+                f"Model config '{config_id}' runtime.compaction trigger, summary "
+                "output, and input headroom must total less than "
                 "agent.MAX_CONTEXT_LENGTH."
             )
 

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from google.genai import errors as google_genai_errors
 from google.genai import types as google_genai_types
 
+from .exceptions import ContextOverflowError
 from .runtime_models import (
     ModelRequest,
     ModelResponse,
@@ -30,6 +32,30 @@ CONTINUOUS_CONVERSATION_RUNTIME_KEYS = frozenset(
         ("openai-python", "responses"),
     }
 )
+
+_GOOGLE_CONTEXT_OVERFLOW_MARKERS = (
+    "context length",
+    "context_length",
+    "context window",
+    "exceeds the maximum number of tokens",
+    "input token count exceeds",
+    "maximum input tokens",
+    "too many input tokens",
+    "too many tokens",
+)
+
+
+def _is_google_context_overflow(error: Exception) -> bool:
+    if not isinstance(error, google_genai_errors.ClientError):
+        return False
+    if error.code not in {400, 413}:
+        return False
+    details = " ".join(
+        str(value)
+        for value in (error.message, error.status, error.details)
+        if value is not None
+    ).lower()
+    return any(marker in details for marker in _GOOGLE_CONTEXT_OVERFLOW_MARKERS)
 
 
 class ModelRuntimeAdapter(Protocol):
@@ -344,9 +370,14 @@ class GoogleGenAIInteractionsAdapter:
         return request_config
 
     def invoke(self, request: ModelRequest) -> ModelResponse:
-        raw_response = self._client.interactions.create(
-            **self._build_call_kwargs(request),
-        )
+        try:
+            raw_response = self._client.interactions.create(
+                **self._build_call_kwargs(request),
+            )
+        except google_genai_errors.ClientError as exc:
+            if _is_google_context_overflow(exc):
+                raise ContextOverflowError(str(exc)) from exc
+            raise
         return normalize_google_interaction_response(raw_response)
 
 

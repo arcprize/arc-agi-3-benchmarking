@@ -198,7 +198,7 @@ class BenchmarkingAgent(Agent):
             if self._summary_compactor is not None:
                 runtime_metadata["compaction"] = {
                     **self._summary_compactor.policy.model_dump(),
-                    "trigger_tokens": self.MAX_CONTEXT_LENGTH,
+                    "context_limit_tokens": self.MAX_CONTEXT_LENGTH,
                     "opaque_continuity_preserved": False,
                 }
                 runtime_metadata["compaction_count"] = 0
@@ -555,6 +555,7 @@ class BenchmarkingAgent(Agent):
             trigger_tokens=trigger_tokens,
             max_context_length=self.MAX_CONTEXT_LENGTH,
             max_retries=self.MAX_RETRIES,
+            estimated_chars_per_token=self.ESTIMATED_CHARS_PER_TOKEN,
         )
         duration = round(time.monotonic() - started, 3)
         self._runtime_state = result.state
@@ -578,6 +579,9 @@ class BenchmarkingAgent(Agent):
                 history_items_before=result.history_items_before,
                 history_items_after=result.history_items_after,
                 attempts=result.attempts,
+                overflow_recoveries=result.overflow_recoveries,
+                excluded_turns=result.excluded_turns,
+                excluded_history_items=result.excluded_history_items,
                 usage=compaction_usage,
             )
         )
@@ -585,10 +589,7 @@ class BenchmarkingAgent(Agent):
         summary_compactor = getattr(self, "_summary_compactor", None)
         if summary_compactor is None:
             return
-        if summary_compactor.should_compact(
-            usage,
-            self.MAX_CONTEXT_LENGTH,
-        ):
+        if summary_compactor.should_compact(usage):
             self._pending_compaction_trigger_tokens = usage.total_tokens
 
     def _build_model_request(self) -> ModelRequest:

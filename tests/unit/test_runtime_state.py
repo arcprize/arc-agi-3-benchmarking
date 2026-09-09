@@ -8,6 +8,7 @@ from benchmarking.runtime_registry import (
     resolve_adapter_id,
 )
 from benchmarking.runtime_state import (
+    AcceptedTurn,
     ModelTurnRequest,
     RuntimeState,
     harness_commit_sha,
@@ -57,11 +58,37 @@ class TestRuntimeStateContract:
             adapter_id="openai.responses.v1",
             strategy="continuous_conversation",
             payload={"input_items": [{"type": "reasoning", "id": "rs_1"}]},
+            accepted_turns=[
+                AcceptedTurn(
+                    start_item=0,
+                    end_item=1,
+                    messages=[Message(role="user", content="readable")],
+                )
+            ],
         )
 
         restored = RuntimeState.model_validate_json(state.model_dump_json())
 
         assert restored == state
+
+    def test_rejects_overlapping_accepted_turn_boundaries(self):
+        with pytest.raises(ValidationError, match="ordered and non-overlapping"):
+            RuntimeState(
+                adapter_id="openai.responses.v1",
+                strategy="continuous_conversation",
+                accepted_turns=[
+                    AcceptedTurn(
+                        start_item=0,
+                        end_item=3,
+                        messages=[Message(role="user", content="one")],
+                    ),
+                    AcceptedTurn(
+                        start_item=2,
+                        end_item=4,
+                        messages=[Message(role="user", content="two")],
+                    ),
+                ],
+            )
 
     def test_rejects_unknown_schema_version(self):
         with pytest.raises(ValidationError, match="schema_version"):

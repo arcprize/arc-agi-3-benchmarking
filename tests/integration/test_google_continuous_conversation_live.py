@@ -106,17 +106,18 @@ def test_google_harness_summary_compaction_live() -> None:
     compactor = SummaryCompactor(
         SummaryCompactionPolicy(
             strategy="harness_summary",
+            trigger_tokens=1,
             summary_max_output_tokens=1_024,
         )
     )
 
-    assert compactor.should_compact(first.response.usage, 1)
+    assert compactor.should_compact(first.response.usage)
     compacted = compactor.compact(
         adapter=adapter,
         state=first.state,
         request_config=request_config,
         trigger_tokens=first.response.usage.total_tokens,
-        max_context_length=1,
+        max_context_length=1_048_576,
         max_retries=1,
     )
     final = _turn(

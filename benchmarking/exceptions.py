@@ -4,3 +4,7 @@ class EmptyResponseError(Exception):
     def __init__(self, message: str, response: object | None = None) -> None:
         super().__init__(message)
         self.response = response
+
+
+class ContextOverflowError(Exception):
+    """Raised when a provider rejects a request for exceeding context capacity."""

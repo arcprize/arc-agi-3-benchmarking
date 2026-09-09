@@ -2,7 +2,9 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from google.genai import errors as google_genai_errors
 
+from benchmarking.exceptions import ContextOverflowError
 from benchmarking.google_runtime import (
     GoogleContinuousConversationRuntimeAdapter,
     serialize_interaction_steps,
@@ -31,6 +33,8 @@ class _FakeInteractions:
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
+        if isinstance(self.response, Exception):
+            raise self.response
         return self.response
 
 
@@ -204,6 +208,46 @@ class TestGoogleInteractionsAdapter:
 
         assert isinstance(adapter, GoogleGenAIInteractionsAdapter)
 
+    def test_maps_only_recognized_context_limit_errors(self):
+        overflow = google_genai_errors.ClientError(
+            400,
+            {
+                "error": {
+                    "status": "INVALID_ARGUMENT",
+                    "message": "Input token count exceeds the maximum number of tokens",
+                }
+            },
+        )
+        adapter = GoogleGenAIInteractionsAdapter(_FakeClient(overflow))
+
+        with pytest.raises(ContextOverflowError, match="maximum number of tokens"):
+            adapter.invoke(
+                ModelRequest(
+                    messages=[Message(role="user", content="large")],
+                    request_config={"model": "gemini-3.8-flash", "store": False},
+                )
+            )
+
+    def test_does_not_map_unrelated_invalid_argument(self):
+        invalid = google_genai_errors.ClientError(
+            400,
+            {
+                "error": {
+                    "status": "INVALID_ARGUMENT",
+                    "message": "Request contains an invalid argument",
+                }
+            },
+        )
+        adapter = GoogleGenAIInteractionsAdapter(_FakeClient(invalid))
+
+        with pytest.raises(google_genai_errors.ClientError):
+            adapter.invoke(
+                ModelRequest(
+                    messages=[Message(role="user", content="invalid")],
+                    request_config={"model": "gemini-3.8-flash", "store": False},
+                )
+            )
+
 
 @pytest.mark.unit
 class TestGoogleContinuousConversation:
@@ -228,6 +272,23 @@ class TestGoogleContinuousConversation:
                 "content": [{"type": "text", "text": "two"}],
             },
         ]
+        assert second.state.payload["steps"][-2:] == _steps(2)
+        assert [(turn.start_item, turn.end_item) for turn in second.state.accepted_turns] == [
+            (0, 3),
+            (3, 6),
+        ]
+        assert second.state.accepted_turns[-1].messages == [
+            Message(role="user", content="two"),
+            Message(role="assistant", content="ACTION1"),
+        ]
+        assert second.state.accepted_turns[-1].reasoning_summary == "summary 2"
+
+        unwind = adapter.unwind_latest_accepted_turn(second.state)
+
+        assert unwind is not None
+        assert unwind.state.payload["steps"] == second.state.payload["steps"][:3]
+        assert len(unwind.state.accepted_turns) == 1
+        assert unwind.removed_items == 3
         assert second.state.payload["steps"][-2:] == _steps(2)
 
     def test_retry_isolation_reuses_last_accepted_state(self):

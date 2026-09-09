@@ -23,6 +23,21 @@ SUPPORTED_RUNTIME_STATES = frozenset(
 )
 
 
+class AcceptedTurn(BaseModel):
+    """Provider-neutral boundary and readable content for one accepted turn."""
+
+    start_item: int = Field(ge=0)
+    end_item: int = Field(gt=0)
+    messages: list[Message] = Field(min_length=1)
+    reasoning_summary: str | None = None
+
+    @model_validator(mode="after")
+    def validate_range(self) -> AcceptedTurn:
+        if self.end_item <= self.start_item:
+            raise ValueError("Accepted turn end_item must be greater than start_item.")
+        return self
+
+
 class RuntimeState(BaseModel):
     """Versioned, JSON-serializable envelope for provider-owned turn state."""
 
@@ -30,6 +45,7 @@ class RuntimeState(BaseModel):
     adapter_id: str
     strategy: str
     payload: dict[str, Any] = Field(default_factory=dict)
+    accepted_turns: list[AcceptedTurn] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_envelope(self) -> RuntimeState:
@@ -46,6 +62,14 @@ class RuntimeState(BaseModel):
             json.dumps(self.payload)
         except (TypeError, ValueError) as exc:
             raise ValueError("Runtime state payload must be JSON-serializable.") from exc
+        previous_end = 0
+        for turn in self.accepted_turns:
+            if turn.start_item < previous_end:
+                raise ValueError(
+                    "Runtime state accepted-turn boundaries must be ordered and "
+                    "non-overlapping."
+                )
+            previous_end = turn.end_item
         return self
 
     def validate_for(self, *, adapter_id: str, strategy: str) -> None:
@@ -100,6 +124,14 @@ class AdapterDescriptor(BaseModel):
     approval_status: str
 
 
+class CompactionUnwindResult(BaseModel):
+    """A shorter candidate state plus the readable turn removed from its tail."""
+
+    state: RuntimeState
+    turn: AcceptedTurn
+    removed_items: int = Field(gt=0)
+
+
 class StatefulRuntimeAdapter(Protocol):
     descriptor: AdapterDescriptor
     strategy: str
@@ -113,14 +145,81 @@ class StatefulRuntimeAdapter(Protocol):
 
     def invoke_turn(self, request: ModelTurnRequest) -> ModelTurnResult: ...
 
+    def unwind_latest_accepted_turn(
+        self, state: RuntimeState
+    ) -> CompactionUnwindResult | None: ...
+
 
 def replace_runtime_payload(
-    state: RuntimeState, payload: dict[str, Any]
+    state: RuntimeState,
+    payload: dict[str, Any],
+    *,
+    accepted_turns: list[AcceptedTurn] | None = None,
 ) -> RuntimeState:
     """Replace provider payload while re-running envelope validation."""
 
-    return RuntimeState.model_validate(
-        {**state.model_dump(exclude={"payload"}), "payload": payload}
+    values = {**state.model_dump(exclude={"payload"}), "payload": payload}
+    if accepted_turns is not None:
+        values["accepted_turns"] = [
+            turn.model_dump() for turn in accepted_turns
+        ]
+    return RuntimeState.model_validate(values)
+
+
+def append_accepted_turn(
+    *,
+    state: RuntimeState,
+    payload: dict[str, Any],
+    start_item: int,
+    end_item: int,
+    request_messages: list[Message],
+    response: ModelResponse,
+) -> RuntimeState:
+    """Return provisional state with one newly completed turn boundary."""
+
+    turn_messages = [
+        *request_messages,
+        Message(role="assistant", content=response.output_text),
+    ]
+    turn = AcceptedTurn(
+        start_item=start_item,
+        end_item=end_item,
+        messages=turn_messages,
+        reasoning_summary=response.reasoning_text,
+    )
+    return replace_runtime_payload(
+        state,
+        payload,
+        accepted_turns=[*state.accepted_turns, turn],
+    )
+
+
+def unwind_runtime_state_items(
+    state: RuntimeState,
+    *,
+    payload_key: str,
+) -> CompactionUnwindResult | None:
+    """Remove the latest complete accepted turn from a candidate state."""
+
+    if not state.accepted_turns:
+        return None
+    items = runtime_payload_items(state, payload_key)
+    turn = state.accepted_turns[-1]
+    if turn.end_item > len(items):
+        raise ValueError(
+            "Runtime state accepted-turn boundary exceeds provider item count."
+        )
+    shortened_payload = dict(state.payload)
+    shortened_payload[payload_key] = items[: turn.start_item]
+    shortened_state = replace_runtime_payload(
+        state,
+        shortened_payload,
+        accepted_turns=state.accepted_turns[:-1],
+    )
+    return CompactionUnwindResult(
+        state=shortened_state,
+        turn=turn,
+        removed_items=turn.end_item - turn.start_item,
     )
 
 

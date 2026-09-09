@@ -13,13 +13,16 @@ from .runtime_models import (
 from .runtime_state import (
     CONTINUOUS_CONVERSATION_RUNTIME_STATE,
     AdapterDescriptor,
+    CompactionUnwindResult,
     ModelTurnRequest,
     ModelTurnResult,
     RuntimeState,
     StateTransitionTelemetry,
+    append_accepted_turn,
     replace_runtime_payload,
     runtime_payload_items,
     sanitize_settings,
+    unwind_runtime_state_items,
 )
 
 
@@ -152,7 +155,9 @@ class OpenAIContinuousConversationRuntimeAdapter:
             adapter_id=self.descriptor.adapter_id, strategy=self.strategy
         )
         validate_continuous_conversation_request(request.request_config)
-        input_items = runtime_payload_items(request.previous_state, "input_items")
+        previous_items = runtime_payload_items(request.previous_state, "input_items")
+        turn_start = len(previous_items)
+        input_items = list(previous_items)
         input_items.extend(message.model_dump() for message in request.new_messages)
         model_request = ModelRequest(
             messages=[
@@ -177,12 +182,25 @@ class OpenAIContinuousConversationRuntimeAdapter:
         compaction_count = sum(
             item.get("type") == "compaction" for item in output_items
         )
+        if compaction_count:
+            next_state = replace_runtime_payload(
+                request.previous_state,
+                {"input_items": next_items},
+                accepted_turns=[],
+            )
+        else:
+            next_state = append_accepted_turn(
+                state=request.previous_state,
+                payload={"input_items": next_items},
+                start_item=turn_start,
+                end_item=len(next_items),
+                request_messages=request.new_messages,
+                response=response,
+            )
         descriptors = [sanitized_item_descriptor(item) for item in input_items]
         return ModelTurnResult(
             response=response,
-            state=replace_runtime_payload(
-                request.previous_state, {"input_items": next_items}
-            ),
+            state=next_state,
             sanitized_request={
                 "instructions_present": True,
                 "input_items": descriptors,
@@ -202,3 +220,11 @@ class OpenAIContinuousConversationRuntimeAdapter:
                 "history_items_after_prune": len(next_items),
             },
         )
+
+    def unwind_latest_accepted_turn(
+        self, state: RuntimeState
+    ) -> CompactionUnwindResult | None:
+        state.validate_for(
+            adapter_id=self.descriptor.adapter_id, strategy=self.strategy
+        )
+        return unwind_runtime_state_items(state, payload_key="input_items")

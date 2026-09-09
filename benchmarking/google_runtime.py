@@ -8,13 +8,16 @@ from .runtime_models import Message, ModelRequest, ModelResponse
 from .runtime_state import (
     CONTINUOUS_CONVERSATION_RUNTIME_STATE,
     AdapterDescriptor,
+    CompactionUnwindResult,
     ModelTurnRequest,
     ModelTurnResult,
     RuntimeState,
     StateTransitionTelemetry,
+    append_accepted_turn,
     replace_runtime_payload,
     runtime_payload_items,
     sanitize_settings,
+    unwind_runtime_state_items,
 )
 
 
@@ -131,7 +134,9 @@ class GoogleContinuousConversationRuntimeAdapter:
             adapter_id=self.descriptor.adapter_id, strategy=self.strategy
         )
         validate_google_continuous_conversation_request(request.request_config)
-        input_steps = runtime_payload_items(request.previous_state, "steps")
+        previous_steps = runtime_payload_items(request.previous_state, "steps")
+        turn_start = len(previous_steps)
+        input_steps = list(previous_steps)
         input_steps.extend(
             message_to_interaction_step(message) for message in request.new_messages
         )
@@ -155,8 +160,13 @@ class GoogleContinuousConversationRuntimeAdapter:
         )
         return ModelTurnResult(
             response=response,
-            state=replace_runtime_payload(
-                request.previous_state, {"steps": next_steps}
+            state=append_accepted_turn(
+                state=request.previous_state,
+                payload={"steps": next_steps},
+                start_item=turn_start,
+                end_item=len(next_steps),
+                request_messages=request.new_messages,
+                response=response,
             ),
             sanitized_request={
                 "instructions_present": True,
@@ -170,3 +180,11 @@ class GoogleContinuousConversationRuntimeAdapter:
                 "history_items_after_prune": len(next_steps),
             },
         )
+
+    def unwind_latest_accepted_turn(
+        self, state: RuntimeState
+    ) -> CompactionUnwindResult | None:
+        state.validate_for(
+            adapter_id=self.descriptor.adapter_id, strategy=self.strategy
+        )
+        return unwind_runtime_state_items(state, payload_key="steps")

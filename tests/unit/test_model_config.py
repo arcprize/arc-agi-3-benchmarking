@@ -771,7 +771,7 @@ class TestModelConfig:
 
         assert config["agent"] == {
             "MAX_ACTIONS_BASELINE_MULTIPLIER": 5.0,
-            "MAX_CONTEXT_LENGTH": 175_000,
+            "MAX_CONTEXT_LENGTH": 1_048_576,
         }
         assert config["runtime"] == {
             "adapter_id": "google.interactions.v1",
@@ -780,7 +780,9 @@ class TestModelConfig:
             "state": "continuous_conversation",
             "compaction": {
                 "strategy": "harness_summary",
+                "trigger_tokens": 175_000,
                 "summary_max_output_tokens": 8_192,
+                "summary_input_headroom_tokens": 8_192,
             },
         }
         assert config["client"] == {"api_key_env": "GOOGLE_API_KEY"}
@@ -813,11 +815,13 @@ class TestModelConfig:
                 {
                     "compaction": {
                         "strategy": "harness_summary",
+                        "trigger_tokens": 175_000,
                         "summary_max_output_tokens": 175_000,
+                        "summary_input_headroom_tokens": 8_192,
                     }
                 },
                 {},
-                "must be less than agent.MAX_CONTEXT_LENGTH",
+                "must total less than agent.MAX_CONTEXT_LENGTH",
             ),
         ],
     )
@@ -836,7 +840,9 @@ class TestModelConfig:
             "state": "continuous_conversation",
             "compaction": {
                 "strategy": "harness_summary",
+                "trigger_tokens": 100_000,
                 "summary_max_output_tokens": 8_192,
+                "summary_input_headroom_tokens": 8_192,
             },
             **runtime_update,
         }

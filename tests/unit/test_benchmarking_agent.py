@@ -1323,7 +1323,9 @@ class TestBenchmarkingAgentContinuousConversationState:
         agent._pending_turn_messages = []
         agent._last_turn_result = None
         agent._summary_compactor = SummaryCompactor(
-            SummaryCompactionPolicy(strategy="harness_summary")
+            SummaryCompactionPolicy(
+                strategy="harness_summary", trigger_tokens=6
+            )
         )
         agent._pending_compaction_trigger_tokens = None
         agent.MAX_CONTEXT_LENGTH = 6

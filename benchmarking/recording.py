@@ -115,6 +115,9 @@ class CompactionRecord(BaseModel):
     history_items_before: int
     history_items_after: int
     attempts: int
+    overflow_recoveries: int = 0
+    excluded_turns: int = 0
+    excluded_history_items: int = 0
     usage: StepUsage = Field(default_factory=StepUsage)
 
 
