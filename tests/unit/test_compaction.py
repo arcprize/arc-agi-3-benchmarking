@@ -251,7 +251,7 @@ class TestSummaryCompactor:
 
 
 @pytest.mark.unit
-def test_agent_persists_compaction_usage_and_cost(tmp_path):
+def test_agent_persists_compaction_usage_without_estimating_cost(tmp_path):
     adapter, _ = _google_adapter([_summary_response("retained state", tokens=140)])
     agent = BenchmarkingAgent.__new__(BenchmarkingAgent)
     agent._stateful_adapter = adapter
@@ -292,8 +292,10 @@ def test_agent_persists_compaction_usage_and_cost(tmp_path):
     assert payload["mechanism"] == "harness_summary"
     assert payload["opaque_continuity_preserved"] is False
     assert payload["usage"]["total_tokens"] == 140
-    assert payload["usage"]["cost"] > 0
+    assert payload["usage"]["cost"] == 0
+    assert payload["usage"]["cost_details"] == {}
     assert run_payload["total_usage"]["total_tokens"] == 140
+    assert run_payload["total_usage"]["cost"] == 0
     assert run_payload["runtime"]["compaction_count"] == 1
     assert agent._pending_compaction_trigger_tokens is None
     assert "opaque" not in agent._runtime_state.model_dump_json()

@@ -20,7 +20,6 @@ from .compaction import (
 )
 from .exceptions import EmptyResponseError
 from .model_config import get_model_config
-from .models import calculate_cost
 from .recording import CompactionRecord, RunRecord, StepRecord, StepUsage
 from .runtime_adapters import build_model_runtime_adapter
 from .runtime_clients import build_model_runtime_client
@@ -542,26 +541,6 @@ class BenchmarkingAgent(Agent):
             compaction.before_step,
         )
 
-    def _compaction_usage(self, usage: NormalizedUsage) -> StepUsage:
-        input_cost = calculate_cost(
-            usage.input_tokens,
-            self._pricing.get("input", 0.0),
-        )
-        output_cost = calculate_cost(
-            usage.output_tokens,
-            self._pricing.get("output", 0.0),
-        )
-        return StepUsage(
-            **StepUsage.from_normalized_usage(usage).model_dump(
-                exclude={"cost", "cost_details"}
-            ),
-            cost=input_cost + output_cost,
-            cost_details={
-                "input_cost": input_cost,
-                "output_cost": output_cost,
-            },
-        )
-
     def _run_pending_compaction(self) -> None:
         trigger_tokens = getattr(self, "_pending_compaction_trigger_tokens", None)
         summary_compactor = getattr(self, "_summary_compactor", None)
@@ -581,7 +560,7 @@ class BenchmarkingAgent(Agent):
         self._runtime_state = result.state
         self._pending_compaction_trigger_tokens = None
         self.track_tokens(result.usage.total_tokens)
-        compaction_usage = self._compaction_usage(result.usage)
+        compaction_usage = StepUsage.from_normalized_usage(result.usage)
         self._save_compaction(
             CompactionRecord(
                 compaction=self._compaction_counter + 1,
@@ -602,11 +581,6 @@ class BenchmarkingAgent(Agent):
                 usage=compaction_usage,
             )
         )
-        logger.info(
-            "Harness summary compaction cost: $%.6f",
-            compaction_usage.cost,
-        )
-
     def _schedule_compaction(self, usage: NormalizedUsage) -> None:
         summary_compactor = getattr(self, "_summary_compactor", None)
         if summary_compactor is None:

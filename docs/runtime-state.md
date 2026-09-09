@@ -109,8 +109,10 @@ state; overflow or retry exhaustion fails closed without deleting accepted
 turns.
 
 Each harness compaction is written to `compaction_NNN.json` with its summary,
-trigger, item counts, attempts, token usage, and calculated cost. The usage is
-also added to the run total. The summary-and-bridge structure is inspired by
+trigger, item counts, attempts, and token usage. The usage is also added to the
+run total. Monetary cost remains provider-reported only; the harness does not
+write a configured-price estimate into the provider cost field. The
+summary-and-bridge structure is inspired by
 [Stirrup](https://github.com/ArtificialAnalysis/Stirrup), which is MIT licensed;
 the prompts here are independently adapted and domain-neutral.
 
