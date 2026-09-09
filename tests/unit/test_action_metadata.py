@@ -1,3 +1,4 @@
+import json
 import re
 
 import pytest
@@ -91,6 +92,21 @@ class TestActionMetadataPayloadFitter:
         assert fitted["reasoning"].endswith("TAIL")
         assert serialized_action_metadata_size(fitted) <= MAX_ACTION_METADATA_BYTES
 
+    def test_size_matches_remote_wrapper_and_backend_serialization(self):
+        payload = {
+            "output": "Row 18:\n`[9, 9, 9, 4, 4]`\n" * 1_000,
+            "reasoning": 'Inspect "shape" and \\ separators.\n' * 1_000,
+        }
+        remote_reasoning = json.dumps(payload)
+        backend_size = len(
+            json.dumps(remote_reasoning, separators=(",", ":")).encode("utf-8")
+        )
+
+        assert serialized_action_metadata_size(payload) == backend_size
+        assert backend_size > len(
+            json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        )
+
     def test_input_dictionary_is_not_modified(self):
         payload = {"output": "o" * 30_000, "reasoning": "r" * 30_000}
 
@@ -101,12 +117,16 @@ class TestActionMetadataPayloadFitter:
 
     def test_fitted_payload_passes_arc_reasoning_validator(self):
         fitted = fit_action_metadata_payload(
-            {"output": "o" * 50_000, "reasoning": "r" * 50_000}
+            {
+                "output": "Row 18:\n`[9, 9, 9, 4, 4]`\n" * 2_000,
+                "reasoning": ('Inspect "shape" and \\ separators.\n' * 2_000),
+            }
         )
+        remote_reasoning = json.dumps(fitted)
 
-        action_input = ActionInput(reasoning=fitted)
+        action_input = ActionInput(reasoning=remote_reasoning)
 
-        assert action_input.reasoning == fitted
+        assert action_input.reasoning == remote_reasoning
 
     def test_raises_when_non_text_metadata_alone_exceeds_budget(self):
         payload = {

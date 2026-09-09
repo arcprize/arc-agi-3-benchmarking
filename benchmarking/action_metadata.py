@@ -12,8 +12,15 @@ TRUNCATION_MARKER = "\n\n... truncated {removed_chars} characters ...\n\n"
 
 
 def serialized_action_metadata_size(payload: dict[str, Any]) -> int:
-    """Return the exact UTF-8 size used by ARC's reasoning validator."""
-    return len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    """Return the UTF-8 size used by ARC's remote reasoning validator.
+
+    The remote ARC wrapper serializes the metadata dictionary to a JSON string
+    before submitting it. The backend validator then JSON-serializes that
+    string to measure it, so quotes, newlines, and backslashes are escaped a
+    second time and must count toward the byte budget.
+    """
+    remote_reasoning = json.dumps(payload)
+    return len(json.dumps(remote_reasoning, separators=(",", ":")).encode("utf-8"))
 
 
 def _truncated_text(text: str, retained_chars: int) -> str:
