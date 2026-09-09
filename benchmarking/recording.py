@@ -99,6 +99,25 @@ class StepRecord(BaseModel):
     state_transition: dict[str, Any] | None = None
 
 
+class CompactionRecord(BaseModel):
+    """One harness-managed compaction between model action steps."""
+
+    compaction: int
+    before_step: int
+    timestamp: datetime
+    duration_seconds: float = 0.0
+    model: str
+    mechanism: str
+    summary: str
+    opaque_continuity_preserved: bool
+    trigger_tokens: int
+    context_limit_tokens: int
+    history_items_before: int
+    history_items_after: int
+    attempts: int
+    usage: StepUsage = Field(default_factory=StepUsage)
+
+
 class RunRecord(BaseModel):
     """Metadata for an entire agent run, written to run_meta.json."""
 

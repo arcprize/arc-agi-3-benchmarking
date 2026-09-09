@@ -44,13 +44,13 @@ server response handle and any inputs waiting for the next API turn.
 ## Continuous conversation
 
 `continuous_conversation` carries provider-native conversation and reasoning
-state from one accepted turn to the next. It is currently implemented only by
-`openai.responses.v1`. The OpenAI adapter implements continuous conversation
-through the Responses API with `store: false`. It requests
+state from one accepted turn to the next. It is implemented by
+`openai.responses.v1` and `google.interactions.v1`. The OpenAI adapter uses the
+Responses API with `store: false`. It requests
 `reasoning.encrypted_content` and sends each accepted user input plus every
 native `response.output` item into the following turn.
-Replaying only serialized reasoning is not enough: message, tool, and other
-native output items can also be part of the model's state.
+Replaying only serialized reasoning is not enough: every native output item can
+be part of the model's state.
 
 The adapter removes only two SDK response fields that the input schema rejects:
 `status` from reasoning items and `created_by` from compaction items. When a
@@ -80,10 +80,44 @@ organization. See OpenAI's official documentation for
 [compaction](https://developers.openai.com/api/docs/guides/compaction), and
 [Zero Data Retention controls](https://developers.openai.com/api/docs/guides/your-data#zero-data-retention).
 
+The Google adapter uses the Interactions API with `store: false`. It preserves
+each accepted user input and every model-generated step, including opaque
+thought signatures, exactly as returned. Readable thought summaries are mapped
+to the existing reasoning field. The configuration must set
+`generation_config.thinking_summaries: auto` and must not use
+`previous_interaction_id` or background mode. Setting `store: false` opts out of
+Interaction state retention; project-level ZDR approval remains a separate
+requirement. See Google's documentation for
+[stateless interactions](https://ai.google.dev/gemini-api/docs/thought-signatures#stateless-mode)
+and [Zero Data Retention](https://ai.google.dev/gemini-api/docs/zdr).
+
+## Harness summary compaction
+
+Providers without native compaction can select `runtime.compaction.strategy:
+harness_summary`. After a successful model response reaches the configured
+`agent.MAX_CONTEXT_LENGTH`, the harness schedules compaction before the next
+model turn. The selected model receives a separate, domain-neutral request to
+summarize the objective, established facts and decisions, progress, current
+state, constraints, unsuccessful approaches, identifiers, and next steps.
+
+The resulting plain-text summary is inserted as one user-role continuation
+message in a fresh provider state. This intentionally ends opaque reasoning
+continuity at the boundary, so recordings label it with
+`opaque_continuity_preserved: false`. Newer input takes precedence over the
+summary if they conflict. Empty summaries are retried from unchanged accepted
+state; overflow or retry exhaustion fails closed without deleting accepted
+turns.
+
+Each harness compaction is written to `compaction_NNN.json` with its summary,
+trigger, item counts, attempts, token usage, and calculated cost. The usage is
+also added to the run total. The summary-and-bridge structure is inspired by
+[Stirrup](https://github.com/ArtificialAnalysis/Stirrup), which is MIT licensed;
+the prompts here are independently adapted and domain-neutral.
+
 ## Recording and provenance
 
-Encrypted provider state is never written to ordinary step records, logs,
-action metadata, or public artifacts. Step records retain the readable model
+Opaque provider state is never written to ordinary step records, logs, action
+metadata, or public artifacts. Step records retain the readable model
 output and reasoning summary, sanitized input item types and IDs, and counts
 for items sent, compaction items returned, and history size before and after
 pruning. Visible output and summaries continue to use the harness's 16k action

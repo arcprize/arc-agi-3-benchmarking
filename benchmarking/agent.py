@@ -13,9 +13,15 @@ from arcengine import FrameData, GameAction, GameState
 
 from .action_metadata import fit_action_metadata_payload
 from .base import Agent, ExitReason
+from .compaction import (
+    HARNESS_SUMMARY_COMPACTION,
+    SummaryCompactionPolicy,
+    SummaryCompactor,
+)
 from .exceptions import EmptyResponseError
 from .model_config import get_model_config
-from .recording import RunRecord, StepRecord, StepUsage
+from .models import calculate_cost
+from .recording import CompactionRecord, RunRecord, StepRecord, StepUsage
 from .runtime_adapters import build_model_runtime_adapter
 from .runtime_clients import build_model_runtime_client
 from .runtime_models import (
@@ -85,6 +91,14 @@ class BenchmarkingAgent(Agent):
         self._continuous_conversation = (
             runtime_cfg.get("state") == CONTINUOUS_CONVERSATION_RUNTIME_STATE
         )
+        self._summary_compactor: SummaryCompactor | None = None
+        compaction_cfg = runtime_cfg.get("compaction")
+        if self._continuous_conversation and isinstance(compaction_cfg, dict):
+            self._summary_compactor = SummaryCompactor(
+                SummaryCompactionPolicy.model_validate(compaction_cfg)
+            )
+        self._pending_compaction_trigger_tokens: int | None = None
+        self._compaction_counter = 0
         self._previous_response_id: str | None = None
         self._pending_user_messages: list[dict[str, Any]] = []
 
@@ -182,6 +196,13 @@ class BenchmarkingAgent(Agent):
                     commit_sha=commit_sha,
                 ),
             }
+            if self._summary_compactor is not None:
+                runtime_metadata["compaction"] = {
+                    **self._summary_compactor.policy.model_dump(),
+                    "trigger_tokens": self.MAX_CONTEXT_LENGTH,
+                    "opaque_continuity_preserved": False,
+                }
+                runtime_metadata["compaction_count"] = 0
         self.run_record = RunRecord(
             run_id=str(run_id),
             game_id=self.game_id,
@@ -503,6 +524,99 @@ class BenchmarkingAgent(Agent):
         self._write_run_meta()
         logger.info(f"Saved step {self.step_counter} to {filename}")
 
+    def _save_compaction(self, compaction: CompactionRecord) -> None:
+        self._compaction_counter = compaction.compaction
+        self.run_record.total_usage = self.run_record.total_usage + compaction.usage
+        if self.run_record.runtime is not None:
+            self.run_record.runtime["compaction_count"] = self._compaction_counter
+        filename = os.path.join(
+            self.run_dir,
+            f"compaction_{self._compaction_counter:03d}.json",
+        )
+        with open(filename, "w") as f:
+            f.write(compaction.model_dump_json(indent=2))
+        self._write_run_meta()
+        logger.info(
+            "Saved harness summary compaction %s before step %s",
+            self._compaction_counter,
+            compaction.before_step,
+        )
+
+    def _compaction_usage(self, usage: NormalizedUsage) -> StepUsage:
+        input_cost = calculate_cost(
+            usage.input_tokens,
+            self._pricing.get("input", 0.0),
+        )
+        output_cost = calculate_cost(
+            usage.output_tokens,
+            self._pricing.get("output", 0.0),
+        )
+        return StepUsage(
+            **StepUsage.from_normalized_usage(usage).model_dump(
+                exclude={"cost", "cost_details"}
+            ),
+            cost=input_cost + output_cost,
+            cost_details={
+                "input_cost": input_cost,
+                "output_cost": output_cost,
+            },
+        )
+
+    def _run_pending_compaction(self) -> None:
+        trigger_tokens = getattr(self, "_pending_compaction_trigger_tokens", None)
+        summary_compactor = getattr(self, "_summary_compactor", None)
+        if trigger_tokens is None or summary_compactor is None:
+            return
+
+        started = time.monotonic()
+        result = summary_compactor.compact(
+            adapter=self._stateful_adapter,
+            state=self._runtime_state,
+            request_config=dict(self._request_kwargs),
+            trigger_tokens=trigger_tokens,
+            max_context_length=self.MAX_CONTEXT_LENGTH,
+            max_retries=self.MAX_RETRIES,
+        )
+        duration = round(time.monotonic() - started, 3)
+        self._runtime_state = result.state
+        self._pending_compaction_trigger_tokens = None
+        self.track_tokens(result.usage.total_tokens)
+        compaction_usage = self._compaction_usage(result.usage)
+        self._save_compaction(
+            CompactionRecord(
+                compaction=self._compaction_counter + 1,
+                before_step=self.step_counter + 1,
+                timestamp=datetime.now(timezone.utc),
+                duration_seconds=duration,
+                model=self.MODEL,
+                mechanism=HARNESS_SUMMARY_COMPACTION,
+                summary=result.summary,
+                opaque_continuity_preserved=(
+                    result.opaque_continuity_preserved
+                ),
+                trigger_tokens=result.trigger_tokens,
+                context_limit_tokens=self.MAX_CONTEXT_LENGTH,
+                history_items_before=result.history_items_before,
+                history_items_after=result.history_items_after,
+                attempts=result.attempts,
+                usage=compaction_usage,
+            )
+        )
+        logger.info(
+            "Harness summary compaction cost: $%.6f",
+            compaction_usage.cost,
+        )
+
+    def _schedule_compaction(self, usage: NormalizedUsage) -> None:
+        summary_compactor = getattr(self, "_summary_compactor", None)
+        if summary_compactor is None:
+            return
+        if summary_compactor.should_compact(
+            usage,
+            self.MAX_CONTEXT_LENGTH,
+        ):
+            self._pending_compaction_trigger_tokens = usage.total_tokens
+
     def _build_model_request(self) -> ModelRequest:
         if self._server_state:
             return self._build_server_state_request()
@@ -625,6 +739,8 @@ class BenchmarkingAgent(Agent):
             )
             return forced_action
 
+        self._run_pending_compaction()
+
         self._sync_level_progress(latest_frame)
         self._level_action_counter += 1
 
@@ -670,6 +786,8 @@ class BenchmarkingAgent(Agent):
                     self._runtime_state.payload.get("pending_inputs", [])
                 )
             self._pending_turn_messages = []
+            if self._last_turn_result is not None:
+                self._schedule_compaction(self._last_turn_result.response.usage)
         elif self._server_state:
             self._previous_response_id = model_response.response_id
             self._pending_user_messages = []

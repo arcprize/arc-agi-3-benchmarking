@@ -185,6 +185,36 @@ def _normalize_google_genai_usage(usage: Any) -> dict[str, Any]:
     }
 
 
+def _normalize_google_interactions_usage(usage: Any) -> dict[str, Any]:
+    """Normalize Gemini Interactions usage and retain billable thinking tokens."""
+    if not usage:
+        return {}
+
+    input_tokens = (
+        _value_from_response_object(usage, "total_input_tokens", 0) or 0
+    )
+    output_tokens = (
+        _value_from_response_object(usage, "total_output_tokens", 0) or 0
+    )
+    thought_tokens = (
+        _value_from_response_object(usage, "total_thought_tokens", 0) or 0
+    )
+    total_tokens = _value_from_response_object(usage, "total_tokens")
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens + thought_tokens,
+        "total_tokens": (
+            total_tokens
+            if total_tokens is not None
+            else input_tokens + output_tokens + thought_tokens
+        ),
+        "reasoning_tokens": thought_tokens,
+        "cached_tokens": (
+            _value_from_response_object(usage, "total_cached_tokens", 0) or 0
+        ),
+    }
+
+
 def _normalize_anthropic_messages_usage(usage: Any) -> dict[str, Any]:
     if not usage:
         return {}
@@ -311,6 +341,49 @@ def _extract_google_genai_reasoning_text(response: Any) -> str | None:
     return "\n".join(reasoning_parts)
 
 
+def _google_interaction_steps(response: Any) -> list[Any]:
+    return list(_value_from_response_object(response, "steps", []) or [])
+
+
+def _extract_google_interaction_output_text(response: Any) -> str:
+    helper_text = _value_from_response_object(response, "output_text")
+    if helper_text:
+        return str(helper_text)
+
+    text_parts: list[str] = []
+    for step in _google_interaction_steps(response):
+        if _value_from_response_object(step, "type") != "model_output":
+            continue
+        for content in _value_from_response_object(step, "content", []) or []:
+            if _value_from_response_object(content, "type") != "text":
+                continue
+            text_parts.append(
+                _value_from_response_object(content, "text", "") or ""
+            )
+
+    output_text = "".join(text_parts)
+    if not output_text:
+        raise EmptyResponseError(
+            "API returned 200 with empty output.",
+            response=response,
+        )
+    return output_text
+
+
+def extract_google_interaction_reasoning_summary(response: Any) -> str | None:
+    reasoning_parts: list[str] = []
+    for step in _google_interaction_steps(response):
+        if _value_from_response_object(step, "type") != "thought":
+            continue
+        for item in _value_from_response_object(step, "summary", []) or []:
+            text = _value_from_response_object(item, "text")
+            if text:
+                reasoning_parts.append(str(text))
+    if not reasoning_parts:
+        return None
+    return "\n".join(reasoning_parts)
+
+
 def _extract_reasoning_text_fragment(item: Any) -> str | None:
     if isinstance(item, str):
         return item
@@ -402,6 +475,20 @@ def normalize_google_genai_response(response: Any) -> ModelResponse:
             )
         ),
         raw_response=response,
+    )
+
+
+def normalize_google_interaction_response(response: Any) -> ModelResponse:
+    return ModelResponse(
+        output_text=_extract_google_interaction_output_text(response),
+        reasoning_text=extract_google_interaction_reasoning_summary(response),
+        usage=NormalizedUsage(
+            **_normalize_google_interactions_usage(
+                _value_from_response_object(response, "usage"),
+            )
+        ),
+        raw_response=response,
+        response_id=_value_from_response_object(response, "id"),
     )
 
 

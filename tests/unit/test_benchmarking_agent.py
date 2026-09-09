@@ -10,6 +10,7 @@ from benchmarking.action_metadata import (
 )
 from benchmarking.agent import BenchmarkingAgent
 from benchmarking.base import ExitReason
+from benchmarking.compaction import SummaryCompactionPolicy, SummaryCompactor
 from benchmarking.runtime_adapters import (
     OpenAIChatCompletionsAdapter,
     OpenAIResponsesAdapter,
@@ -1321,6 +1322,11 @@ class TestBenchmarkingAgentContinuousConversationState:
         agent._runtime_state = agent._stateful_adapter.initial_state()
         agent._pending_turn_messages = []
         agent._last_turn_result = None
+        agent._summary_compactor = SummaryCompactor(
+            SummaryCompactionPolicy(strategy="harness_summary")
+        )
+        agent._pending_compaction_trigger_tokens = None
+        agent.MAX_CONTEXT_LENGTH = 6
         agent._request_kwargs = {
             "model": "gpt-5.6-sol",
             "store": False,
@@ -1343,6 +1349,7 @@ class TestBenchmarkingAgentContinuousConversationState:
         assert "orphan-secret" not in step_json
         assert agent._pending_action_reasoning["reasoning"] == "accepted summary"
         assert "reasoning_summary" not in agent._pending_action_reasoning
+        assert agent._pending_compaction_trigger_tokens == 7
 
 
 def _agent_with_env(step_frame: FrameData) -> BenchmarkingAgent:

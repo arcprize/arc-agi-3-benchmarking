@@ -134,13 +134,18 @@ def runtime_payload_items(state: RuntimeState, key: str) -> list[dict[str, Any]]
 
 
 def sanitize_settings(value: Any) -> Any:
-    """Remove secrets and encrypted bodies from provenance and recordings."""
+    """Remove secrets and opaque provider state from persisted artifacts."""
 
     if isinstance(value, dict):
         sanitized: dict[str, Any] = {}
         for key, item in value.items():
             lowered = key.lower()
-            if lowered == "encrypted_content":
+            if lowered in {
+                "encrypted_content",
+                "signature",
+                "thought_signature",
+                "thoughtsignature",
+            }:
                 continue
             if lowered in {
                 "api_key",

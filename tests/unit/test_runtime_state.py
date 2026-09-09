@@ -172,7 +172,11 @@ class TestAdapterRegistryAndProvenance:
             {
                 "max_output_tokens": 128_000,
                 "api_key": "secret",
-                "nested": {"encrypted_content": "opaque"},
+                "nested": {
+                    "encrypted_content": "opaque",
+                    "signature": "signed",
+                    "thoughtSignature": "signed-again",
+                },
             }
         ) == {
             "max_output_tokens": 128_000,
