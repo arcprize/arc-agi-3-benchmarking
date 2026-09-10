@@ -36,11 +36,18 @@ class ResponseUsage(BaseModel):
 
 
 class CostDetails(BaseModel):
-    """Computed dollar costs for a single action."""
+    """Configured-price estimate for normalized input and output tokens."""
 
     input_cost: float = 0.0
     output_cost: float = 0.0
     total_cost: float = 0.0
+
+    def __add__(self, other: CostDetails) -> CostDetails:
+        return CostDetails(
+            input_cost=self.input_cost + other.input_cost,
+            output_cost=self.output_cost + other.output_cost,
+            total_cost=self.total_cost + other.total_cost,
+        )
 
 
 class ActionMetadata(BaseModel):
@@ -76,3 +83,20 @@ def calculate_cost(
         Cost in dollars.
     """
     return (token_count / 1_000_000) * price_per_million
+
+
+def calculate_usage_cost(
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    pricing: dict[str, float],
+) -> CostDetails:
+    """Calculate the configured-price estimate for normalized token usage."""
+
+    input_cost = calculate_cost(input_tokens, pricing.get("input", 0.0))
+    output_cost = calculate_cost(output_tokens, pricing.get("output", 0.0))
+    return CostDetails(
+        input_cost=input_cost,
+        output_cost=output_cost,
+        total_cost=input_cost + output_cost,
+    )

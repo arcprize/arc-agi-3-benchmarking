@@ -1399,6 +1399,52 @@ class TestBenchmarkingAgentExitReason:
 
 
 @pytest.mark.unit
+def test_pending_compaction_usage_is_included_in_next_action_cost_metadata():
+    agent = _agent_for_choose_action(
+        analysis_mode=False,
+        responses=[
+            ModelResponse(
+                output_text="ACTION1",
+                usage=NormalizedUsage(
+                    input_tokens=100,
+                    output_tokens=10,
+                    total_tokens=110,
+                ),
+            )
+        ],
+    )
+    agent._pricing = {"input": 0.75, "output": 3.75}
+    agent._pending_compaction_usage = NormalizedUsage(
+        input_tokens=200,
+        output_tokens=20,
+        total_tokens=220,
+        reasoning_tokens=5,
+        cached_tokens=25,
+    )
+
+    action = agent.choose_action([], _playable_frame())
+
+    assert action == GameAction.ACTION1
+    metadata = agent._pending_action_reasoning
+    assert metadata["usage"]["input_tokens"] == 300
+    assert metadata["usage"]["output_tokens"] == 30
+    assert metadata["usage"]["total_tokens"] == 330
+    assert metadata["cost"]["input_cost"] == pytest.approx(0.000225)
+    assert metadata["cost"]["output_cost"] == pytest.approx(0.0001125)
+    assert metadata["cost"]["total_cost"] == pytest.approx(0.0003375)
+    compaction = metadata["state"]["harness_compaction"]
+    assert compaction["usage"]["input_tokens"] == 200
+    assert compaction["usage"]["output_tokens"] == 20
+    assert compaction["usage"]["total_tokens"] == 220
+    assert compaction["usage"]["input_tokens_details"]["cached_tokens"] == 25
+    assert compaction["usage"]["output_tokens_details"]["reasoning_tokens"] == 5
+    assert compaction["cost"]["total_cost"] == pytest.approx(0.000225)
+    assert agent._pending_compaction_usage is None
+    assert agent._saved_steps[0].usage.total_tokens == 110
+    assert agent._saved_steps[0].estimated_cost.total_cost == pytest.approx(0.0001125)
+
+
+@pytest.mark.unit
 class TestDoubleResetPrevention:
     def test_do_action_request_sends_and_records_pending_action_reasoning(self):
         env = _CapturingRawEnv()

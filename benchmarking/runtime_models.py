@@ -7,11 +7,10 @@ from pydantic import BaseModel, Field
 from .exceptions import EmptyResponseError
 from .models import (
     ActionMetadata,
-    CostDetails,
     InputTokensDetails,
     OutputTokensDetails,
     ResponseUsage,
-    calculate_cost,
+    calculate_usage_cost,
 )
 
 
@@ -509,9 +508,10 @@ def action_metadata_from_model_response(
     model_response: ModelResponse,
     pricing: dict[str, float],
 ) -> ActionMetadata:
-    input_cost = calculate_cost(model_response.usage.input_tokens, pricing.get("input", 0.0))
-    output_cost = calculate_cost(
-        model_response.usage.output_tokens, pricing.get("output", 0.0)
+    cost = calculate_usage_cost(
+        input_tokens=model_response.usage.input_tokens,
+        output_tokens=model_response.usage.output_tokens,
+        pricing=pricing,
     )
     return ActionMetadata(
         output=model_response.output_text,
@@ -527,9 +527,5 @@ def action_metadata_from_model_response(
             ),
             total_tokens=model_response.usage.total_tokens,
         ),
-        cost=CostDetails(
-            input_cost=input_cost,
-            output_cost=output_cost,
-            total_cost=input_cost + output_cost,
-        ),
+        cost=cost,
     )

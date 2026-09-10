@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from .models import CostDetails
 from .runtime_models import NormalizedUsage
 
 
@@ -94,6 +95,7 @@ class StepRecord(BaseModel):
     reasoning: str | None = None
     parsed_action: str | dict[str, Any]
     usage: StepUsage = Field(default_factory=StepUsage)
+    estimated_cost: CostDetails = Field(default_factory=CostDetails)
     retries: int = 0
     request_record: dict[str, Any] | None = None
     state_transition: dict[str, Any] | None = None
@@ -119,6 +121,7 @@ class CompactionRecord(BaseModel):
     excluded_turns: int = 0
     excluded_history_items: int = 0
     usage: StepUsage = Field(default_factory=StepUsage)
+    estimated_cost: CostDetails = Field(default_factory=CostDetails)
 
 
 class RunRecord(BaseModel):
@@ -133,6 +136,7 @@ class RunRecord(BaseModel):
     duration_seconds: Optional[float] = None
     total_steps: int = 0
     total_usage: StepUsage = Field(default_factory=StepUsage)
+    estimated_cost: CostDetails = Field(default_factory=CostDetails)
     outcome: Optional[str] = None
     run_dir: str
     runtime: dict[str, Any] | None = None

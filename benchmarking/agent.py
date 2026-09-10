@@ -20,6 +20,7 @@ from .compaction import (
 )
 from .exceptions import EmptyResponseError
 from .model_config import get_model_config
+from .models import calculate_usage_cost
 from .recording import CompactionRecord, RunRecord, StepRecord, StepUsage
 from .runtime_adapters import build_model_runtime_adapter
 from .runtime_clients import build_model_runtime_client
@@ -97,6 +98,7 @@ class BenchmarkingAgent(Agent):
                 SummaryCompactionPolicy.model_validate(compaction_cfg)
             )
         self._pending_compaction_trigger_tokens: int | None = None
+        self._pending_compaction_usage: NormalizedUsage | None = None
         self._compaction_counter = 0
         self._previous_response_id: str | None = None
         self._pending_user_messages: list[dict[str, Any]] = []
@@ -511,6 +513,9 @@ class BenchmarkingAgent(Agent):
     def _save_step(self, step: StepRecord) -> None:
         self.step_counter += 1
         self.run_record.total_usage = self.run_record.total_usage + step.usage
+        self.run_record.estimated_cost = (
+            self.run_record.estimated_cost + step.estimated_cost
+        )
         self.run_record.total_steps = self.step_counter
         filename = os.path.join(self.run_dir, f"step_{self.step_counter:03d}.json")
         with open(filename, "w") as f:
@@ -526,6 +531,9 @@ class BenchmarkingAgent(Agent):
     def _save_compaction(self, compaction: CompactionRecord) -> None:
         self._compaction_counter = compaction.compaction
         self.run_record.total_usage = self.run_record.total_usage + compaction.usage
+        self.run_record.estimated_cost = (
+            self.run_record.estimated_cost + compaction.estimated_cost
+        )
         if self.run_record.runtime is not None:
             self.run_record.runtime["compaction_count"] = self._compaction_counter
         filename = os.path.join(
@@ -562,6 +570,11 @@ class BenchmarkingAgent(Agent):
         self._pending_compaction_trigger_tokens = None
         self.track_tokens(result.usage.total_tokens)
         compaction_usage = StepUsage.from_normalized_usage(result.usage)
+        compaction_estimated_cost = calculate_usage_cost(
+            input_tokens=result.usage.input_tokens,
+            output_tokens=result.usage.output_tokens,
+            pricing=self._pricing,
+        )
         self._save_compaction(
             CompactionRecord(
                 compaction=self._compaction_counter + 1,
@@ -583,8 +596,14 @@ class BenchmarkingAgent(Agent):
                 excluded_turns=result.excluded_turns,
                 excluded_history_items=result.excluded_history_items,
                 usage=compaction_usage,
+                estimated_cost=compaction_estimated_cost,
             )
         )
+        pending_usage = getattr(self, "_pending_compaction_usage", None)
+        self._pending_compaction_usage = (
+            result.usage if pending_usage is None else pending_usage + result.usage
+        )
+
     def _schedule_compaction(self, usage: NormalizedUsage) -> None:
         summary_compactor = getattr(self, "_summary_compactor", None)
         if summary_compactor is None:
@@ -796,6 +815,11 @@ class BenchmarkingAgent(Agent):
                 reasoning=model_response.reasoning_text,
                 parsed_action=self._format_parsed_action(action),
                 usage=step_usage,
+                estimated_cost=calculate_usage_cost(
+                    input_tokens=model_response.usage.input_tokens,
+                    output_tokens=model_response.usage.output_tokens,
+                    pricing=self._pricing,
+                ),
                 retries=retries,
                 request_record=request_record,
                 state_transition=state_transition,
@@ -803,8 +827,14 @@ class BenchmarkingAgent(Agent):
         )
 
         # Build ActionMetadata and pass as dict through the reasoning field
+        pending_compaction_usage = getattr(self, "_pending_compaction_usage", None)
+        metadata_response = model_response
+        if pending_compaction_usage is not None:
+            metadata_response = model_response.model_copy(
+                update={"usage": model_response.usage + pending_compaction_usage}
+            )
         metadata = action_metadata_from_model_response(
-            model_response=model_response,
+            model_response=metadata_response,
             pricing=self._pricing,
         )
         action_metadata = metadata.model_dump()
@@ -812,8 +842,24 @@ class BenchmarkingAgent(Agent):
             self._last_turn_result is not None
             and self._last_turn_result.action_state is not None
         ):
-            action_metadata["state"] = self._last_turn_result.action_state
+            action_metadata["state"] = dict(
+                self._last_turn_result.action_state
+            )
+        if pending_compaction_usage is not None:
+            compaction_metadata = action_metadata_from_model_response(
+                model_response=ModelResponse(
+                    output_text="",
+                    usage=pending_compaction_usage,
+                ),
+                pricing=self._pricing,
+            )
+            state_metadata = action_metadata.setdefault("state", {})
+            state_metadata["harness_compaction"] = {
+                "usage": compaction_metadata.usage.model_dump(),
+                "cost": compaction_metadata.cost.model_dump(),
+            }
         self._pending_action_reasoning = fit_action_metadata_payload(action_metadata)
+        self._pending_compaction_usage = None
         total_cost = metadata.cost.total_cost
         input_cost = metadata.cost.input_cost
         output_cost = metadata.cost.output_cost
