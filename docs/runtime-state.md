@@ -100,24 +100,25 @@ hard context capacity. Configuration validation reserves the requested summary
 output plus `summary_input_headroom_tokens` between those values. The supplied
 Gemini 3.8 Flash profile triggers at 175k against the model's
 [documented 1,048,576-token input limit](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash).
-The selected model receives a separate,
-domain-neutral request to summarize the objective, established facts and
-decisions, progress, current state, constraints, unsuccessful approaches,
-identifiers, and next steps.
+The selected model receives a separate, domain-neutral request to summarize the
+conversation using its judgment about what matters for continuing the task in a
+future context.
 
-The resulting plain-text summary is inserted as one user-role continuation
-message in a fresh provider state. This intentionally ends opaque reasoning
-continuity at the boundary, so recordings label it with
-`opaque_continuity_preserved: false`. Newer input takes precedence over the
-summary if they conflict. Empty summaries are retried from unchanged accepted
-state. Provider adapters classify context-limit rejections separately from
-other failures. On a context overflow, compaction retries against progressively
+The resulting summary is inserted as one user-role continuation message in a
+fresh provider state. This ends opaque reasoning continuity for the history
+represented by the summary. Newer input takes precedence over the summary if
+they conflict. Empty summaries are retried from unchanged accepted state.
+Provider adapters classify context-limit rejections separately from other
+failures. On a context overflow, compaction retries against progressively
 shorter candidate states using explicit accepted-turn boundaries. Removed
-recent turns are carried into the same continuation message in readable form,
-in chronological order, without opaque provider state. The accepted state is
-not replaced until compaction succeeds. Reaching the protected continuation
-boundary, producing an oversized continuation message, or exhausting empty
-summary retries fails closed.
+recent turns are excluded from the summary request, then appended after the
+summary in chronological order using their exact provider-native items. Their
+opaque reasoning state is therefore preserved; only the summarized prefix loses
+opaque continuity. Accepted-turn boundaries are remapped to the rebuilt state so
+later overflow recovery can unwind those turns again. The accepted state is not
+replaced until compaction succeeds. Reaching the protected continuation
+boundary, producing an oversized continuation state, or exhausting empty summary
+retries fails closed.
 
 Each harness compaction is written to `compaction_NNN.json` with its summary,
 trigger, item counts, attempts, overflow recoveries, excluded-turn counts, and
@@ -134,7 +135,7 @@ cost breakdown. The local `step_NNN.json` and `compaction_NNN.json` files remain
 separate, so `run_meta.json` adds each request exactly once. The
 summary-and-bridge structure and completed-turn unwinding are inspired by
 [Stirrup](https://github.com/ArtificialAnalysis/Stirrup), which is MIT licensed;
-the prompts and readable-tail preservation here are independently adapted and
+the prompts and exact-tail preservation here are independently adapted and
 domain-neutral.
 
 ## Recording and provenance

@@ -129,4 +129,3 @@ def test_google_harness_summary_compaction_live() -> None:
 
     assert MEMORY_TOKEN in compacted.summary
     assert MEMORY_TOKEN in final.response.output_text
-    assert compacted.opaque_continuity_preserved is False

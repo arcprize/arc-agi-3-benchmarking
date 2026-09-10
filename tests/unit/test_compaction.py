@@ -5,12 +5,12 @@ import pytest
 
 from benchmarking.agent import BenchmarkingAgent
 from benchmarking.compaction import (
-    RECENT_CONTEXT_TEMPLATE,
     SUMMARY_BRIDGE_TEMPLATE,
     SUMMARY_REQUEST_PROMPT,
     SUMMARY_SYSTEM_PROMPT,
     SummaryCompactionPolicy,
     SummaryCompactor,
+    build_summary_prompt_record,
     request_config_with_output_limit,
 )
 from benchmarking.exceptions import ContextOverflowError
@@ -18,7 +18,12 @@ from benchmarking.google_runtime import GoogleContinuousConversationRuntimeAdapt
 from benchmarking.recording import RunRecord
 from benchmarking.runtime_models import Message, ModelResponse, NormalizedUsage
 from benchmarking.runtime_registry import ADAPTER_DESCRIPTORS
-from benchmarking.runtime_state import AcceptedTurn, ModelTurnRequest, RuntimeState
+from benchmarking.runtime_state import (
+    AcceptedTurn,
+    ModelTurnRequest,
+    RuntimeState,
+    sanitize_settings,
+)
 
 
 class _FakeModelAdapter:
@@ -48,6 +53,29 @@ def _summary_response(text, *, tokens=30):
                     "type": "model_output",
                     "content": [{"type": "text", "text": text}],
                 }
+            ]
+        },
+    )
+
+
+def _accepted_response(text, signature):
+    return ModelResponse(
+        output_text=text,
+        reasoning_text=f"reasoning for {text}",
+        usage=NormalizedUsage(total_tokens=30),
+        raw_response={
+            "steps": [
+                {
+                    "type": "thought",
+                    "signature": signature,
+                    "summary": [
+                        {"type": "text", "text": f"reasoning for {text}"}
+                    ],
+                },
+                {
+                    "type": "model_output",
+                    "content": [{"type": "text", "text": text}],
+                },
             ]
         },
     )
@@ -114,9 +142,17 @@ class TestSummaryCompactor:
         )
 
         assert result.summary == "Continue here."
-        assert result.history_items_before == 3
-        assert result.history_items_after == 1
-        assert result.opaque_continuity_preserved is False
+        assert result.prompt == build_summary_prompt_record(state)
+        assert result.prompt["system_prompt"] == SUMMARY_SYSTEM_PROMPT
+        assert result.prompt["user_prompt"] == SUMMARY_REQUEST_PROMPT
+        assert result.prompt["context"] == {
+            "steps": [
+                {"type": "user_input", "content": "old"},
+                {"type": "thought"},
+                {"type": "model_output", "content": "result"},
+            ]
+        }
+        assert result.history_items_to_compact == 3
         assert "opaque" not in result.state.model_dump_json()
         assert result.state.payload["steps"] == [
             {
@@ -134,6 +170,14 @@ class TestSummaryCompactor:
         summary_request = low_level.requests[0]
         assert summary_request.messages[0].content == SUMMARY_SYSTEM_PROMPT
         assert summary_request.messages[1].content == SUMMARY_REQUEST_PROMPT
+        assert (
+            sanitize_settings(summary_request.native_input[:-1])
+            == result.prompt["context"]["steps"]
+        )
+        assert summary_request.native_input[-1] == {
+            "type": "user_input",
+            "content": [{"type": "text", "text": SUMMARY_REQUEST_PROMPT}],
+        }
         assert (
             summary_request.request_config["generation_config"][
                 "max_output_tokens"
@@ -189,8 +233,7 @@ class TestSummaryCompactor:
             max_retries=1,
         )
 
-        assert second.history_items_before == 2
-        assert second.history_items_after == 1
+        assert second.history_items_to_compact == 2
         assert "second summary" in second.state.model_dump_json()
         assert "first summary" not in second.state.model_dump_json()
 
@@ -208,7 +251,7 @@ class TestSummaryCompactor:
                 max_retries=1,
             )
 
-    def test_overflow_unwinds_complete_turn_and_carries_readable_tail(self):
+    def test_overflow_preserves_exact_native_tail_after_summary(self):
         adapter, low_level = _google_adapter(
             [ContextOverflowError("context overflow"), _summary_response("prefix")]
         )
@@ -265,13 +308,25 @@ class TestSummaryCompactor:
         assert result.overflow_recoveries == 1
         assert result.excluded_turns == 1
         assert result.excluded_history_items == 3
+        assert "first" in json.dumps(result.prompt)
+        assert "recent" not in json.dumps(result.prompt)
+        assert "signature" not in json.dumps(result.prompt)
+        assert "opaque" not in json.dumps(result.prompt)
         bridge = result.state.payload["steps"][0]["content"][0]["text"]
         assert "prefix" in bridge
-        assert "recent" in bridge
-        assert "ACTION2" in bridge
-        assert "recent reasoning" in bridge
-        assert "first reasoning" not in bridge
-        assert "opaque-recent" not in bridge
+        assert "recent" not in bridge
+        assert result.state.payload["steps"][1:] == state.payload["steps"][3:]
+        assert result.state.payload["steps"][2]["signature"] == "opaque-recent"
+        assert [
+            (turn.start_item, turn.end_item)
+            for turn in result.state.accepted_turns
+        ] == [(1, 4)]
+        assert result.state.accepted_turns[0].messages == state.accepted_turns[1].messages
+        assert (
+            result.state.accepted_turns[0].reasoning_summary
+            == "recent reasoning"
+        )
+        assert "opaque-first" not in result.state.model_dump_json()
         assert state == original_state
 
     def test_overflow_at_protected_boundary_fails_without_mutating_state(self):
@@ -300,8 +355,8 @@ class TestSummaryCompactor:
     def test_repeated_overflow_preserves_excluded_turn_order(self):
         adapter, _ = _google_adapter(
             [
-                _summary_response("ACTION1"),
-                _summary_response("ACTION2"),
+                _accepted_response("ACTION1", "opaque-first"),
+                _accepted_response("ACTION2", "opaque-second"),
                 ContextOverflowError("first overflow"),
                 ContextOverflowError("second overflow"),
                 _summary_response("empty-prefix summary"),
@@ -335,8 +390,16 @@ class TestSummaryCompactor:
             max_retries=1,
         )
 
-        bridge = result.state.payload["steps"][0]["content"][0]["text"]
-        assert bridge.index("first input") < bridge.index("second input")
+        assert result.state.payload["steps"][1:] == accepted_state.payload["steps"]
+        assert [
+            step.get("signature")
+            for step in result.state.payload["steps"]
+            if step["type"] == "thought"
+        ] == ["opaque-first", "opaque-second"]
+        assert [
+            (turn.start_item, turn.end_item)
+            for turn in result.state.accepted_turns
+        ] == [(1, 4), (4, 7)]
         assert result.overflow_recoveries == 2
         assert result.excluded_turns == 2
         assert result.attempts == 3
@@ -357,18 +420,58 @@ class TestSummaryCompactor:
                 max_retries=1,
             )
 
-    def test_oversized_continuation_bridge_fails_closed(self):
+    def test_oversized_continuation_state_fails_closed(self):
         adapter, _ = _google_adapter([_summary_response("large summary")])
         state = adapter.initial_state()
         compactor = SummaryCompactor(_policy(trigger_tokens=10))
 
-        with pytest.raises(ContextOverflowError, match="continuation bridge"):
+        with pytest.raises(ContextOverflowError, match="continuation state"):
             compactor.compact(
                 adapter=adapter,
                 state=state,
                 request_config=_request_config(),
                 trigger_tokens=20,
                 max_context_length=10,
+                max_retries=1,
+            )
+
+    def test_continuation_size_check_includes_retained_native_turns(self):
+        adapter, _ = _google_adapter(
+            [ContextOverflowError("context overflow"), _summary_response("small")]
+        )
+        state = RuntimeState(
+            adapter_id="google.interactions.v1",
+            strategy="continuous_conversation",
+            payload={
+                "steps": [
+                    {"type": "user_input", "content": "recent"},
+                    {
+                        "type": "thought",
+                        "signature": "opaque-" + ("x" * 1_000),
+                    },
+                    {"type": "model_output", "content": "result"},
+                ]
+            },
+            accepted_turns=[
+                AcceptedTurn(
+                    start_item=0,
+                    end_item=3,
+                    messages=[
+                        Message(role="user", content="recent"),
+                        Message(role="assistant", content="result"),
+                    ],
+                )
+            ],
+        )
+        compactor = SummaryCompactor(_policy(trigger_tokens=10))
+
+        with pytest.raises(ContextOverflowError, match="continuation state"):
+            compactor.compact(
+                adapter=adapter,
+                state=state,
+                request_config=_request_config(),
+                trigger_tokens=20,
+                max_context_length=800,
                 max_retries=1,
             )
 
@@ -391,11 +494,18 @@ class TestSummaryCompactor:
     def test_prompts_are_domain_neutral(self):
         prompt = (
             f"{SUMMARY_SYSTEM_PROMPT}\n{SUMMARY_REQUEST_PROMPT}\n"
-            f"{SUMMARY_BRIDGE_TEMPLATE}\n{RECENT_CONTEXT_TEMPLATE}"
+            f"{SUMMARY_BRIDGE_TEMPLATE}"
         ).lower()
 
         for excluded in ("arc", "game", "level", "frame", "coordinate"):
             assert excluded not in prompt
+
+        assert SUMMARY_REQUEST_PROMPT == (
+            "Summarize the conversation so you can continue making progress on "
+            "the task in a future context. The conversation history will be "
+            "replaced by this summary and will no longer be available.\n"
+            "Use your judgment about what matters for this task."
+        )
 
 
 @pytest.mark.unit
@@ -438,9 +548,16 @@ def test_agent_persists_compaction_usage_for_next_action_attribution(tmp_path):
     run_payload = json.loads((tmp_path / "run_meta.json").read_text())
     assert payload["before_step"] == 3
     assert payload["mechanism"] == "harness_summary"
-    assert payload["opaque_continuity_preserved"] is False
+    assert payload["prompt"] == {
+        "system_prompt": SUMMARY_SYSTEM_PROMPT,
+        "context": {"steps": [{"type": "thought"}]},
+        "user_prompt": SUMMARY_REQUEST_PROMPT,
+    }
     assert payload["overflow_recoveries"] == 0
     assert payload["excluded_turns"] == 0
+    assert payload["history_items_to_compact"] == 1
+    assert "history_items_before" not in payload
+    assert "history_items_after" not in payload
     assert payload["usage"]["total_tokens"] == 140
     assert payload["usage"]["cost"] == 0
     assert payload["usage"]["cost_details"] == {}

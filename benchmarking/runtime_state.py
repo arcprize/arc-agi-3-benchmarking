@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
 from typing import Any, Protocol
 
 from pydantic import BaseModel, Field, model_validator
@@ -125,11 +126,25 @@ class AdapterDescriptor(BaseModel):
 
 
 class CompactionUnwindResult(BaseModel):
-    """A shorter candidate state plus the readable turn removed from its tail."""
+    """A shorter candidate state plus the complete turn removed from its tail."""
 
     state: RuntimeState
     turn: AcceptedTurn
-    removed_items: int = Field(gt=0)
+    native_items: list[dict[str, Any]] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_native_items(self) -> CompactionUnwindResult:
+        expected_items = self.turn.end_item - self.turn.start_item
+        if len(self.native_items) != expected_items:
+            raise ValueError(
+                "Compaction unwind native item count must match the accepted-turn "
+                "boundary."
+            )
+        return self
+
+    @property
+    def removed_items(self) -> int:
+        return len(self.native_items)
 
 
 class StatefulRuntimeAdapter(Protocol):
@@ -148,6 +163,12 @@ class StatefulRuntimeAdapter(Protocol):
     def unwind_latest_accepted_turn(
         self, state: RuntimeState
     ) -> CompactionUnwindResult | None: ...
+
+    def rebuild_after_compaction(
+        self,
+        summary_message: Message,
+        retained_turns: list[CompactionUnwindResult],
+    ) -> RuntimeState: ...
 
 
 def replace_runtime_payload(
@@ -209,6 +230,7 @@ def unwind_runtime_state_items(
         raise ValueError(
             "Runtime state accepted-turn boundary exceeds provider item count."
         )
+    native_items = deepcopy(items[turn.start_item : turn.end_item])
     shortened_payload = dict(state.payload)
     shortened_payload[payload_key] = items[: turn.start_item]
     shortened_state = replace_runtime_payload(
@@ -219,7 +241,35 @@ def unwind_runtime_state_items(
     return CompactionUnwindResult(
         state=shortened_state,
         turn=turn,
-        removed_items=turn.end_item - turn.start_item,
+        native_items=native_items,
+    )
+
+
+def restore_unwound_runtime_state_items(
+    state: RuntimeState,
+    *,
+    payload_key: str,
+    retained_turns: list[CompactionUnwindResult],
+) -> RuntimeState:
+    """Append exact unwound turns and remap their accepted boundaries."""
+
+    items = runtime_payload_items(state, payload_key)
+    accepted_turns = list(state.accepted_turns)
+    for retained in retained_turns:
+        start_item = len(items)
+        items.extend(deepcopy(retained.native_items))
+        end_item = len(items)
+        accepted_turns.append(
+            retained.turn.model_copy(
+                update={"start_item": start_item, "end_item": end_item}
+            )
+        )
+    payload = dict(state.payload)
+    payload[payload_key] = items
+    return replace_runtime_payload(
+        state,
+        payload,
+        accepted_turns=accepted_turns,
     )
 
 

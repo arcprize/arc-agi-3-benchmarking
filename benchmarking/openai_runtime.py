@@ -20,6 +20,7 @@ from .runtime_state import (
     StateTransitionTelemetry,
     append_accepted_turn,
     replace_runtime_payload,
+    restore_unwound_runtime_state_items,
     runtime_payload_items,
     sanitize_settings,
     unwind_runtime_state_items,
@@ -228,3 +229,18 @@ class OpenAIContinuousConversationRuntimeAdapter:
             adapter_id=self.descriptor.adapter_id, strategy=self.strategy
         )
         return unwind_runtime_state_items(state, payload_key="input_items")
+
+    def rebuild_after_compaction(
+        self,
+        summary_message: Message,
+        retained_turns: list[CompactionUnwindResult],
+    ) -> RuntimeState:
+        summary_state = self.buffer_inputs(
+            self.initial_state(),
+            [summary_message],
+        )
+        return restore_unwound_runtime_state_items(
+            summary_state,
+            payload_key="input_items",
+            retained_turns=retained_turns,
+        )

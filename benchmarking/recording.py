@@ -108,12 +108,11 @@ class CompactionRecord(BaseModel):
     duration_seconds: float = 0.0
     model: str
     mechanism: str
+    prompt: dict[str, Any]
     summary: str
-    opaque_continuity_preserved: bool
     trigger_tokens: int
     context_limit_tokens: int
-    history_items_before: int
-    history_items_after: int
+    history_items_to_compact: int
     attempts: int
     overflow_recoveries: int = 0
     excluded_turns: int = 0

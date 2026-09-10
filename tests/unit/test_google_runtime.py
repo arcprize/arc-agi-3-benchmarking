@@ -289,6 +289,7 @@ class TestGoogleContinuousConversation:
         assert unwind.state.payload["steps"] == second.state.payload["steps"][:3]
         assert len(unwind.state.accepted_turns) == 1
         assert unwind.removed_items == 3
+        assert unwind.native_items == second.state.payload["steps"][3:]
         assert second.state.payload["steps"][-2:] == _steps(2)
 
     def test_retry_isolation_reuses_last_accepted_state(self):

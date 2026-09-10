@@ -200,7 +200,6 @@ class BenchmarkingAgent(Agent):
                 runtime_metadata["compaction"] = {
                     **self._summary_compactor.policy.model_dump(),
                     "context_limit_tokens": self.MAX_CONTEXT_LENGTH,
-                    "opaque_continuity_preserved": False,
                 }
                 runtime_metadata["compaction_count"] = 0
         self.run_record = RunRecord(
@@ -571,14 +570,11 @@ class BenchmarkingAgent(Agent):
                 duration_seconds=duration,
                 model=self.MODEL,
                 mechanism=HARNESS_SUMMARY_COMPACTION,
+                prompt=result.prompt,
                 summary=result.summary,
-                opaque_continuity_preserved=(
-                    result.opaque_continuity_preserved
-                ),
                 trigger_tokens=result.trigger_tokens,
                 context_limit_tokens=self.MAX_CONTEXT_LENGTH,
-                history_items_before=result.history_items_before,
-                history_items_after=result.history_items_after,
+                history_items_to_compact=result.history_items_to_compact,
                 attempts=result.attempts,
                 overflow_recoveries=result.overflow_recoveries,
                 excluded_turns=result.excluded_turns,
