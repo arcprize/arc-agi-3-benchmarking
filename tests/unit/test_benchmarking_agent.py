@@ -1441,7 +1441,6 @@ def test_pending_compaction_usage_is_included_in_next_action_cost_metadata():
     assert compaction["cost"]["total_cost"] == pytest.approx(0.000225)
     assert agent._pending_compaction_usage is None
     assert agent._saved_steps[0].usage.total_tokens == 110
-    assert agent._saved_steps[0].estimated_cost.total_cost == pytest.approx(0.0001125)
 
 
 @pytest.mark.unit

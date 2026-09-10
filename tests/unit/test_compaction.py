@@ -399,7 +399,7 @@ class TestSummaryCompactor:
 
 
 @pytest.mark.unit
-def test_agent_persists_provider_usage_and_separate_compaction_estimate(tmp_path):
+def test_agent_persists_compaction_usage_for_next_action_attribution(tmp_path):
     adapter, _ = _google_adapter([_summary_response("retained state", tokens=140)])
     agent = BenchmarkingAgent.__new__(BenchmarkingAgent)
     agent._stateful_adapter = adapter
@@ -444,18 +444,10 @@ def test_agent_persists_provider_usage_and_separate_compaction_estimate(tmp_path
     assert payload["usage"]["total_tokens"] == 140
     assert payload["usage"]["cost"] == 0
     assert payload["usage"]["cost_details"] == {}
-    assert payload["estimated_cost"]["input_cost"] == pytest.approx(
-        130 / 1_000_000 * 0.75
-    )
-    assert payload["estimated_cost"]["output_cost"] == pytest.approx(
-        10 / 1_000_000 * 3.75
-    )
-    assert payload["estimated_cost"]["total_cost"] == pytest.approx(
-        (130 / 1_000_000 * 0.75) + (10 / 1_000_000 * 3.75)
-    )
+    assert "estimated_cost" not in payload
     assert run_payload["total_usage"]["total_tokens"] == 140
     assert run_payload["total_usage"]["cost"] == 0
-    assert run_payload["estimated_cost"] == payload["estimated_cost"]
+    assert "estimated_cost" not in run_payload
     assert run_payload["runtime"]["compaction_count"] == 1
     assert agent._pending_compaction_trigger_tokens is None
     assert agent._pending_compaction_usage.total_tokens == 140

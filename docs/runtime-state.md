@@ -121,22 +121,18 @@ summary retries fails closed.
 
 Each harness compaction is written to `compaction_NNN.json` with its summary,
 trigger, item counts, attempts, overflow recoveries, excluded-turn counts, and
-token usage. The usage is also added to the run total. The `usage.cost` field
-remains provider-reported only. A separate `estimated_cost` field applies the
-configured input and output rates to each ordinary step and harness compaction,
-and `run_meta.json.estimated_cost` accumulates both. This keeps the estimate
-distinct from provider-reported dollars. It follows the existing action-cost
-method: all reported input tokens use the configured input rate, and all
-reported output and thought tokens use the configured output rate. It does not
-attempt to reconstruct cache discounts or other invoice adjustments.
+token usage. The usage is also added to the local run total. Monetary cost
+remains provider-reported only in `usage.cost`; the harness does not write a
+configured-price estimate into that field.
 
-For ARC-facing scorecard accounting, a harness compaction's usage and estimated
-cost are attributed to the next model-generated action. The action metadata's
-top-level usage and cost therefore cover every model request since the previous
-action, while `state.harness_compaction` retains the compaction-only breakdown.
-The local `step_NNN.json` and `compaction_NNN.json` files remain separate, so
-`run_meta.json` adds each request exactly once. The summary-and-bridge structure
-and completed-turn unwinding are inspired by
+Published v3 costs are reconstructed downstream from ARC-facing action token
+usage and configured input/output prices. A harness compaction's usage is
+therefore attributed to the next model-generated action. The action metadata's
+top-level usage and calculated cost cover every model request since the previous
+action, while `state.harness_compaction` retains the compaction-only usage and
+cost breakdown. The local `step_NNN.json` and `compaction_NNN.json` files remain
+separate, so `run_meta.json` adds each request exactly once. The
+summary-and-bridge structure and completed-turn unwinding are inspired by
 [Stirrup](https://github.com/ArtificialAnalysis/Stirrup), which is MIT licensed;
 the prompts and readable-tail preservation here are independently adapted and
 domain-neutral.
