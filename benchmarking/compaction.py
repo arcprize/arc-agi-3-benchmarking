@@ -34,9 +34,8 @@ Use your judgment about what matters for this task."""
 
 SUMMARY_BRIDGE_TEMPLATE = """Earlier conversation history was compacted. Use the following summary as prior context. If it conflicts with newer input, prefer the newer input.
 
-<conversation_summary>
-{summary}
-</conversation_summary>"""
+{summary}"""
+
 
 class SummaryCompactionPolicy(BaseModel):
     strategy: Literal["harness_summary"]
