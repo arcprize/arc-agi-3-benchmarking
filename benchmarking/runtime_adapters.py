@@ -5,7 +5,7 @@ from typing import Any, Protocol
 from google.genai import _interactions as google_genai_interactions
 from google.genai import types as google_genai_types
 
-from .exceptions import ContextOverflowError
+from .exceptions import ContextOverflowError, TransientProviderError
 from .runtime_models import (
     ModelRequest,
     ModelResponse,
@@ -56,6 +56,14 @@ def _is_google_context_overflow(error: Exception) -> bool:
         if value is not None
     ).lower()
     return any(marker in details for marker in _GOOGLE_CONTEXT_OVERFLOW_MARKERS)
+
+
+def _is_google_transient_error(error: Exception) -> bool:
+    if isinstance(error, google_genai_interactions.APIConnectionError):
+        return True
+    return isinstance(error, google_genai_interactions.APIStatusError) and (
+        error.status_code in {408, 409, 429} or error.status_code >= 500
+    )
 
 
 class ModelRuntimeAdapter(Protocol):
@@ -374,9 +382,11 @@ class GoogleGenAIInteractionsAdapter:
             raw_response = self._client.interactions.create(
                 **self._build_call_kwargs(request),
             )
-        except google_genai_interactions.APIStatusError as exc:
+        except google_genai_interactions.APIError as exc:
             if _is_google_context_overflow(exc):
                 raise ContextOverflowError(str(exc)) from exc
+            if _is_google_transient_error(exc):
+                raise TransientProviderError(str(exc)) from exc
             raise
         return normalize_google_interaction_response(raw_response)
 

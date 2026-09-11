@@ -63,6 +63,7 @@ class ModelResponse(BaseModel):
     reasoning_text: str | None = None
     usage: NormalizedUsage
     raw_response: Any | None = None
+    response_status: str | None = None
     # Server-side response identifier (OpenAI Responses API). Used to chain
     # turns via previous_response_id when runtime.state == "previous_response_id".
     response_id: str | None = None
@@ -518,6 +519,11 @@ def normalize_google_interaction_response(response: Any) -> ModelResponse:
         reasoning_text=extract_google_interaction_reasoning_summary(response),
         usage=usage,
         raw_response=response,
+        response_status=(
+            str(status)
+            if (status := _value_from_response_object(response, "status")) is not None
+            else None
+        ),
         response_id=_value_from_response_object(response, "id"),
     )
 

@@ -1,7 +1,9 @@
 import json
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from google import genai as google_genai
 
 from benchmarking.google_runtime import (
     GoogleContinuousConversationRuntimeAdapter,
@@ -230,7 +232,10 @@ class TestGoogleContinuousConversation:
             },
         ]
         assert second.state.payload["steps"][-2:] == _steps(2)
-        assert [(turn.start_item, turn.end_item) for turn in second.state.accepted_turns] == [
+        assert [
+            (turn.start_item, turn.end_item)
+            for turn in second.state.accepted_turns
+        ] == [
             (0, 3),
             (3, 6),
         ]
@@ -248,6 +253,80 @@ class TestGoogleContinuousConversation:
         assert unwind.removed_items == 3
         assert unwind.native_items == second.state.payload["steps"][3:]
         assert second.state.payload["steps"][-2:] == _steps(2)
+
+    @pytest.mark.filterwarnings("ignore:Interactions usage is experimental")
+    def test_real_sdk_parses_and_replays_signed_steps_offline(self):
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            turn = len(requests)
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "id": f"interaction-{turn}",
+                    "created": "2026-09-11T00:00:00Z",
+                    "updated": "2026-09-11T00:00:00Z",
+                    "status": "completed",
+                    "steps": [
+                        {
+                            "type": "thought",
+                            "signature": f"opaque-{turn}",
+                            "summary": [
+                                {"type": "text", "text": f"summary {turn}"}
+                            ],
+                        },
+                        {
+                            "type": "model_output",
+                            "content": [{"type": "text", "text": "ACTION1"}],
+                        },
+                    ],
+                    "usage": {
+                        "total_input_tokens": 100,
+                        "total_output_tokens": 10,
+                        "total_thought_tokens": 10,
+                        "total_tokens": 120,
+                    },
+                },
+            )
+
+        http_client = httpx.Client(transport=httpx.MockTransport(handler))
+        client = google_genai.Client(
+            api_key="test-key",
+            http_options={
+                "base_url": "https://example.test",
+                "httpx_client": http_client,
+            },
+        )
+        try:
+            adapter = GoogleContinuousConversationRuntimeAdapter(
+                model_adapter=GoogleGenAIInteractionsAdapter(client),
+                descriptor=ADAPTER_DESCRIPTORS["google.interactions.v1"],
+            )
+
+            first = adapter.invoke_turn(_turn(adapter, adapter.initial_state(), "one"))
+            second = adapter.invoke_turn(_turn(adapter, first.state, "two"))
+        finally:
+            client.close()
+
+        first_body = json.loads(requests[0].content)
+        second_body = json.loads(requests[1].content)
+        assert first.response.response_status == "completed"
+        assert second.response.response_status == "completed"
+        assert second_body["input"][:-1] == first.state.payload["steps"]
+        assert second_body["input"][-1] == {
+            "type": "user_input",
+            "content": [{"type": "text", "text": "two"}],
+        }
+        assert second_body["input"][1]["signature"] == "opaque-1"
+        assert "opaque-1" not in json.dumps(first.sanitized_request)
+        assert first_body["input"] == [
+            {
+                "type": "user_input",
+                "content": [{"type": "text", "text": "one"}],
+            }
+        ]
 
     def test_retry_isolation_reuses_last_accepted_state(self):
         low_level = _FakeModelAdapter([_response(1), _response(2)])

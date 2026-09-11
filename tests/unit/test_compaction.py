@@ -2,6 +2,7 @@ import json
 from datetime import datetime, timezone
 
 import pytest
+from google.genai._interactions.types.interaction import Interaction
 
 from benchmarking.agent import BenchmarkingAgent
 from benchmarking.compaction import (
@@ -13,7 +14,12 @@ from benchmarking.compaction import (
     build_summary_prompt_record,
     request_config_with_output_limit,
 )
-from benchmarking.exceptions import ContextOverflowError
+from benchmarking.exceptions import (
+    CompactionContextOverflowError,
+    CompactionFailureError,
+    ContextOverflowError,
+    TransientProviderError,
+)
 from benchmarking.google_runtime import GoogleContinuousConversationRuntimeAdapter
 from benchmarking.recording import RunRecord
 from benchmarking.runtime_models import (
@@ -70,6 +76,34 @@ def _summary_response(text, *, tokens=30):
                 }
             ]
         },
+    )
+
+
+def _raw_summary_response(
+    text: str,
+    *,
+    status: str = "completed",
+    tokens: int = 3_000,
+) -> Interaction:
+    return Interaction.model_validate(
+        {
+            "id": f"summary-{status}",
+            "created": "2026-09-11T00:00:00Z",
+            "updated": "2026-09-11T00:00:00Z",
+            "status": status,
+            "steps": [
+                {
+                    "type": "model_output",
+                    "content": [{"type": "text", "text": text}],
+                }
+            ],
+            "usage": {
+                "total_input_tokens": tokens - 1_000,
+                "total_output_tokens": 500,
+                "total_thought_tokens": 500,
+                "total_tokens": tokens,
+            },
+        }
     )
 
 
@@ -200,6 +234,46 @@ class TestSummaryCompactor:
             == 8_192
         )
 
+    def test_preserves_rich_fixed_summary_verbatim_for_continuation(self):
+        summary = (
+            "Objective: prepare the service rollout.\n"
+            "Known facts: staging is healthy; production requires approval.\n"
+            "Failed hypothesis: a dependency upgrade did not fix the timeout.\n"
+            "Last outcome: reducing batch size passed the staging checks.\n"
+            "Next step: request approval for the production rollout."
+        )
+        adapter, _ = _google_adapter([_summary_response(summary)])
+        state = adapter.buffer_inputs(
+            adapter.initial_state(),
+            [
+                Message(role="user", content="initial requirements"),
+                Message(role="assistant", content="deployment plan"),
+                Message(role="user", content="staging result"),
+            ],
+        )
+
+        result = SummaryCompactor(_policy()).compact(
+            adapter=adapter,
+            state=state,
+            request_config=_request_config(),
+            trigger_tokens=175_000,
+            max_context_length=1_048_576,
+            max_retries=1,
+        )
+
+        assert result.summary == summary
+        assert result.state.payload["steps"] == [
+            {
+                "type": "user_input",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": SUMMARY_BRIDGE_TEMPLATE.format(summary=summary),
+                    }
+                ],
+            }
+        ]
+
     def test_retries_blank_summary_without_advancing_state(self):
         adapter, low_level = _google_adapter(
             [_summary_response(" ", tokens=20), _summary_response("usable", tokens=30)]
@@ -284,6 +358,74 @@ class TestSummaryCompactor:
             reasoning_tokens=15,
         )
 
+    @pytest.mark.parametrize("status", ["incomplete", "failed"])
+    def test_does_not_install_unsuccessful_google_summary(self, status):
+        partial = _raw_summary_response(
+            "Important facts: first,",
+            status=status,
+        )
+        completed = _raw_summary_response(
+            "Complete retained state.",
+            tokens=4_000,
+        )
+        low_level = _NormalizingGoogleModelAdapter([partial, completed])
+        adapter = GoogleContinuousConversationRuntimeAdapter(
+            model_adapter=low_level,
+            descriptor=ADAPTER_DESCRIPTORS["google.interactions.v1"],
+        )
+        state = adapter.buffer_inputs(
+            adapter.initial_state(),
+            [Message(role="user", content="full original history")],
+        )
+        original_state = state.model_copy(deep=True)
+
+        result = SummaryCompactor(_policy()).compact(
+            adapter=adapter,
+            state=state,
+            request_config=_request_config(),
+            trigger_tokens=175_000,
+            max_context_length=1_048_576,
+            max_retries=1,
+        )
+
+        assert result.summary == "Complete retained state."
+        assert result.attempts == 2
+        assert result.usage.total_tokens == 7_000
+        assert "Important facts: first," not in result.state.model_dump_json()
+        assert "Complete retained state." in result.state.model_dump_json()
+        assert low_level.requests[0].native_input == low_level.requests[1].native_input
+        assert state == original_state
+
+    def test_repeated_unsuccessful_google_summaries_fail_transactionally(self):
+        low_level = _NormalizingGoogleModelAdapter(
+            [
+                _raw_summary_response("partial", status="incomplete"),
+                _raw_summary_response("provider failure", status="failed"),
+            ]
+        )
+        adapter = GoogleContinuousConversationRuntimeAdapter(
+            model_adapter=low_level,
+            descriptor=ADAPTER_DESCRIPTORS["google.interactions.v1"],
+        )
+        state = adapter.buffer_inputs(
+            adapter.initial_state(),
+            [Message(role="user", content="full original history")],
+        )
+        original_state = state.model_copy(deep=True)
+
+        with pytest.raises(CompactionFailureError) as error:
+            SummaryCompactor(_policy()).compact(
+                adapter=adapter,
+                state=state,
+                request_config=_request_config(),
+                trigger_tokens=175_000,
+                max_context_length=1_048_576,
+                max_retries=1,
+            )
+
+        assert error.value.usage.total_tokens == 6_000
+        assert state == original_state
+
     def test_supports_repeated_compaction_cycles(self):
         adapter, _ = _google_adapter(
             [_summary_response("first summary"), _summary_response("second summary")]
@@ -319,7 +461,10 @@ class TestSummaryCompactor:
         adapter, _ = _google_adapter([_summary_response(""), _summary_response(" ")])
         compactor = SummaryCompactor(_policy(trigger_tokens=100))
 
-        with pytest.raises(RuntimeError, match="failed to produce non-empty text"):
+        with pytest.raises(
+            CompactionFailureError,
+            match="failed to produce a completed, non-empty summary",
+        ):
             compactor.compact(
                 adapter=adapter,
                 state=adapter.initial_state(),
@@ -328,6 +473,35 @@ class TestSummaryCompactor:
                 max_context_length=100_000,
                 max_retries=1,
             )
+
+    def test_retries_transient_failure_without_changing_summary_input(
+        self,
+        monkeypatch,
+    ):
+        adapter, low_level = _google_adapter(
+            [
+                TransientProviderError("timed out"),
+                _summary_response("complete summary"),
+            ]
+        )
+        sleeps = []
+        monkeypatch.setattr("benchmarking.compaction.time.sleep", sleeps.append)
+        state = adapter.initial_state()
+
+        result = SummaryCompactor(_policy()).compact(
+            adapter=adapter,
+            state=state,
+            request_config=_request_config(),
+            trigger_tokens=175_000,
+            max_context_length=1_048_576,
+            max_retries=1,
+        )
+
+        assert result.summary == "complete summary"
+        assert result.attempts == 2
+        assert low_level.requests[0].native_input == low_level.requests[1].native_input
+        assert sleeps == [0.25]
+        assert state == adapter.initial_state()
 
     def test_overflow_preserves_exact_native_tail_after_summary(self):
         adapter, low_level = _google_adapter(
@@ -704,3 +878,73 @@ def test_agent_persists_compaction_usage_for_next_action_attribution(tmp_path):
     }
     assert "opaque" not in agent._runtime_state.model_dump_json()
     assert "opaque" not in agent._pending_compaction_continuation.model_dump_json()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("responses", "max_context_length", "expected_tokens", "error_type"),
+    [
+        (
+            [_raw_summary_response(""), _raw_summary_response("")],
+            1_048_576,
+            6_000,
+            CompactionFailureError,
+        ),
+        (
+            [_raw_summary_response("large summary")],
+            10,
+            3_000,
+            CompactionContextOverflowError,
+        ),
+    ],
+)
+def test_agent_persists_billed_usage_when_compaction_fails(
+    tmp_path,
+    responses,
+    max_context_length,
+    expected_tokens,
+    error_type,
+):
+    low_level = _NormalizingGoogleModelAdapter(responses)
+    adapter = GoogleContinuousConversationRuntimeAdapter(
+        model_adapter=low_level,
+        descriptor=ADAPTER_DESCRIPTORS["google.interactions.v1"],
+    )
+    agent = BenchmarkingAgent.__new__(BenchmarkingAgent)
+    agent._stateful_adapter = adapter
+    agent._runtime_state = adapter.buffer_inputs(
+        adapter.initial_state(),
+        [Message(role="user", content="full original history")],
+    )
+    original_state = agent._runtime_state.model_copy(deep=True)
+    agent._summary_compactor = SummaryCompactor(_policy())
+    agent._pending_compaction_trigger_tokens = 175_000
+    agent._request_kwargs = _request_config()
+    agent.MAX_CONTEXT_LENGTH = max_context_length
+    agent.ESTIMATED_CHARS_PER_TOKEN = 1.0
+    agent.MAX_RETRIES = 1
+    agent.MODEL = "gemini-3.8-flash"
+    agent._compaction_counter = 0
+    agent.step_counter = 2
+    agent.token_counter = 0
+    agent.conversation = []
+    agent.run_dir = str(tmp_path)
+    agent.run_record = RunRecord(
+        run_id="failed-compaction",
+        game_id="id",
+        agent_name="agent",
+        model=agent.MODEL,
+        started_at=datetime.now(timezone.utc),
+        run_dir=str(tmp_path),
+        runtime={"compaction_count": 0},
+    )
+
+    with pytest.raises(error_type):
+        agent._run_pending_compaction()
+
+    run_payload = json.loads((tmp_path / "run_meta.json").read_text())
+    assert agent.run_record.total_usage.total_tokens == expected_tokens
+    assert run_payload["total_usage"]["total_tokens"] == expected_tokens
+    assert agent.token_counter == expected_tokens
+    assert agent._runtime_state == original_state
+    assert not list(tmp_path.glob("compaction_*.json"))

@@ -19,7 +19,12 @@ from .compaction import (
     SummaryCompactor,
     build_summary_bridge,
 )
-from .exceptions import EmptyResponseError
+from .exceptions import (
+    CompactionContextOverflowError,
+    CompactionFailureError,
+    ContextOverflowError,
+    EmptyResponseError,
+)
 from .model_config import get_model_config
 from .recording import (
     CompactionContinuationRecord,
@@ -558,15 +563,31 @@ class BenchmarkingAgent(Agent):
             return
 
         started = time.monotonic()
-        result = summary_compactor.compact(
-            adapter=self._stateful_adapter,
-            state=self._runtime_state,
-            request_config=dict(self._request_kwargs),
-            trigger_tokens=trigger_tokens,
-            max_context_length=self.MAX_CONTEXT_LENGTH,
-            max_retries=self.MAX_RETRIES,
-            estimated_chars_per_token=self.ESTIMATED_CHARS_PER_TOKEN,
-        )
+        try:
+            result = summary_compactor.compact(
+                adapter=self._stateful_adapter,
+                state=self._runtime_state,
+                request_config=dict(self._request_kwargs),
+                trigger_tokens=trigger_tokens,
+                max_context_length=self.MAX_CONTEXT_LENGTH,
+                max_retries=self.MAX_RETRIES,
+                estimated_chars_per_token=self.ESTIMATED_CHARS_PER_TOKEN,
+            )
+        except (CompactionFailureError, CompactionContextOverflowError) as exc:
+            if isinstance(exc.usage, NormalizedUsage):
+                self.track_tokens(exc.usage.total_tokens)
+                self.run_record.total_usage = (
+                    self.run_record.total_usage
+                    + StepUsage.from_normalized_usage(exc.usage)
+                )
+                self._write_run_meta()
+            logger.error(
+                "Harness summary compaction failed before step %s after %.3fs: %s",
+                self.step_counter + 1,
+                time.monotonic() - started,
+                exc,
+            )
+            raise
         duration = round(time.monotonic() - started, 3)
         self._runtime_state = result.state
         self._pending_compaction_trigger_tokens = None
@@ -903,7 +924,10 @@ class BenchmarkingAgent(Agent):
         """
         accumulated_usage = NormalizedUsage()
         self._last_turn_result = None
-        for attempt in range(self.MAX_RETRIES + 1):
+        attempt = 0
+        max_attempts = self.MAX_RETRIES + 1
+        action_overflow_recoveries = 0
+        while attempt < max_attempts:
             try:
                 # Server-managed state compacts on OpenAI's side; the docs say not
                 # to manually prune when chaining via previous_response_id.
@@ -925,6 +949,36 @@ class BenchmarkingAgent(Agent):
                 else:
                     model_request = self._build_model_request()
                     model_response = self._call_api(model_request)
+            except ContextOverflowError as e:
+                summary_compactor = getattr(self, "_summary_compactor", None)
+                can_recover = (
+                    hasattr(self, "_stateful_adapter")
+                    and summary_compactor is not None
+                    and action_overflow_recoveries == 0
+                )
+                if can_recover:
+                    self._pending_compaction_trigger_tokens = max(
+                        self.MAX_CONTEXT_LENGTH,
+                        1,
+                    )
+                    self._run_pending_compaction()
+                    action_overflow_recoveries += 1
+                    max_attempts += 1
+                    logger.warning(
+                        "Action request exceeded provider capacity; compacted "
+                        "accepted history before retrying."
+                    )
+                else:
+                    logger.error(
+                        "Action request context overflow could not be recovered: "
+                        "%s (attempt %s/%s).",
+                        e,
+                        attempt + 1,
+                        max_attempts,
+                    )
+                    raise
+                attempt += 1
+                continue
             except EmptyResponseError as e:
                 if isinstance(e.usage, NormalizedUsage):
                     self.track_tokens(e.usage.total_tokens)
@@ -933,14 +987,16 @@ class BenchmarkingAgent(Agent):
                     self._save_diagnostic(e.response)
                 logger.warning(
                     f"Empty API response "
-                    f"(attempt {attempt + 1}/{self.MAX_RETRIES + 1})."
+                    f"(attempt {attempt + 1}/{max_attempts})."
                 )
+                attempt += 1
                 continue
             except Exception as e:
                 logger.warning(
                     f"API error: {type(e).__name__}: {e} "
-                    f"(attempt {attempt + 1}/{self.MAX_RETRIES + 1})."
+                    f"(attempt {attempt + 1}/{max_attempts})."
                 )
+                attempt += 1
                 continue
 
             self.track_tokens(model_response.usage.total_tokens)
@@ -975,11 +1031,12 @@ class BenchmarkingAgent(Agent):
 
             logger.warning(
                 f"Could not parse action from response "
-                f"(attempt {attempt + 1}/{self.MAX_RETRIES + 1})."
+                f"(attempt {attempt + 1}/{max_attempts})."
             )
+            attempt += 1
 
         raise RuntimeError(
-            f"Failed to get a valid action after {self.MAX_RETRIES + 1} attempts."
+            f"Failed to get a valid action after {max_attempts} attempts."
         )
 
     def _call_api(self, model_request: ModelRequest) -> ModelResponse:

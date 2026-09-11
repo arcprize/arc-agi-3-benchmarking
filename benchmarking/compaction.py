@@ -7,12 +7,19 @@ summarization design, adapted to the runtime state contract in this repository.
 from __future__ import annotations
 
 import json
+import time
 from copy import deepcopy
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from .exceptions import ContextOverflowError, EmptyResponseError
+from .exceptions import (
+    CompactionContextOverflowError,
+    CompactionFailureError,
+    ContextOverflowError,
+    EmptyResponseError,
+    TransientProviderError,
+)
 from .runtime_models import Message, NormalizedUsage
 from .runtime_state import (
     CompactionUnwindResult,
@@ -109,6 +116,8 @@ def build_summary_prompt_record(state: RuntimeState) -> dict[str, Any]:
 
 
 class SummaryCompactor:
+    TRANSIENT_RETRY_BASE_SECONDS = 0.25
+
     def __init__(self, policy: SummaryCompactionPolicy) -> None:
         self.policy = policy
 
@@ -138,9 +147,9 @@ class SummaryCompactor:
         excluded_turns: list[CompactionUnwindResult] = []
         excluded_history_items = 0
         overflow_recoveries = 0
-        empty_attempts = 0
+        response_failures = 0
         attempts = 0
-        while empty_attempts <= max_retries:
+        while response_failures <= max_retries:
             attempts += 1
             prompt = build_summary_prompt_record(candidate_state)
             try:
@@ -159,9 +168,10 @@ class SummaryCompactor:
             except ContextOverflowError as exc:
                 unwind = adapter.unwind_latest_accepted_turn(candidate_state)
                 if unwind is None:
-                    raise ContextOverflowError(
+                    raise CompactionContextOverflowError(
                         "Harness summary compaction reached the protected context "
-                        "boundary and still exceeds provider capacity."
+                        "boundary and still exceeds provider capacity.",
+                        usage=accumulated_usage,
                     ) from exc
                 candidate_state = unwind.state
                 excluded_turns.insert(0, unwind)
@@ -171,28 +181,55 @@ class SummaryCompactor:
             except EmptyResponseError as exc:
                 if isinstance(exc.usage, NormalizedUsage):
                     accumulated_usage = accumulated_usage + exc.usage
-                empty_attempts += 1
+                response_failures += 1
                 continue
+            except TransientProviderError:
+                response_failures += 1
+                if response_failures <= max_retries:
+                    delay = self.TRANSIENT_RETRY_BASE_SECONDS * (
+                        2 ** (response_failures - 1)
+                    )
+                    time.sleep(delay)
+                continue
+            except Exception as exc:
+                if accumulated_usage != NormalizedUsage():
+                    raise CompactionFailureError(
+                        "Harness summary compaction failed after billable attempts.",
+                        usage=accumulated_usage,
+                    ) from exc
+                raise
 
             accumulated_usage = accumulated_usage + result.response.usage
+            response_status = result.response.response_status
+            if response_status is not None and response_status != "completed":
+                response_failures += 1
+                continue
             summary = result.response.output_text.strip()
             if not summary:
-                empty_attempts += 1
+                response_failures += 1
                 continue
 
-            bridge = build_summary_bridge(summary)
-            next_state = adapter.rebuild_after_compaction(
-                Message(role="user", content=bridge),
-                excluded_turns,
-            )
-            estimated_state_tokens = estimate_runtime_state_tokens(
-                next_state,
-                estimated_chars_per_token=estimated_chars_per_token,
-            )
+            try:
+                bridge = build_summary_bridge(summary)
+                next_state = adapter.rebuild_after_compaction(
+                    Message(role="user", content=bridge),
+                    excluded_turns,
+                )
+                estimated_state_tokens = estimate_runtime_state_tokens(
+                    next_state,
+                    estimated_chars_per_token=estimated_chars_per_token,
+                )
+            except Exception as exc:
+                raise CompactionFailureError(
+                    "Harness summary compaction could not rebuild continuation "
+                    "state.",
+                    usage=accumulated_usage,
+                ) from exc
             if estimated_state_tokens >= max_context_length:
-                raise ContextOverflowError(
+                raise CompactionContextOverflowError(
                     "Harness summary compaction continuation state is estimated to "
-                    "exceed provider context capacity."
+                    "exceed provider context capacity.",
+                    usage=accumulated_usage,
                 )
             return SummaryCompactionResult(
                 state=next_state,
@@ -207,7 +244,8 @@ class SummaryCompactor:
                 excluded_history_items=excluded_history_items,
             )
 
-        raise RuntimeError(
-            "Harness summary compaction failed to produce non-empty text after "
-            f"{max_retries + 1} empty attempts."
+        raise CompactionFailureError(
+            "Harness summary compaction failed to produce a completed, non-empty "
+            f"summary after {max_retries + 1} response failures.",
+            usage=accumulated_usage,
         )

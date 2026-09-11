@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import numpy as np
@@ -12,10 +13,13 @@ from benchmarking.agent import BenchmarkingAgent
 from benchmarking.base import ExitReason
 from benchmarking.compaction import (
     SUMMARY_BRIDGE_TEMPLATE,
+    SUMMARY_SYSTEM_PROMPT,
     SummaryCompactionPolicy,
     SummaryCompactor,
 )
-from benchmarking.exceptions import EmptyResponseError
+from benchmarking.exceptions import ContextOverflowError, EmptyResponseError
+from benchmarking.google_runtime import GoogleContinuousConversationRuntimeAdapter
+from benchmarking.recording import RunRecord
 from benchmarking.runtime_adapters import (
     OpenAIChatCompletionsAdapter,
     OpenAIResponsesAdapter,
@@ -26,8 +30,11 @@ from benchmarking.runtime_models import (
     ModelResponse,
     NormalizedUsage,
 )
-from benchmarking.runtime_registry import build_stateful_runtime_adapter
-from benchmarking.runtime_state import RuntimeState
+from benchmarking.runtime_registry import (
+    ADAPTER_DESCRIPTORS,
+    build_stateful_runtime_adapter,
+)
+from benchmarking.runtime_state import ModelTurnRequest, RuntimeState
 
 
 class _FakeAdapter:
@@ -1403,6 +1410,190 @@ class TestBenchmarkingAgentContinuousConversationState:
         assert agent._pending_action_reasoning["reasoning"] == "accepted summary"
         assert "reasoning_summary" not in agent._pending_action_reasoning
         assert agent._pending_compaction_trigger_tokens == 7
+
+    def test_action_overflow_compacts_accepted_history_before_one_retry(
+        self,
+        tmp_path,
+    ):
+        class CapacityModelAdapter:
+            def __init__(self):
+                self.requests = []
+
+            def invoke(self, request):
+                self.requests.append(request)
+                is_summary = request.messages[0].content == SUMMARY_SYSTEM_PROMPT
+                input_chars = sum(
+                    len(content["text"])
+                    for step in request.native_input
+                    for content in step.get("content", [])
+                    if content.get("type") == "text"
+                )
+                if not is_summary and input_chars > 1_000:
+                    raise ContextOverflowError("input token count exceeds")
+                output = "retained state" if is_summary else "ACTION1"
+                return ModelResponse(
+                    output_text=output,
+                    usage=NormalizedUsage(total_tokens=input_chars + 10),
+                    raw_response={
+                        "steps": [
+                            {
+                                "type": "model_output",
+                                "content": [{"type": "text", "text": output}],
+                            }
+                        ]
+                    },
+                )
+
+        low_level = CapacityModelAdapter()
+        adapter = GoogleContinuousConversationRuntimeAdapter(
+            model_adapter=low_level,
+            descriptor=ADAPTER_DESCRIPTORS["google.interactions.v1"],
+        )
+        request_config = {
+            "model": "gemini-3.8-flash",
+            "store": False,
+            "generation_config": {
+                "max_output_tokens": 65_536,
+                "thinking_level": "low",
+                "thinking_summaries": "auto",
+            },
+        }
+        initial = adapter.invoke_turn(
+            ModelTurnRequest(
+                system_prompt="original system",
+                new_messages=[
+                    Message(role="user", content="previous observation " * 30)
+                ],
+                request_config=request_config,
+                previous_state=adapter.initial_state(),
+            )
+        )
+        compactor = SummaryCompactor(
+            SummaryCompactionPolicy(
+                strategy="harness_summary",
+                trigger_tokens=700,
+                summary_max_output_tokens=100,
+                summary_input_headroom_tokens=20,
+            )
+        )
+        assert not compactor.should_compact(initial.response.usage)
+
+        agent = _agent_for_request_kwargs(request_config)
+        agent._stateful_adapter = adapter
+        agent._runtime_state = initial.state
+        agent._pending_turn_messages = [
+            Message(role="user", content="next observation " * 30)
+        ]
+        agent._summary_compactor = compactor
+        agent._pending_compaction_trigger_tokens = None
+        agent.MAX_CONTEXT_LENGTH = 1_000
+        agent.MAX_RETRIES = 0
+        agent.MODEL = "gemini-3.8-flash"
+        agent._pricing = {}
+        agent._compaction_counter = 0
+        agent.step_counter = 1
+        agent.run_dir = str(tmp_path)
+        agent.run_record = RunRecord(
+            run_id="action-overflow",
+            game_id="id",
+            agent_name="agent",
+            model=agent.MODEL,
+            started_at=datetime.now(timezone.utc),
+            run_dir=str(tmp_path),
+            runtime={"compaction_count": 0},
+        )
+
+        response, action, retries, _ = agent._request_with_retries(
+            [GameAction.ACTION1]
+        )
+
+        assert response.output_text == "ACTION1"
+        assert action == GameAction.ACTION1
+        assert retries == 1
+        assert len(low_level.requests) == 4
+        assert low_level.requests[2].messages[0].content == SUMMARY_SYSTEM_PROMPT
+        assert low_level.requests[1].native_input[-1] == {
+            "type": "user_input",
+            "content": [{"type": "text", "text": "next observation " * 30}],
+        }
+        assert low_level.requests[3].native_input[-1] == (
+            low_level.requests[1].native_input[-1]
+        )
+        assert low_level.requests[3].native_input[0]["type"] == "user_input"
+        assert "retained state" in low_level.requests[3].native_input[0]["content"][
+            0
+        ]["text"]
+        assert "previous observation" not in str(low_level.requests[3].native_input)
+        assert (tmp_path / "compaction_001.json").exists()
+
+    def test_second_action_overflow_fails_without_repeating_request(self, tmp_path):
+        class AlwaysOverflowAdapter:
+            def __init__(self):
+                self.requests = []
+
+            def invoke(self, request):
+                self.requests.append(request)
+                is_summary = request.messages[0].content == SUMMARY_SYSTEM_PROMPT
+                if not is_summary:
+                    raise ContextOverflowError("still too large")
+                return ModelResponse(
+                    output_text="retained state",
+                    usage=NormalizedUsage(total_tokens=20),
+                    raw_response={
+                        "steps": [
+                            {
+                                "type": "model_output",
+                                "content": [
+                                    {"type": "text", "text": "retained state"}
+                                ],
+                            }
+                        ]
+                    },
+                )
+
+        low_level = AlwaysOverflowAdapter()
+        adapter = GoogleContinuousConversationRuntimeAdapter(
+            model_adapter=low_level,
+            descriptor=ADAPTER_DESCRIPTORS["google.interactions.v1"],
+        )
+        request_config = {
+            "model": "gemini-3.8-flash",
+            "store": False,
+            "generation_config": {"thinking_summaries": "auto"},
+        }
+        agent = _agent_for_request_kwargs(request_config)
+        agent._stateful_adapter = adapter
+        agent._runtime_state = adapter.initial_state()
+        agent._pending_turn_messages = [Message(role="user", content="observation")]
+        agent._summary_compactor = SummaryCompactor(
+            SummaryCompactionPolicy(strategy="harness_summary", trigger_tokens=10)
+        )
+        agent._pending_compaction_trigger_tokens = None
+        agent.MAX_RETRIES = 2
+        agent.MODEL = "gemini-3.8-flash"
+        agent._pricing = {}
+        agent._compaction_counter = 0
+        agent.step_counter = 0
+        agent.run_dir = str(tmp_path)
+        agent.run_record = RunRecord(
+            run_id="repeated-overflow",
+            game_id="id",
+            agent_name="agent",
+            model=agent.MODEL,
+            started_at=datetime.now(timezone.utc),
+            run_dir=str(tmp_path),
+            runtime={"compaction_count": 0},
+        )
+
+        with pytest.raises(ContextOverflowError, match="still too large"):
+            agent._request_with_retries([GameAction.ACTION1])
+
+        action_requests = [
+            request
+            for request in low_level.requests
+            if request.messages[0].content != SUMMARY_SYSTEM_PROMPT
+        ]
+        assert len(action_requests) == 2
 
 
 def _agent_with_env(step_frame: FrameData) -> BenchmarkingAgent:

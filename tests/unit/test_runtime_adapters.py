@@ -5,7 +5,11 @@ import pytest
 from google import genai as google_genai
 from google.genai import _interactions as google_genai_interactions
 
-from benchmarking.exceptions import ContextOverflowError, EmptyResponseError
+from benchmarking.exceptions import (
+    ContextOverflowError,
+    EmptyResponseError,
+    TransientProviderError,
+)
 from benchmarking.model_config import get_model_config
 from benchmarking.runtime_adapters import (
     AnthropicMessagesAdapter,
@@ -323,6 +327,41 @@ class TestGoogleGenAIInteractionsAdapter:
                 adapter.invoke(self._request())
         finally:
             client.close()
+
+    def test_real_sdk_transient_error_is_classified_for_harness_retry(self):
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(
+                503,
+                request=request,
+                json={
+                    "error": {
+                        "message": "service temporarily unavailable",
+                        "status": "UNAVAILABLE",
+                    }
+                },
+            )
+
+        http_client = httpx.Client(transport=httpx.MockTransport(handler))
+        client = google_genai.Client(
+            api_key="test-key",
+            http_options={
+                "base_url": "https://example.test",
+                "httpx_client": http_client,
+                "retry_options": {"attempts": 1},
+            },
+        )
+        try:
+            adapter = GoogleGenAIInteractionsAdapter(client)
+
+            with pytest.raises(TransientProviderError, match="unavailable"):
+                adapter.invoke(self._request())
+        finally:
+            client.close()
+
+        assert requests
 
 
 @pytest.mark.unit
