@@ -82,6 +82,14 @@ class StepUsage(BaseModel):
         )
 
 
+class CompactionContinuationRecord(BaseModel):
+    """Safe, readable continuation context sent after harness compaction."""
+
+    compaction: int
+    summary: str
+    bridge: str
+
+
 class StepRecord(BaseModel):
     """One recorded step (one choose_action call)."""
 
@@ -97,6 +105,7 @@ class StepRecord(BaseModel):
     retries: int = 0
     request_record: dict[str, Any] | None = None
     state_transition: dict[str, Any] | None = None
+    continuation: CompactionContinuationRecord | None = None
 
 
 class CompactionRecord(BaseModel):

@@ -17,10 +17,17 @@ from .compaction import (
     HARNESS_SUMMARY_COMPACTION,
     SummaryCompactionPolicy,
     SummaryCompactor,
+    build_summary_bridge,
 )
 from .exceptions import EmptyResponseError
 from .model_config import get_model_config
-from .recording import CompactionRecord, RunRecord, StepRecord, StepUsage
+from .recording import (
+    CompactionContinuationRecord,
+    CompactionRecord,
+    RunRecord,
+    StepRecord,
+    StepUsage,
+)
 from .runtime_adapters import build_model_runtime_adapter
 from .runtime_clients import build_model_runtime_client
 from .runtime_models import (
@@ -98,6 +105,9 @@ class BenchmarkingAgent(Agent):
             )
         self._pending_compaction_trigger_tokens: int | None = None
         self._pending_compaction_usage: NormalizedUsage | None = None
+        self._pending_compaction_continuation: CompactionContinuationRecord | None = (
+            None
+        )
         self._compaction_counter = 0
         self._previous_response_id: str | None = None
         self._pending_user_messages: list[dict[str, Any]] = []
@@ -516,7 +526,7 @@ class BenchmarkingAgent(Agent):
         with open(filename, "w") as f:
             exclude = {
                 field
-                for field in ("request_record", "state_transition")
+                for field in ("request_record", "state_transition", "continuation")
                 if getattr(step, field) is None
             }
             f.write(step.model_dump_json(indent=2, exclude=exclude))
@@ -581,6 +591,11 @@ class BenchmarkingAgent(Agent):
                 excluded_history_items=result.excluded_history_items,
                 usage=compaction_usage,
             )
+        )
+        self._pending_compaction_continuation = CompactionContinuationRecord(
+            compaction=self._compaction_counter,
+            summary=result.summary,
+            bridge=build_summary_bridge(result.summary),
         )
         pending_usage = getattr(self, "_pending_compaction_usage", None)
         self._pending_compaction_usage = (
@@ -787,6 +802,7 @@ class BenchmarkingAgent(Agent):
             state_transition = self._last_turn_result.transition.model_dump(
                 exclude_none=True
             )
+        continuation = getattr(self, "_pending_compaction_continuation", None)
         self._save_step(
             StepRecord(
                 step=self.step_counter + 1,
@@ -801,8 +817,10 @@ class BenchmarkingAgent(Agent):
                 retries=retries,
                 request_record=request_record,
                 state_transition=state_transition,
+                continuation=continuation,
             )
         )
+        self._pending_compaction_continuation = None
 
         # Build ActionMetadata and pass as dict through the reasoning field
         pending_compaction_usage = getattr(self, "_pending_compaction_usage", None)

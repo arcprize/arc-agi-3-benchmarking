@@ -120,3 +120,4 @@ class TestRecordingModels:
         assert "runtime" not in run_payload
         assert "request_record" not in step_payload
         assert "state_transition" not in step_payload
+        assert "continuation" not in step_payload

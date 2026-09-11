@@ -10,7 +10,11 @@ from benchmarking.action_metadata import (
 )
 from benchmarking.agent import BenchmarkingAgent
 from benchmarking.base import ExitReason
-from benchmarking.compaction import SummaryCompactionPolicy, SummaryCompactor
+from benchmarking.compaction import (
+    SUMMARY_BRIDGE_TEMPLATE,
+    SummaryCompactionPolicy,
+    SummaryCompactor,
+)
 from benchmarking.runtime_adapters import (
     OpenAIChatCompletionsAdapter,
     OpenAIResponsesAdapter,
@@ -1441,6 +1445,35 @@ def test_pending_compaction_usage_is_included_in_next_action_cost_metadata():
     assert compaction["cost"]["total_cost"] == pytest.approx(0.000225)
     assert agent._pending_compaction_usage is None
     assert agent._saved_steps[0].usage.total_tokens == 110
+
+
+@pytest.mark.unit
+def test_compaction_continuation_is_recorded_on_only_the_next_step():
+    bridge = SUMMARY_BRIDGE_TEMPLATE.format(summary="Important prior state.")
+    agent = _agent_for_choose_action(
+        analysis_mode=False,
+        responses=[
+            ModelResponse(output_text="ACTION1", usage=NormalizedUsage()),
+            ModelResponse(output_text="ACTION1", usage=NormalizedUsage()),
+        ],
+    )
+    agent._pending_compaction_continuation = {
+        "compaction": 3,
+        "summary": "Important prior state.",
+        "bridge": bridge,
+    }
+
+    assert agent.choose_action([], _playable_frame()) == GameAction.ACTION1
+    assert agent.choose_action([], _playable_frame()) == GameAction.ACTION1
+
+    assert agent._saved_steps[0].continuation is not None
+    assert agent._saved_steps[0].continuation.model_dump() == {
+        "compaction": 3,
+        "summary": "Important prior state.",
+        "bridge": bridge,
+    }
+    assert agent._saved_steps[1].continuation is None
+    assert agent._pending_compaction_continuation is None
 
 
 @pytest.mark.unit

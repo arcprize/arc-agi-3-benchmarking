@@ -568,4 +568,10 @@ def test_agent_persists_compaction_usage_for_next_action_attribution(tmp_path):
     assert run_payload["runtime"]["compaction_count"] == 1
     assert agent._pending_compaction_trigger_tokens is None
     assert agent._pending_compaction_usage.total_tokens == 140
+    assert agent._pending_compaction_continuation.model_dump() == {
+        "compaction": 1,
+        "summary": "retained state",
+        "bridge": SUMMARY_BRIDGE_TEMPLATE.format(summary="retained state"),
+    }
     assert "opaque" not in agent._runtime_state.model_dump_json()
+    assert "opaque" not in agent._pending_compaction_continuation.model_dump_json()

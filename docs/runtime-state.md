@@ -122,9 +122,12 @@ retries fails closed.
 
 Each harness compaction is written to `compaction_NNN.json` with its summary,
 trigger, item counts, attempts, overflow recoveries, excluded-turn counts, and
-token usage. The usage is also added to the local run total. Monetary cost
-remains provider-reported only in `usage.cost`; the harness does not write a
-configured-price estimate into that field.
+token usage. The first subsequent `step_NNN.json` also records a safe
+`continuation` containing the compaction number, generated summary, and exact
+bridge string sent as the new user-role context. Later steps omit this field.
+Opaque provider state is not included. The usage is also added to the local run
+total. Monetary cost remains provider-reported only in `usage.cost`; the harness
+does not write a configured-price estimate into that field.
 
 Published v3 costs are reconstructed downstream from ARC-facing action token
 usage and configured input/output prices. A harness compaction's usage is
