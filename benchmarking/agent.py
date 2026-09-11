@@ -919,8 +919,9 @@ class BenchmarkingAgent(Agent):
         """Call the API with retries.
 
         Returns (model_response, action, retries, messages_sent) where
-        messages_sent is the exact request transcript used by the successful
-        attempt before the current assistant reply is appended locally.
+        messages_sent is the exact normalized transcript for message-based
+        requests or the adapter's safe readable projection of a provider-native
+        request. The current assistant reply is not included.
         """
         accumulated_usage = NormalizedUsage()
         self._last_turn_result = None
@@ -1011,7 +1012,11 @@ class BenchmarkingAgent(Agent):
                 if hasattr(self, "_stateful_adapter"):
                     self._runtime_state = turn_result.state
                     self._last_turn_result = turn_result
-                    sanitized_messages = turn_result.sanitized_request.get("messages")
+                    sanitized_messages = turn_result.readable_request_messages
+                    if sanitized_messages is None:
+                        sanitized_messages = turn_result.sanitized_request.get(
+                            "messages"
+                        )
                     messages_sent = (
                         sanitized_messages
                         if isinstance(sanitized_messages, list)

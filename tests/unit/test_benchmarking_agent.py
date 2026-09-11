@@ -1503,7 +1503,7 @@ class TestBenchmarkingAgentContinuousConversationState:
             runtime={"compaction_count": 0},
         )
 
-        response, action, retries, _ = agent._request_with_retries(
+        response, action, retries, messages_sent = agent._request_with_retries(
             [GameAction.ACTION1]
         )
 
@@ -1524,6 +1524,16 @@ class TestBenchmarkingAgentContinuousConversationState:
             0
         ]["text"]
         assert "previous observation" not in str(low_level.requests[3].native_input)
+        assert messages_sent[0] == {
+            "role": "system",
+            "content": agent._build_system_prompt(),
+        }
+        assert "retained state" in messages_sent[1]["content"]
+        assert messages_sent[-1] == {
+            "role": "user",
+            "content": "next observation " * 30,
+        }
+        assert "previous observation" not in str(messages_sent)
         assert (tmp_path / "compaction_001.json").exists()
 
     def test_second_action_overflow_fails_without_repeating_request(self, tmp_path):

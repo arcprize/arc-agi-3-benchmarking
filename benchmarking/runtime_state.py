@@ -114,6 +114,7 @@ class ModelTurnResult(BaseModel):
     sanitized_request: dict[str, Any]
     transition: StateTransitionTelemetry
     action_state: dict[str, Any] | None = None
+    readable_request_messages: list[dict[str, Any]] | None = None
 
 
 class AdapterDescriptor(BaseModel):

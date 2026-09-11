@@ -7,6 +7,7 @@ from google import genai as google_genai
 
 from benchmarking.google_runtime import (
     GoogleContinuousConversationRuntimeAdapter,
+    readable_interaction_messages,
     serialize_interaction_steps,
 )
 from benchmarking.runtime_adapters import (
@@ -128,6 +129,53 @@ def _turn(adapter, state, content="observation"):
 
 @pytest.mark.unit
 class TestGoogleInteractionsAdapter:
+    def test_readable_request_projects_compacted_native_state_without_signatures(
+        self,
+    ):
+        messages = readable_interaction_messages(
+            system_prompt="system",
+            input_steps=[
+                {
+                    "type": "user_input",
+                    "content": [{"type": "text", "text": "compaction bridge"}],
+                },
+                {
+                    "type": "user_input",
+                    "content": [{"type": "text", "text": "prior frame"}],
+                },
+                {
+                    "type": "thought",
+                    "signature": "opaque-secret",
+                    "summary": [
+                        {"type": "text", "text": "readable reasoning"}
+                    ],
+                },
+                {
+                    "type": "model_output",
+                    "content": [{"type": "text", "text": "ACTION1"}],
+                },
+                {
+                    "type": "user_input",
+                    "content": [{"type": "text", "text": "current frame"}],
+                },
+            ],
+        )
+
+        assert messages == [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "compaction bridge"},
+            {"role": "user", "content": "prior frame"},
+            {
+                "role": "assistant",
+                "content": (
+                    "<reasoning_summary>\nreadable reasoning\n"
+                    "</reasoning_summary>\n\nACTION1"
+                ),
+            },
+            {"role": "user", "content": "current frame"},
+        ]
+        assert "opaque-secret" not in json.dumps(messages)
+
     def test_builds_stateless_request_and_normalizes_response(self):
         client = _FakeClient(_raw_interaction())
         adapter = GoogleGenAIInteractionsAdapter(client)

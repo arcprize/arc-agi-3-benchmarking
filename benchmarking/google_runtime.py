@@ -79,6 +79,67 @@ def sanitized_step_descriptor(step: dict[str, Any]) -> dict[str, Any]:
     return descriptor
 
 
+def _step_text(step: dict[str, Any], field: str) -> str:
+    parts = step.get(field)
+    if not isinstance(parts, list):
+        return ""
+    return "\n".join(
+        text
+        for part in parts
+        if isinstance(part, dict)
+        and isinstance((text := part.get("text")), str)
+        and text
+    )
+
+
+def readable_interaction_messages(
+    *, system_prompt: str, input_steps: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Project native Gemini state into a safe, readable request transcript.
+
+    The native item descriptors remain authoritative for the exact request shape.
+    This projection retains readable thought summaries while deliberately omitting
+    opaque signatures and other provider-only replay data.
+    """
+
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": system_prompt}
+    ]
+    pending_reasoning: list[str] = []
+
+    def flush_reasoning(output_text: str = "") -> None:
+        if pending_reasoning:
+            reasoning = "\n\n".join(pending_reasoning)
+            content = f"<reasoning_summary>\n{reasoning}\n</reasoning_summary>"
+            if output_text:
+                content = f"{content}\n\n{output_text}"
+            messages.append({"role": "assistant", "content": content})
+            pending_reasoning.clear()
+        elif output_text:
+            messages.append({"role": "assistant", "content": output_text})
+
+    for step in input_steps:
+        step_type = step.get("type")
+        if step_type == "thought":
+            summary = _step_text(step, "summary")
+            if summary:
+                pending_reasoning.append(summary)
+            continue
+
+        if step_type == "model_output":
+            flush_reasoning(_step_text(step, "content"))
+            continue
+
+        if step_type == "user_input":
+            flush_reasoning()
+            content = _step_text(step, "content")
+            if content:
+                messages.append({"role": "user", "content": content})
+
+    flush_reasoning()
+    return messages
+
+
 def validate_google_continuous_conversation_request(
     request_config: dict[str, Any],
 ) -> None:
@@ -180,6 +241,10 @@ class GoogleContinuousConversationRuntimeAdapter:
                 "history_items_before_prune": len(next_steps),
                 "history_items_after_prune": len(next_steps),
             },
+            readable_request_messages=readable_interaction_messages(
+                system_prompt=request.system_prompt,
+                input_steps=input_steps,
+            ),
         )
 
     def unwind_latest_accepted_turn(
