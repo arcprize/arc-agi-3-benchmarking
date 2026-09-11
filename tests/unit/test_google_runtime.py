@@ -2,9 +2,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from google.genai import errors as google_genai_errors
 
-from benchmarking.exceptions import ContextOverflowError
 from benchmarking.google_runtime import (
     GoogleContinuousConversationRuntimeAdapter,
     serialize_interaction_steps,
@@ -207,47 +205,6 @@ class TestGoogleInteractionsAdapter:
         )
 
         assert isinstance(adapter, GoogleGenAIInteractionsAdapter)
-
-    def test_maps_only_recognized_context_limit_errors(self):
-        overflow = google_genai_errors.ClientError(
-            400,
-            {
-                "error": {
-                    "status": "INVALID_ARGUMENT",
-                    "message": "Input token count exceeds the maximum number of tokens",
-                }
-            },
-        )
-        adapter = GoogleGenAIInteractionsAdapter(_FakeClient(overflow))
-
-        with pytest.raises(ContextOverflowError, match="maximum number of tokens"):
-            adapter.invoke(
-                ModelRequest(
-                    messages=[Message(role="user", content="large")],
-                    request_config={"model": "gemini-3.8-flash", "store": False},
-                )
-            )
-
-    def test_does_not_map_unrelated_invalid_argument(self):
-        invalid = google_genai_errors.ClientError(
-            400,
-            {
-                "error": {
-                    "status": "INVALID_ARGUMENT",
-                    "message": "Request contains an invalid argument",
-                }
-            },
-        )
-        adapter = GoogleGenAIInteractionsAdapter(_FakeClient(invalid))
-
-        with pytest.raises(google_genai_errors.ClientError):
-            adapter.invoke(
-                ModelRequest(
-                    messages=[Message(role="user", content="invalid")],
-                    request_config={"model": "gemini-3.8-flash", "store": False},
-                )
-            )
-
 
 @pytest.mark.unit
 class TestGoogleContinuousConversation:

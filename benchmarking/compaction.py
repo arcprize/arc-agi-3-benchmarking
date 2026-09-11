@@ -168,7 +168,9 @@ class SummaryCompactor:
                 excluded_history_items += unwind.removed_items
                 overflow_recoveries += 1
                 continue
-            except EmptyResponseError:
+            except EmptyResponseError as exc:
+                if isinstance(exc.usage, NormalizedUsage):
+                    accumulated_usage = accumulated_usage + exc.usage
                 empty_attempts += 1
                 continue
 

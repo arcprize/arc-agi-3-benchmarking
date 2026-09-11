@@ -15,6 +15,7 @@ from benchmarking.compaction import (
     SummaryCompactionPolicy,
     SummaryCompactor,
 )
+from benchmarking.exceptions import EmptyResponseError
 from benchmarking.runtime_adapters import (
     OpenAIChatCompletionsAdapter,
     OpenAIResponsesAdapter,
@@ -634,6 +635,52 @@ class TestBenchmarkingAgentRetries:
             {"role": "system", "content": "system"},
             {"role": "user", "content": "frame"},
         ]
+        assert agent.token_counter == 10
+
+    def test_empty_response_usage_is_counted_before_retry(self):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+        agent.conversation = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "frame"},
+        ]
+        responses = [
+            EmptyResponseError(
+                "empty output",
+                usage=NormalizedUsage(
+                    input_tokens=3,
+                    output_tokens=1,
+                    total_tokens=4,
+                ),
+            ),
+            ModelResponse(
+                output_text="RESET",
+                usage=NormalizedUsage(
+                    input_tokens=4,
+                    output_tokens=2,
+                    total_tokens=6,
+                ),
+            ),
+        ]
+
+        def fake_call_api(_request: ModelRequest) -> ModelResponse:
+            response = responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        agent._call_api = fake_call_api
+
+        model_response, action, retries, _ = agent._request_with_retries(
+            [GameAction.RESET]
+        )
+
+        assert action == GameAction.RESET
+        assert retries == 1
+        assert model_response.usage == NormalizedUsage(
+            input_tokens=7,
+            output_tokens=3,
+            total_tokens=10,
+        )
         assert agent.token_counter == 10
 
     def test_normalized_responses_output_parses_action_like_chat_output(self):

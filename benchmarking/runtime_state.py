@@ -131,6 +131,7 @@ class CompactionUnwindResult(BaseModel):
     state: RuntimeState
     turn: AcceptedTurn
     native_items: list[dict[str, Any]] = Field(min_length=1)
+    trailing_native_items: list[dict[str, Any]] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_native_items(self) -> CompactionUnwindResult:
@@ -144,7 +145,7 @@ class CompactionUnwindResult(BaseModel):
 
     @property
     def removed_items(self) -> int:
-        return len(self.native_items)
+        return len(self.native_items) + len(self.trailing_native_items)
 
 
 class StatefulRuntimeAdapter(Protocol):
@@ -231,6 +232,7 @@ def unwind_runtime_state_items(
             "Runtime state accepted-turn boundary exceeds provider item count."
         )
     native_items = deepcopy(items[turn.start_item : turn.end_item])
+    trailing_native_items = deepcopy(items[turn.end_item :])
     shortened_payload = dict(state.payload)
     shortened_payload[payload_key] = items[: turn.start_item]
     shortened_state = replace_runtime_payload(
@@ -242,6 +244,7 @@ def unwind_runtime_state_items(
         state=shortened_state,
         turn=turn,
         native_items=native_items,
+        trailing_native_items=trailing_native_items,
     )
 
 
@@ -264,6 +267,7 @@ def restore_unwound_runtime_state_items(
                 update={"start_item": start_item, "end_item": end_item}
             )
         )
+        items.extend(deepcopy(retained.trailing_native_items))
     payload = dict(state.payload)
     payload[payload_key] = items
     return replace_runtime_payload(

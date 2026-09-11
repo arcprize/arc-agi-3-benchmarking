@@ -107,18 +107,20 @@ future context.
 The resulting summary is inserted as one user-role continuation message in a
 fresh provider state. This ends opaque reasoning continuity for the history
 represented by the summary. Newer input takes precedence over the summary if
-they conflict. Empty summaries are retried from unchanged accepted state.
-Provider adapters classify context-limit rejections separately from other
-failures. On a context overflow, compaction retries against progressively
-shorter candidate states using explicit accepted-turn boundaries. Removed
-recent turns are excluded from the summary request, then appended after the
-summary in chronological order using their exact provider-native items. Their
-opaque reasoning state is therefore preserved; only the summarized prefix loses
-opaque continuity. Accepted-turn boundaries are remapped to the rebuilt state so
-later overflow recovery can unwind those turns again. The accepted state is not
-replaced until compaction succeeds. Reaching the protected continuation
-boundary, producing an oversized continuation state, or exhausting empty summary
-retries fails closed.
+they conflict. Empty summaries are retried from unchanged accepted state, and
+usage attached to genuinely empty provider responses is included in compaction
+accounting. Provider adapters classify context-limit rejections separately from
+other failures. On a context overflow, compaction retries against progressively
+shorter candidate states using explicit accepted-turn boundaries. Removed recent
+turns are excluded from the summary request, then appended after the summary in
+chronological order using their exact provider-native items. Buffered inputs
+following those turns are retained separately and restored in their original
+position. Opaque reasoning state is therefore preserved for the exact native
+tail; only the summarized prefix loses opaque continuity. Accepted-turn
+boundaries are remapped to the rebuilt state so later overflow recovery can
+unwind those turns again. The accepted state is not replaced until compaction
+succeeds. Reaching the protected continuation boundary, producing an oversized
+continuation state, or exhausting empty summary retries fails closed.
 
 Each harness compaction is written to `compaction_NNN.json` with its summary,
 trigger, item counts, attempts, overflow recoveries, excluded-turn counts, and

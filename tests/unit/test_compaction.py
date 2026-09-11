@@ -16,7 +16,12 @@ from benchmarking.compaction import (
 from benchmarking.exceptions import ContextOverflowError
 from benchmarking.google_runtime import GoogleContinuousConversationRuntimeAdapter
 from benchmarking.recording import RunRecord
-from benchmarking.runtime_models import Message, ModelResponse, NormalizedUsage
+from benchmarking.runtime_models import (
+    Message,
+    ModelResponse,
+    NormalizedUsage,
+    normalize_google_interaction_response,
+)
 from benchmarking.runtime_registry import ADAPTER_DESCRIPTORS
 from benchmarking.runtime_state import (
     AcceptedTurn,
@@ -37,6 +42,16 @@ class _FakeModelAdapter:
         if isinstance(response, Exception):
             raise response
         return response
+
+
+class _NormalizingGoogleModelAdapter:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.requests = []
+
+    def invoke(self, request):
+        self.requests.append(request)
+        return normalize_google_interaction_response(self.responses.pop(0))
 
 
 def _summary_response(text, *, tokens=30):
@@ -206,6 +221,69 @@ class TestSummaryCompactor:
         assert result.attempts == 2
         assert result.usage.total_tokens == 50
 
+    def test_genuinely_empty_summary_response_usage_is_counted_before_retry(self):
+        thought_only = {
+            "id": "empty-summary",
+            "steps": [
+                {
+                    "type": "thought",
+                    "signature": "opaque-empty",
+                    "summary": [{"type": "text", "text": "internal thought"}],
+                }
+            ],
+            "usage": {
+                "total_input_tokens": 40,
+                "total_output_tokens": 0,
+                "total_thought_tokens": 10,
+                "total_tokens": 50,
+            },
+        }
+        usable = {
+            "id": "usable-summary",
+            "steps": [
+                {
+                    "type": "thought",
+                    "signature": "opaque-usable",
+                    "summary": [{"type": "text", "text": "summary thought"}],
+                },
+                {
+                    "type": "model_output",
+                    "content": [{"type": "text", "text": "usable summary"}],
+                },
+            ],
+            "usage": {
+                "total_input_tokens": 60,
+                "total_output_tokens": 5,
+                "total_thought_tokens": 5,
+                "total_tokens": 70,
+            },
+        }
+        low_level = _NormalizingGoogleModelAdapter([thought_only, usable])
+        adapter = GoogleContinuousConversationRuntimeAdapter(
+            model_adapter=low_level,
+            descriptor=ADAPTER_DESCRIPTORS["google.interactions.v1"],
+        )
+        compactor = SummaryCompactor(_policy(trigger_tokens=100))
+
+        result = compactor.compact(
+            adapter=adapter,
+            state=adapter.initial_state(),
+            request_config=_request_config(),
+            trigger_tokens=200,
+            max_context_length=100_000,
+            max_retries=1,
+        )
+
+        assert result.summary == "usable summary"
+        assert result.attempts == 2
+        assert low_level.requests[0].native_input == low_level.requests[1].native_input
+        assert result.usage == NormalizedUsage(
+            input_tokens=100,
+            output_tokens=20,
+            total_tokens=120,
+            reasoning_tokens=15,
+        )
+
     def test_supports_repeated_compaction_cycles(self):
         adapter, _ = _google_adapter(
             [_summary_response("first summary"), _summary_response("second summary")]
@@ -351,6 +429,57 @@ class TestSummaryCompactor:
 
         assert len(low_level.requests) == 1
         assert "protected continuation" in state.model_dump_json()
+
+    def test_overflow_restores_buffered_input_after_unwound_turn(self):
+        adapter, low_level = _google_adapter(
+            [
+                _accepted_response("ACTION1", "opaque-action"),
+                ContextOverflowError("context overflow"),
+                _summary_response("older context"),
+            ]
+        )
+        accepted = adapter.invoke_turn(
+            ModelTurnRequest(
+                system_prompt="system",
+                new_messages=[Message(role="user", content="playable frame")],
+                request_config=_request_config(),
+                previous_state=adapter.initial_state(),
+            )
+        )
+        game_over_step = {
+            "type": "user_input",
+            "content": [{"type": "text", "text": "GAME_OVER observation"}],
+        }
+        buffered_state = adapter.buffer_inputs(
+            accepted.state,
+            [Message(role="user", content="GAME_OVER observation")],
+        )
+        original_state = buffered_state.model_copy(deep=True)
+        compactor = SummaryCompactor(_policy(trigger_tokens=100))
+
+        result = compactor.compact(
+            adapter=adapter,
+            state=buffered_state,
+            request_config=_request_config(),
+            trigger_tokens=200,
+            max_context_length=100_000,
+            max_retries=1,
+        )
+
+        assert low_level.requests[1].native_input[-2] == game_over_step
+        assert low_level.requests[2].native_input == [
+            {
+                "type": "user_input",
+                "content": [{"type": "text", "text": SUMMARY_REQUEST_PROMPT}],
+            }
+        ]
+        assert result.state.payload["steps"][1:4] == accepted.state.payload["steps"]
+        assert result.state.payload["steps"][4] == game_over_step
+        assert result.state.accepted_turns[0].start_item == 1
+        assert result.state.accepted_turns[0].end_item == 4
+        assert result.excluded_turns == 1
+        assert result.excluded_history_items == 4
+        assert buffered_state == original_state
 
     def test_repeated_overflow_preserves_excluded_turn_order(self):
         adapter, _ = _google_adapter(

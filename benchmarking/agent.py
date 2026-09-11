@@ -926,6 +926,9 @@ class BenchmarkingAgent(Agent):
                     model_request = self._build_model_request()
                     model_response = self._call_api(model_request)
             except EmptyResponseError as e:
+                if isinstance(e.usage, NormalizedUsage):
+                    self.track_tokens(e.usage.total_tokens)
+                    accumulated_usage = accumulated_usage + e.usage
                 if e.response is not None:
                     self._save_diagnostic(e.response)
                 logger.warning(

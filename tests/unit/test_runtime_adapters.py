@@ -1,12 +1,16 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from google import genai as google_genai
+from google.genai import _interactions as google_genai_interactions
 
-from benchmarking.exceptions import EmptyResponseError
+from benchmarking.exceptions import ContextOverflowError, EmptyResponseError
 from benchmarking.model_config import get_model_config
 from benchmarking.runtime_adapters import (
     AnthropicMessagesAdapter,
     GoogleGenAIGenerateContentAdapter,
+    GoogleGenAIInteractionsAdapter,
     OpenAIChatCompletionsAdapter,
     OpenAIResponsesAdapter,
     OpenAIResponsesServerStateAdapter,
@@ -244,6 +248,81 @@ def _anthropic_request() -> ModelRequest:
         ],
         request_config={"model": "claude-sonnet-4-6", "max_tokens": 128},
     )
+
+
+@pytest.mark.unit
+@pytest.mark.filterwarnings("ignore:Interactions usage is experimental")
+class TestGoogleGenAIInteractionsAdapter:
+    @staticmethod
+    def _request() -> ModelRequest:
+        return ModelRequest(
+            messages=[Message(role="user", content="summarize this context")],
+            request_config={"model": "gemini-test"},
+        )
+
+    def test_real_sdk_context_error_is_translated_for_overflow_recovery(self):
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(
+                400,
+                request=request,
+                json={
+                    "error": {
+                        "message": "input token count exceeds maximum input tokens",
+                        "status": "INVALID_ARGUMENT",
+                    }
+                },
+            )
+
+        http_client = httpx.Client(transport=httpx.MockTransport(handler))
+        client = google_genai.Client(
+            api_key="test-key",
+            http_options={
+                "base_url": "https://example.test",
+                "httpx_client": http_client,
+            },
+        )
+        try:
+            adapter = GoogleGenAIInteractionsAdapter(client)
+
+            with pytest.raises(ContextOverflowError, match="maximum input tokens"):
+                adapter.invoke(self._request())
+        finally:
+            client.close()
+
+        assert len(requests) == 1
+        assert requests[0].url.path == "/v1beta/interactions"
+
+    def test_real_sdk_unrelated_bad_request_is_not_misclassified_as_overflow(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                request=request,
+                json={
+                    "error": {
+                        "message": "generation configuration is invalid",
+                        "status": "INVALID_ARGUMENT",
+                    }
+                },
+            )
+
+        http_client = httpx.Client(transport=httpx.MockTransport(handler))
+        client = google_genai.Client(
+            api_key="test-key",
+            http_options={
+                "base_url": "https://example.test",
+                "httpx_client": http_client,
+            },
+        )
+        try:
+            adapter = GoogleGenAIInteractionsAdapter(client)
+
+            with pytest.raises(google_genai_interactions.BadRequestError):
+                adapter.invoke(self._request())
+        finally:
+            client.close()
 
 
 @pytest.mark.unit
