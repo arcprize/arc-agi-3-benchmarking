@@ -18,4 +18,30 @@ RUN_OPENAI_COMPACTION_LIVE_TESTS=1 uv run pytest -q \
   tests/integration/test_openai_continuous_conversation_live.py::test_openai_continuous_conversation_compaction_end_to_end_live
 ```
 
+Anthropic Provider Adapter unit tests use synthetic responses and mocked HTTP
+through the pinned Anthropic SDK. They cover native replay, streaming deltas,
+compaction, refusal details, failed-attempt usage, and opaque-state redaction:
+
+```bash
+uv run pytest -q tests/unit/test_anthropic_runtime.py tests/unit/test_benchmarking_agent.py
+```
+
+Paid Opus 5 low tests are skipped by default and require `ANTHROPIC_API_KEY`.
+They use synthetic prompts, not benchmark game data. Both tests cap output at
+4k tokens. The compaction test sends more than 50k input tokens to exercise the
+minimum native trigger and can incur meaningful charges. Run each gate only
+when explicitly intended:
+
+```bash
+RUN_ANTHROPIC_LIVE_TESTS=1 uv run pytest -q \
+  tests/integration/test_anthropic_continuous_conversation_live.py::test_anthropic_continuous_conversation_two_turn_live
+
+RUN_ANTHROPIC_COMPACTION_LIVE_TESTS=1 uv run pytest -q \
+  tests/integration/test_anthropic_continuous_conversation_live.py::test_anthropic_continuous_conversation_compaction_live
+```
+
+Mocked tests establish transport and state behavior, not provider acceptance or
+summary quality. Live tests are a separate verification boundary and do not
+launch an ARC benchmark.
+
 For more information on tests, please see the [tests documentation](https://arcprize.org/docs#testing).

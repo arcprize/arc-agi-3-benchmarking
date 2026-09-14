@@ -87,7 +87,20 @@ def _validate_anthropic_messages_config(config_id: str, entry: dict[str, Any]) -
 def _validate_continuous_conversation_config(
     config_id: str, entry: dict[str, Any]
 ) -> None:
+    from .runtime_registry import resolve_adapter_id
+
     request = entry["request"]
+    adapter_id = resolve_adapter_id(entry["runtime"], config_id)
+    if adapter_id == "anthropic.messages.v1":
+        from .anthropic_runtime import validate_continuous_conversation_request
+
+        if "compaction" in entry["runtime"]:
+            raise ValueError("Anthropic supports native request compaction only.")
+        try:
+            validate_continuous_conversation_request(request)
+        except ValueError as exc:
+            raise ValueError(f"Model config '{config_id}': {exc}") from exc
+        return
     if request.get("store") is not False:
         raise ValueError(
             f"Model config '{config_id}' uses runtime.state="
@@ -213,7 +226,7 @@ def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> 
             f"but only {supported} are supported."
         )
     if (
-        runtime_state in {SERVER_RUNTIME_STATE, CONTINUOUS_CONVERSATION_RUNTIME_STATE}
+        runtime_state == SERVER_RUNTIME_STATE
         and runtime_pair not in SERVER_STATE_RUNTIME_PAIRS
     ):
         raise ValueError(
@@ -222,6 +235,10 @@ def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> 
             f"(sdk='openai-python', api='responses')."
         )
     if runtime_state == CONTINUOUS_CONVERSATION_RUNTIME_STATE:
+        if runtime_pair not in SERVER_STATE_RUNTIME_PAIRS | {("anthropic-python", "messages")}:
+            raise ValueError(
+                f"Model config '{config_id}' uses continuous_conversation with an unsupported runtime."
+            )
         _validate_continuous_conversation_config(config_id, entry)
     if runtime_pair == ("anthropic-python", "messages"):
         _validate_anthropic_messages_config(config_id, entry)

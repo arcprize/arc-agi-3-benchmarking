@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Protocol
 
 from google.genai import types as google_genai_types
 
+from .anthropic_runtime import (
+    native_mapping,
+    normalize_native_response,
+    normalize_native_usage,
+    validate_continuous_conversation_request,
+)
+from .exceptions import InvalidProviderResponseError
 from .runtime_models import (
     ModelRequest,
     ModelResponse,
@@ -135,8 +143,14 @@ class AnthropicMessagesAdapter:
 
     @staticmethod
     def _build_request_kwargs(request: ModelRequest) -> dict[str, Any]:
-        request_kwargs = dict(request.request_config)
+        request_kwargs = deepcopy(request.request_config)
         messages = [message.model_dump() for message in request.messages]
+
+        if request.native_input is not None:
+            request_kwargs["messages"] = deepcopy(request.native_input)
+            if request.messages and request.messages[0].role == "system":
+                request_kwargs["system"] = request.messages[0].content
+            return request_kwargs
 
         if request.messages and request.messages[0].role == "system":
             request_kwargs["system"] = request.messages[0].content
@@ -225,8 +239,52 @@ class AnthropicMessagesAdapter:
             )
         )
 
+    def _invoke_native_streaming(self, request_kwargs: dict[str, Any]) -> dict[str, Any]:
+        usage: dict[str, Any] = {}
+        metadata: dict[str, Any] = {}
+        stopped = False
+        try:
+            with self._client.beta.messages.stream(**request_kwargs) as stream:
+                for event in stream:
+                    if event.type == "message_start":
+                        message = native_mapping(event.message)
+                        usage.update(message.get("usage", {}))
+                    elif event.type == "message_delta":
+                        delta = native_mapping(event.delta)
+                        for key in ("stop_details", "stop_reason", "stop_sequence"):
+                            if key in delta:
+                                metadata[key] = delta[key]
+                        usage.update(
+                            {
+                                key: value
+                                for key, value in native_mapping(event.usage).items()
+                                if value is not None
+                            }
+                        )
+                    elif event.type == "message_stop":
+                        stopped = True
+                if not stopped:
+                    raise RuntimeError("Anthropic stream ended before message_stop.")
+                final = native_mapping(stream.get_final_message())
+        except Exception as exc:
+            raise InvalidProviderResponseError(
+                f"Anthropic stream did not complete ({type(exc).__name__}).",
+                response=metadata,
+                usage=normalize_native_usage(usage),
+            ) from None
+        final.update(metadata)
+        final["usage"] = usage
+        return final
+
     def invoke(self, request: ModelRequest) -> ModelResponse:
         request_kwargs = self._build_request_kwargs(request)
+        if request.native_input is not None:
+            validate_continuous_conversation_request(request.request_config)
+            if self._should_stream(request_kwargs):
+                raw_response = self._invoke_native_streaming(request_kwargs)
+            else:
+                raw_response = self._client.beta.messages.create(**request_kwargs)
+            return normalize_native_response(raw_response, request.request_config)
         if self._should_stream(request_kwargs):
             return self._invoke_streaming(request_kwargs)
 
@@ -317,12 +375,13 @@ def build_model_runtime_adapter(
         return OpenAIResponsesServerStateAdapter(client)
 
     if runtime_state == CONTINUOUS_CONVERSATION_RUNTIME_STATE:
+        if runtime_key == ("anthropic-python", "messages"):
+            return AnthropicMessagesAdapter(client)
         if runtime_key not in SERVER_STATE_RUNTIME_KEYS:
             raise ValueError(
                 f"Model config '{config_id}' uses runtime.state="
                 f"{CONTINUOUS_CONVERSATION_RUNTIME_STATE!r}, which is only supported "
-                f"on the OpenAI Responses runtime "
-                f"(sdk='openai-python', api='responses')."
+                "on the OpenAI Responses and Anthropic Messages runtimes."
             )
         return OpenAIResponsesAdapter(client)
 

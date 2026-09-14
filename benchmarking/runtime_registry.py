@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .anthropic_runtime import AnthropicContinuousConversationRuntimeAdapter
 from .openai_runtime import OpenAIContinuousConversationRuntimeAdapter
 from .runtime_state import (
     CONTINUOUS_CONVERSATION_RUNTIME_STATE,
@@ -12,6 +13,7 @@ from .runtime_state import (
 )
 
 OPENAI_RESPONSES_ADAPTER_ID = "openai.responses.v1"
+ANTHROPIC_MESSAGES_ADAPTER_ID = "anthropic.messages.v1"
 
 _LEGACY_RUNTIME_ADAPTER_IDS = {
     ("openai-python", "chat_completions"): "openai.chat_completions.v1",
@@ -41,7 +43,7 @@ ADAPTER_DESCRIPTORS = {
         adapter_id="anthropic.messages.v1",
         provider="anthropic",
         api_surface="messages",
-        implementation_path="benchmarking/runtime_adapters.py",
+        implementation_path="benchmarking/anthropic_runtime.py",
         version="1",
         approval_status="unreviewed",
     ),
@@ -92,11 +94,14 @@ def build_stateful_runtime_adapter(
     descriptor = ADAPTER_DESCRIPTORS[adapter_id]
     strategy = runtime_config.get("state")
     if strategy == CONTINUOUS_CONVERSATION_RUNTIME_STATE:
+        if adapter_id == ANTHROPIC_MESSAGES_ADAPTER_ID:
+            return AnthropicContinuousConversationRuntimeAdapter(
+                model_adapter=model_adapter, descriptor=descriptor
+            )
         if adapter_id != OPENAI_RESPONSES_ADAPTER_ID:
             raise ValueError(
                 f"Model config '{config_id}' uses continuous_conversation with "
-                f"adapter_id={adapter_id!r}; only {OPENAI_RESPONSES_ADAPTER_ID!r} "
-                "supports it."
+                f"unsupported adapter_id={adapter_id!r}."
             )
         return OpenAIContinuousConversationRuntimeAdapter(
             model_adapter=model_adapter, descriptor=descriptor

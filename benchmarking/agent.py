@@ -791,10 +791,13 @@ class BenchmarkingAgent(Agent):
                     model_request = self._build_model_request()
                     model_response = self._call_api(model_request)
             except EmptyResponseError as e:
+                if isinstance(e.usage, NormalizedUsage):
+                    accumulated_usage = accumulated_usage + e.usage
+                    self.track_tokens(e.usage.total_tokens)
                 if e.response is not None:
                     self._save_diagnostic(e.response)
                 logger.warning(
-                    f"Empty API response "
+                    f"Unusable API response "
                     f"(attempt {attempt + 1}/{self.MAX_RETRIES + 1})."
                 )
                 continue
@@ -840,6 +843,12 @@ class BenchmarkingAgent(Agent):
                 f"(attempt {attempt + 1}/{self.MAX_RETRIES + 1})."
             )
 
+        if hasattr(self, "_stateful_adapter") and hasattr(self, "run_record"):
+            self.run_record.total_usage = (
+                self.run_record.total_usage
+                + StepUsage.from_normalized_usage(accumulated_usage)
+            )
+            self._write_run_meta()
         raise RuntimeError(
             f"Failed to get a valid action after {self.MAX_RETRIES + 1} attempts."
         )

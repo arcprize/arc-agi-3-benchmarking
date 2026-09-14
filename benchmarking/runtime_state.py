@@ -140,7 +140,9 @@ def sanitize_settings(value: Any) -> Any:
         sanitized: dict[str, Any] = {}
         for key, item in value.items():
             lowered = key.lower()
-            if lowered == "encrypted_content":
+            if lowered in {"encrypted_content", "signature"}:
+                continue
+            if lowered == "data" and value.get("type") == "redacted_thinking":
                 continue
             if lowered in {
                 "api_key",

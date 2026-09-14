@@ -44,8 +44,12 @@ server response handle and any inputs waiting for the next API turn.
 ## Continuous conversation
 
 `continuous_conversation` carries provider-native conversation and reasoning
-state from one accepted turn to the next. It is currently implemented only by
-`openai.responses.v1`. The OpenAI adapter implements continuous conversation
+state from one accepted turn to the next. It is implemented by
+`openai.responses.v1` and `anthropic.messages.v1`.
+
+### OpenAI Responses
+
+The OpenAI adapter implements continuous conversation
 through the Responses API with `store: false`. It requests
 `reasoning.encrypted_content` and sends each accepted user input plus every
 native `response.output` item into the following turn.
@@ -79,6 +83,80 @@ organization. See OpenAI's official documentation for
 [stateless Responses](https://developers.openai.com/api/docs/guides/migrate-to-responses#4-decide-when-to-use-statefulness),
 [compaction](https://developers.openai.com/api/docs/guides/compaction), and
 [Zero Data Retention controls](https://developers.openai.com/api/docs/guides/your-data#zero-data-retention).
+
+### Anthropic Messages
+
+The Anthropic Provider Adapter is implemented in `benchmarking/anthropic_runtime.py`
+and registered as `anthropic.messages.v1`, with review status `unreviewed`.
+Its `continuous_conversation` state carries native Messages content in memory;
+it does not use server-hosted conversation IDs. The existing Anthropic
+`manual_rolling` path stays separate and retains its existing behavior.
+
+The adapter sends the system prompt separately and replays every accepted native
+assistant content block in its original order, including readable thinking,
+empty thinking text, signatures, redacted thinking, and compaction blocks.
+Serialization preserves supplied empty fields but excludes SDK-added unset
+fields. State is provisional until the common agent parses a valid ARC action.
+Retries reuse the last accepted state, including buffered GAME_OVER/reset
+observations. The model and system prompt cannot change during a session.
+
+The checked-in `anthropic-opus-5-low-provider-adapter` profile uses:
+
+- `claude-opus-5`, adaptive thinking, summarized display, and low effort
+- streaming, 128k maximum output, and 1,000k context capacity
+- a 175k input-token compaction trigger and 5x baseline action budget
+- standard-speed configured prices of $5/$25 per million input/output tokens
+- the native `ANTHROPIC_API_KEY`, with no OpenAI `store` parameter
+
+Native compaction is optional. When configured, `request.context_management.edits`
+must contain exactly one `compact_20260112` edit, accompanied by
+`request.betas: ["compact-2026-01-12"]`. An explicit trigger must use
+`input_tokens` and be at least 50k. `pause_after_compaction` must be false or
+omitted, so the provider continues to an action in the same request. No custom
+summary prompt is supplied by the profile.
+
+After a successful compaction, the adapter retains the latest nonempty
+compaction block and every subsequent block/message. A null compaction block is
+a provider-defined no-op and never removes history. There is no client-side
+summary fallback, retained-tail reconstruction, or tool execution in this path.
+
+Only `end_turn` or an explicitly configured `stop_sequence` can supply an action.
+Refusals, truncated or paused responses, and unfinished streams cannot execute
+actions, even if partial text names an action. The adapter records sanitized
+refusal details and uses the common bounded retry policy, without switching
+models. The pinned Anthropic SDK remains `0.95.0`; the adapter retains streamed
+`stop_details` explicitly because this SDK does not copy them into its final
+accumulated message. Complete native content and per-iteration usage are retained
+for both streaming and non-streaming requests.
+
+Token accounting sums `usage.iterations` when present, including compaction;
+top-level usage is a fallback, not an additional contribution. Native normalized
+input tokens include uncached input plus cache reads and writes, with the cache
+breakdowns retained separately. Output tokens already include thinking; the
+adapter does not estimate hidden reasoning tokens from readable summaries.
+Returned usage from unsuccessful attempts is attributed to the next accepted
+action, or persisted in `run_meta.json` if retries are exhausted. No failed action
+step is fabricated. Configured-price action estimates do not reconstruct cache
+discounts or invoice adjustments, and are not written into provider-reported
+`usage.cost`.
+
+`messages_sent` is a readable projection of the active native request, including
+the current compaction summary, later observations, readable thinking summaries,
+and text responses. Summarized-away history does not reappear in later model
+request records. `request_record.input_items` records structural descriptors,
+not opaque bodies. Signatures and redacted-thinking data are removed from
+diagnostics, settings, logs, and action metadata; exact native replay state is
+in memory only. Client-managed state is not a guarantee of provider-side zero
+data retention: use credentials and data-retention terms appropriate for the
+benchmark data.
+
+Contract references, checked September 14, 2026:
+
+- [Anthropic compaction](https://platform.claude.com/docs/en/build-with-claude/compaction)
+- [Thinking and replay](https://platform.claude.com/docs/en/build-with-claude/thinking)
+- [Stop reasons](https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons)
+- [Opus 5 specifications](https://platform.claude.com/docs/en/models/opus-5/overview)
+- [Pricing](https://platform.claude.com/docs/en/about-claude/pricing)
 
 ## Recording and provenance
 

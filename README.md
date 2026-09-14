@@ -109,6 +109,18 @@ reasoning-state, and compaction capabilities. These configurations use
 `continuous_conversation`; `openai-gpt-5-6-sol-max-provider-adapter` is one
 example.
 
+The Anthropic Provider Adapter profile is `anthropic-opus-5-low-provider-adapter`.
+It uses Opus 5 at low reasoning effort, preserves native thinking blocks between
+actions, and uses Anthropic's native compaction at 175k input tokens. Set
+`ANTHROPIC_API_KEY` to use it:
+
+```bash
+uv run main.py --game=ls20 --config=anthropic-opus-5-low-provider-adapter
+```
+
+See [runtime state adapters](docs/runtime-state.md) for replay, compaction,
+recording, and data-handling details.
+
 Both harnesses use the same games, actions, limits, and scoring. The Standard
 harness supports controlled comparisons across providers, while the Provider
 Adapter harness measures performance using provider-native context management.

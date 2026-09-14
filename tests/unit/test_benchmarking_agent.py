@@ -1,4 +1,7 @@
-from types import SimpleNamespace
+import json
+from copy import deepcopy
+from datetime import datetime, timezone
+from types import MethodType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -10,6 +13,8 @@ from benchmarking.action_metadata import (
 )
 from benchmarking.agent import BenchmarkingAgent
 from benchmarking.base import ExitReason
+from benchmarking.model_config import get_model_config
+from benchmarking.recording import RunRecord
 from benchmarking.runtime_adapters import (
     OpenAIChatCompletionsAdapter,
     OpenAIResponsesAdapter,
@@ -1342,6 +1347,115 @@ class TestBenchmarkingAgentContinuousConversationState:
         assert "accepted-secret" not in step_json
         assert "orphan-secret" not in step_json
         assert agent._pending_action_reasoning["reasoning"] == "accepted summary"
+
+
+def _anthropic_response(text="ACTION1", *, stop_reason="end_turn", summary=None):
+    blocks = [
+        {"type": "thinking", "thinking": "readable", "signature": "private-signature"},
+        {"type": "redacted_thinking", "data": "private-ciphertext"},
+        {"type": "text", "text": text},
+    ]
+    if summary is not None:
+        blocks.insert(0, {"type": "compaction", "content": summary})
+    return ModelResponse(
+        output_text=text,
+        usage=NormalizedUsage(input_tokens=10, output_tokens=5, total_tokens=15),
+        raw_response={
+            "content": blocks,
+            "stop_reason": stop_reason,
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        },
+    )
+
+
+def _anthropic_agent(tmp_path, responses):
+    config = deepcopy(get_model_config("anthropic-opus-5-low-provider-adapter"))
+    agent = _agent_for_choose_action(analysis_mode=False, responses=responses)
+    agent._stateful_adapter = build_stateful_runtime_adapter(
+        model_adapter=agent._adapter,
+        runtime_config=config["runtime"],
+        config_id=config["id"],
+    )
+    agent._runtime_state = agent._stateful_adapter.initial_state()
+    agent._pending_turn_messages = []
+    agent._last_turn_result = None
+    agent._continuous_conversation = True
+    agent._request_kwargs = config["request"]
+    agent.MODEL = config["request"]["model"]
+    agent._pricing = config["pricing"]
+    agent.run_dir = str(tmp_path)
+    agent.run_record = RunRecord(
+        run_id="test", game_id="test", agent_name="test", model=agent.MODEL,
+        started_at=datetime.now(timezone.utc), run_dir=str(tmp_path),
+    )
+    agent._save_step = MethodType(BenchmarkingAgent._save_step, agent)
+    return agent
+
+
+@pytest.mark.unit
+class TestBenchmarkingAgentAnthropicState:
+    def test_invalid_and_refused_attempts_preserve_state_and_bill_once(self, tmp_path, caplog):
+        agent = _anthropic_agent(tmp_path, [
+            _anthropic_response("no action", summary="orphan compaction"),
+            _anthropic_response(stop_reason="refusal"),
+            _anthropic_response(),
+        ])
+        assert agent.choose_action([], _playable_frame()) == GameAction.ACTION1
+        requests = agent._adapter.requests
+        assert requests[0].native_input == requests[1].native_input == requests[2].native_input
+        assert "orphan compaction" not in agent._runtime_state.model_dump_json()
+        assert "private-signature" in agent._runtime_state.model_dump_json()
+        step = json.loads((tmp_path / "step_001.json").read_text())
+        run = json.loads((tmp_path / "run_meta.json").read_text())
+        assert step["usage"]["total_tokens"] == run["total_usage"]["total_tokens"] == 45
+        assert agent._pending_action_reasoning["usage"]["total_tokens"] == 45
+        assert agent._pending_action_reasoning["cost"]["total_cost"] == pytest.approx(0.000525)
+        artifacts = "".join(path.read_text() for path in tmp_path.glob("*.json"))
+        artifacts += str(agent._pending_action_reasoning) + caplog.text
+        assert "private-signature" not in artifacts
+        assert "private-ciphertext" not in artifacts
+
+    def test_exhaustion_saves_usage_without_a_step_or_accepted_state(self, tmp_path):
+        agent = _anthropic_agent(tmp_path, [_anthropic_response(stop_reason="max_tokens") for _ in range(3)])
+        with pytest.raises(RuntimeError, match="after 3 attempts"):
+            agent.choose_action([], _playable_frame())
+        run = json.loads((tmp_path / "run_meta.json").read_text())
+        assert run["total_usage"]["total_tokens"] == 45
+        assert run["total_steps"] == 0
+        assert agent._runtime_state.payload == {"messages": []}
+        assert not list(tmp_path.glob("step_*.json"))
+        assert agent._pending_turn_messages
+
+    def test_compaction_usage_is_attributed_to_the_action_and_run(self, tmp_path):
+        response = _anthropic_response(summary="compacted")
+        response.raw_response["usage"]["iterations"] = [
+            {"type": "compaction", "input_tokens": 100, "output_tokens": 20},
+            {"type": "message", "input_tokens": 10, "output_tokens": 5},
+        ]
+        agent = _anthropic_agent(tmp_path, [response])
+        agent.choose_action([], _playable_frame())
+        assert agent.run_record.total_usage.total_tokens == 135
+        assert agent._pending_action_reasoning["usage"]["total_tokens"] == 135
+        assert agent._pending_action_reasoning["cost"]["total_cost"] == pytest.approx(0.001175)
+
+    def test_forced_reset_observation_survives_compaction(self, tmp_path):
+        agent = _anthropic_agent(tmp_path, [_anthropic_response(summary="active summary"), _anthropic_response()])
+        frame = _playable_frame()
+        agent.choose_action([], frame)
+        terminal = _terminal_frame(GameState.GAME_OVER)
+        agent.action_counter = 1
+        assert agent._resolve_action([], terminal) == GameAction.RESET
+        assert len(agent._adapter.requests) == 1
+        agent.choose_action([], frame)
+        messages = agent._adapter.requests[1].native_input
+        assert messages[-2:] == [
+            {"role": "user", "content": agent.build_frame_content(terminal)},
+            {"role": "user", "content": agent.build_frame_content(frame)},
+        ]
+        step = json.loads((tmp_path / "step_003.json").read_text())
+        assert "active summary" in str(step["messages_sent"])
+        assert step["messages_sent"][1]["role"] == "assistant"
+        assert "Include any context you want to carry forward" not in agent._build_system_prompt()
         assert "reasoning_summary" not in agent._pending_action_reasoning
 
 
