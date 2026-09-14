@@ -457,6 +457,60 @@ class TestSummaryCompactor:
         assert "second summary" in second.state.model_dump_json()
         assert "first summary" not in second.state.model_dump_json()
 
+    def test_compacted_state_survives_following_transient_action_failure(self):
+        adapter, low_level = _google_adapter(
+            [
+                _accepted_response("ACTION1", "opaque-before-compaction"),
+                _summary_response("compacted state"),
+                TransientProviderError("temporarily unavailable"),
+                _accepted_response("ACTION1", "opaque-after-retry"),
+            ]
+        )
+        request_config = _request_config()
+        accepted = adapter.invoke_turn(
+            ModelTurnRequest(
+                system_prompt="system",
+                new_messages=[Message(role="user", content="first observation")],
+                request_config=request_config,
+                previous_state=adapter.initial_state(),
+            )
+        )
+        compacted = SummaryCompactor(_policy(trigger_tokens=1)).compact(
+            adapter=adapter,
+            state=accepted.state,
+            request_config=request_config,
+            trigger_tokens=accepted.response.usage.total_tokens,
+            max_context_length=100_000,
+            max_retries=1,
+        )
+        compacted_state = compacted.state.model_copy(deep=True)
+        next_turn = ModelTurnRequest(
+            system_prompt="system",
+            new_messages=[Message(role="user", content="next observation")],
+            request_config=request_config,
+            previous_state=compacted.state,
+        )
+
+        with pytest.raises(TransientProviderError, match="temporarily unavailable"):
+            adapter.invoke_turn(next_turn)
+        recovered = adapter.invoke_turn(next_turn)
+
+        failed_request = low_level.requests[-2]
+        recovered_request = low_level.requests[-1]
+        assert failed_request.native_input == recovered_request.native_input
+        assert failed_request.native_input[0]["type"] == "user_input"
+        assert "compacted state" in failed_request.native_input[0]["content"][0][
+            "text"
+        ]
+        assert failed_request.native_input[-1] == {
+            "type": "user_input",
+            "content": [{"type": "text", "text": "next observation"}],
+        }
+        assert compacted.state == compacted_state
+        assert recovered.state.payload["steps"][-2]["signature"] == (
+            "opaque-after-retry"
+        )
+
     def test_fails_closed_after_repeated_blank_summaries(self):
         adapter, _ = _google_adapter([_summary_response(""), _summary_response(" ")])
         compactor = SummaryCompactor(_policy(trigger_tokens=100))

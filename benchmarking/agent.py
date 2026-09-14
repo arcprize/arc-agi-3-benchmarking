@@ -1007,6 +1007,20 @@ class BenchmarkingAgent(Agent):
             )
             logger.info(f"Assistant response: {model_response.output_text[:200]}")
 
+            if (
+                model_response.response_status is not None
+                and model_response.response_status != "completed"
+            ):
+                logger.warning(
+                    "Provider returned response status %r "
+                    "(attempt %s/%s); discarding provisional state.",
+                    model_response.response_status,
+                    attempt + 1,
+                    max_attempts,
+                )
+                attempt += 1
+                continue
+
             action = self._parse_action(model_response.output_text, actions)
             if action is not None:
                 if hasattr(self, "_stateful_adapter"):

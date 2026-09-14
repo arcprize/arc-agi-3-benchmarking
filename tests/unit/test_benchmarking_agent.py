@@ -17,7 +17,11 @@ from benchmarking.compaction import (
     SummaryCompactionPolicy,
     SummaryCompactor,
 )
-from benchmarking.exceptions import ContextOverflowError, EmptyResponseError
+from benchmarking.exceptions import (
+    ContextOverflowError,
+    EmptyResponseError,
+    TransientProviderError,
+)
 from benchmarking.google_runtime import GoogleContinuousConversationRuntimeAdapter
 from benchmarking.recording import RunRecord
 from benchmarking.runtime_adapters import (
@@ -178,6 +182,39 @@ def _responses_response(text: str = "RESET") -> SimpleNamespace:
             ),
         ],
         usage=SimpleNamespace(total_tokens=6),
+    )
+
+
+def _google_model_response(
+    *,
+    text: str = "ACTION1",
+    signature: str = "opaque",
+    status: str | None = "completed",
+    total_tokens: int = 10,
+) -> ModelResponse:
+    return ModelResponse(
+        output_text=text,
+        reasoning_text=f"reasoning for {signature}",
+        usage=NormalizedUsage(total_tokens=total_tokens),
+        raw_response={
+            "steps": [
+                {
+                    "type": "thought",
+                    "signature": signature,
+                    "summary": [
+                        {
+                            "type": "text",
+                            "text": f"reasoning for {signature}",
+                        }
+                    ],
+                },
+                {
+                    "type": "model_output",
+                    "content": [{"type": "text", "text": text}],
+                },
+            ]
+        },
+        response_status=status,
     )
 
 
@@ -1410,6 +1447,114 @@ class TestBenchmarkingAgentContinuousConversationState:
         assert agent._pending_action_reasoning["reasoning"] == "accepted summary"
         assert "reasoning_summary" not in agent._pending_action_reasoning
         assert agent._pending_compaction_trigger_tokens == 7
+
+    @pytest.mark.parametrize("status", ["incomplete", "failed"])
+    def test_non_completed_action_response_is_retried_without_committing_state(
+        self,
+        status,
+    ):
+        agent = _agent_for_choose_action(
+            analysis_mode=False,
+            responses=[
+                _google_model_response(
+                    signature="discarded",
+                    status=status,
+                    total_tokens=5,
+                ),
+                _google_model_response(
+                    signature="accepted",
+                    total_tokens=7,
+                ),
+            ],
+        )
+        agent.MODEL = "gemini-3.8-flash"
+        agent._request_kwargs = {
+            "model": agent.MODEL,
+            "store": False,
+            "generation_config": {
+                "max_output_tokens": 65_536,
+                "thinking_level": "low",
+                "thinking_summaries": "auto",
+            },
+        }
+        agent._stateful_adapter = GoogleContinuousConversationRuntimeAdapter(
+            model_adapter=agent._adapter,
+            descriptor=ADAPTER_DESCRIPTORS["google.interactions.v1"],
+        )
+        agent._runtime_state = agent._stateful_adapter.initial_state()
+        agent._pending_turn_messages = []
+        agent._last_turn_result = None
+        agent._summary_compactor = None
+        agent._pending_compaction_trigger_tokens = None
+
+        action = agent.choose_action([], _playable_frame())
+
+        assert action == GameAction.ACTION1
+        assert len(agent._adapter.requests) == 2
+        assert (
+            agent._adapter.requests[0].native_input
+            == agent._adapter.requests[1].native_input
+        )
+        state_json = agent._runtime_state.model_dump_json()
+        assert "accepted" in state_json
+        assert "discarded" not in state_json
+        assert agent._saved_steps[0].retries == 1
+        assert agent._saved_steps[0].usage.total_tokens == 12
+
+    def test_transient_retry_exhaustion_preserves_state_and_pending_input(self):
+        class SequenceAdapter:
+            def __init__(self):
+                self.requests = []
+                self.responses = [
+                    _google_model_response(signature="accepted-history"),
+                    TransientProviderError("unavailable"),
+                    TransientProviderError("unavailable"),
+                    TransientProviderError("unavailable"),
+                ]
+
+            def invoke(self, request):
+                self.requests.append(request)
+                response = self.responses.pop(0)
+                if isinstance(response, Exception):
+                    raise response
+                return response
+
+        low_level = SequenceAdapter()
+        adapter = GoogleContinuousConversationRuntimeAdapter(
+            model_adapter=low_level,
+            descriptor=ADAPTER_DESCRIPTORS["google.interactions.v1"],
+        )
+        request_config = {
+            "model": "gemini-3.8-flash",
+            "store": False,
+            "generation_config": {"thinking_summaries": "auto"},
+        }
+        accepted = adapter.invoke_turn(
+            ModelTurnRequest(
+                system_prompt="system",
+                new_messages=[Message(role="user", content="accepted observation")],
+                request_config=request_config,
+                previous_state=adapter.initial_state(),
+            )
+        )
+        original_state = accepted.state.model_copy(deep=True)
+        pending = [Message(role="user", content="pending observation")]
+        agent = _agent_for_request_kwargs(request_config)
+        agent._stateful_adapter = adapter
+        agent._runtime_state = accepted.state
+        agent._pending_turn_messages = list(pending)
+        agent._last_turn_result = None
+
+        with pytest.raises(RuntimeError, match="valid action"):
+            agent._request_with_retries([GameAction.ACTION1])
+
+        assert agent._runtime_state == original_state
+        assert agent._pending_turn_messages == pending
+        assert len(low_level.requests) == 4
+        assert all(
+            request.native_input == low_level.requests[1].native_input
+            for request in low_level.requests[1:]
+        )
 
     def test_action_overflow_compacts_accepted_history_before_one_retry(
         self,
