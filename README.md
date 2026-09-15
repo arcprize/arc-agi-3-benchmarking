@@ -112,7 +112,9 @@ domain-neutral harness summary otherwise. These configurations use
 
 The Anthropic Provider Adapter profile is `anthropic-opus-5-low-provider-adapter`.
 It uses Opus 5 at low reasoning effort, preserves native thinking blocks between
-actions, and uses Anthropic's native compaction at 175k input tokens. Set
+actions, and uses Anthropic's native compaction at 175k input tokens. It records
+provider-reported thinking-token usage when available without double-counting
+output tokens. Set
 `ANTHROPIC_API_KEY` to use it:
 
 ```bash

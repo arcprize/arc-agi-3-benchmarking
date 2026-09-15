@@ -1879,6 +1879,38 @@ def _anthropic_agent(tmp_path, responses):
 
 @pytest.mark.unit
 class TestBenchmarkingAgentAnthropicState:
+    @pytest.mark.parametrize("exhausted", [False, True])
+    def test_reported_thinking_is_recorded_without_double_billing(
+        self, tmp_path, exhausted
+    ):
+        responses = [
+            _anthropic_response(stop_reason="refusal")
+            for _ in range(3 if exhausted else 1)
+        ]
+        if not exhausted:
+            responses.append(_anthropic_response())
+        for response in responses:
+            response.raw_response["usage"]["output_tokens_details"] = {
+                "thinking_tokens": 3
+            }
+        attempts = len(responses)
+        agent = _anthropic_agent(tmp_path, responses)
+        if exhausted:
+            with pytest.raises(RuntimeError, match="after 3 attempts"):
+                agent.choose_action([], _playable_frame())
+        else:
+            agent.choose_action([], _playable_frame())
+            metadata = agent._pending_action_reasoning
+            assert metadata["usage"]["output_tokens_details"]["reasoning_tokens"] == 6
+            assert metadata["cost"]["total_cost"] == pytest.approx(0.00035)
+            step = json.loads((tmp_path / "step_001.json").read_text())
+            assert step["usage"]["reasoning_tokens"] == 6
+        run = json.loads((tmp_path / "run_meta.json").read_text())
+        assert run["total_usage"]["reasoning_tokens"] == 3 * attempts
+        assert run["total_usage"]["completion_tokens"] == 5 * attempts
+        assert run["total_usage"]["total_tokens"] == 15 * attempts
+        assert run["total_usage"]["cost"] == 0
+
     def test_invalid_and_refused_attempts_preserve_state_and_bill_once(self, tmp_path, caplog):
         agent = _anthropic_agent(tmp_path, [
             _anthropic_response("no action", summary="orphan compaction"),

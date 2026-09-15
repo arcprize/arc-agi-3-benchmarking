@@ -228,7 +228,7 @@
       display: "summarized"
     output_config:
       effort: "low"
-    betas: ["compact-2026-01-12"]
+    betas: ["compact-2026-01-12", "thinking-token-count-2026-05-13"]
     context_management:
       edits:
         - type: "compact_20260112"

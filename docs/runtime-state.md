@@ -96,7 +96,10 @@ The adapter sends the system prompt separately and replays every accepted native
 assistant content block in its original order, including readable thinking,
 empty thinking text, signatures, redacted thinking, and compaction blocks.
 Serialization preserves supplied empty fields but excludes SDK-added unset
-fields. State is provisional until the common agent parses a valid ARC action.
+fields. Native replay also removes response-only `parsed_output` from text
+blocks and null `encrypted_content` from compaction blocks. Non-null encrypted
+metadata, signatures, and unknown provider fields remain intact in memory.
+State is provisional until the common agent parses a valid ARC action.
 Retries reuse the last accepted state, including buffered GAME_OVER/reset
 observations. The model and system prompt cannot change during a session.
 
@@ -107,10 +110,11 @@ The checked-in `anthropic-opus-5-low-provider-adapter` profile uses:
 - a 175k input-token compaction trigger and 5x baseline action budget
 - standard-speed configured prices of $5/$25 per million input/output tokens
 - the native `ANTHROPIC_API_KEY`, with no OpenAI `store` parameter
+- the optional `thinking-token-count-2026-05-13` beta for reported thinking usage
 
 Native compaction is optional. When configured, `request.context_management.edits`
-must contain exactly one `compact_20260112` edit, accompanied by
-`request.betas: ["compact-2026-01-12"]`. An explicit trigger must use
+must contain exactly one `compact_20260112` edit, and `request.betas` must
+include `compact-2026-01-12`. An explicit trigger must use
 `input_tokens` and be at least 50k. `pause_after_compaction` must be false or
 omitted, so the provider continues to an action in the same request. No custom
 summary prompt is supplied by the profile.
@@ -132,8 +136,14 @@ for both streaming and non-streaming requests.
 Token accounting sums `usage.iterations` when present, including compaction;
 top-level usage is a fallback, not an additional contribution. Native normalized
 input tokens include uncached input plus cache reads and writes, with the cache
-breakdowns retained separately. Output tokens already include thinking; the
-adapter does not estimate hidden reasoning tokens from readable summaries.
+breakdowns retained separately. Output tokens already include thinking.
+When available, `usage.output_tokens_details.thinking_tokens` populates
+`reasoning_tokens` as a provider-reported breakdown, not additional output or
+cost. The top-level breakdown covers non-compaction iterations and is used once;
+per-iteration thinking counts are a fallback, with any separately reported
+compaction thinking added once. Missing counts remain zero, meaning unreported,
+and are never estimated from readable summaries. Streaming captures the
+breakdown from the final `message_delta`, including usage retained on failure.
 Returned usage from unsuccessful attempts is attributed to the next accepted
 action, or persisted in `run_meta.json` if retries are exhausted. No failed action
 step is fabricated. Configured-price action estimates do not reconstruct cache
@@ -156,6 +166,7 @@ Contract references, checked September 14, 2026:
 
 - [Anthropic compaction](https://platform.claude.com/docs/en/build-with-claude/compaction)
 - [Thinking and replay](https://platform.claude.com/docs/en/build-with-claude/thinking)
+- [Thinking-token usage](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking)
 - [Stop reasons](https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons)
 - [Opus 5 specifications](https://platform.claude.com/docs/en/models/opus-5/overview)
 - [Pricing](https://platform.claude.com/docs/en/about-claude/pricing)

@@ -17,6 +17,7 @@ from benchmarking.runtime_state import ModelTurnRequest
 
 CONFIG_ID = "anthropic-opus-5-low-provider-adapter"
 MEMORY_TOKEN = "ARC-ANTHROPIC-CONTINUITY-7Q"
+SECOND_MEMORY_TOKEN = "ARC-ANTHROPIC-CONTINUITY-9R"
 SYSTEM_PROMPT = (
     "Follow the requested response format and remember explicit instructions."
 )
@@ -127,3 +128,78 @@ def test_anthropic_continuous_conversation_compaction_live():
         for iteration in compacted.response.raw_response["usage"]["iterations"]
     )
     assert compacted.response.usage.total_tokens > 50_000
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_anthropic_continuous_conversation_two_compactions_live():
+    _require_paid_test("RUN_ANTHROPIC_MULTI_COMPACTION_LIVE_TESTS")
+    client, adapter, config = _build_live_adapter()
+    config["max_tokens"] = 8192
+    state = adapter.initial_state()
+    memories = [(MEMORY_TOKEN, 987_654_321), (SECOND_MEMORY_TOKEN, 314_159_265)]
+    with client:
+        for memory, answer in memories:
+            constraints = "; ".join(
+                f"x mod {modulus} = {answer % modulus}"
+                for modulus in (97, 101, 103, 107, 109)
+            )
+            solved = _turn(
+                adapter,
+                state,
+                config,
+                "Find the smallest nonnegative integer x satisfying "
+                f"{constraints}. Think carefully and verify every congruence. "
+                f"Remember the token {memory} and the answer, preserving any "
+                "previously remembered tokens and results across summaries. "
+                "Reply with the numeric answer.",
+            )
+            assert str(answer) in solved.response.output_text
+            thinking = [
+                block
+                for block in solved.response.raw_response["content"]
+                if block["type"] == "thinking"
+            ]
+            assert thinking and all(block.get("signature") for block in thinking)
+            assert solved.transition.compaction_items_returned == 0
+            padding = (
+                "Ignore this inert padding:"
+                + " inert" * 60_000
+                + ". Preserve every remembered token and numeric answer. Reply COMPACTION_OK."
+            )
+            counted = client.beta.messages.count_tokens(
+                model=config["model"],
+                betas=config["betas"],
+                system=SYSTEM_PROMPT,
+                messages=[
+                    *deepcopy(solved.state.payload["messages"]),
+                    {"role": "user", "content": padding},
+                ],
+                thinking=config["thinking"],
+                output_config=config["output_config"],
+                context_management=config["context_management"],
+            )
+            assert counted.input_tokens > 50_000
+            snapshot = solved.state.model_dump_json()
+            compacted = _turn(adapter, solved.state, config, padding)
+            assert solved.state.model_dump_json() == snapshot
+            assert compacted.transition.compaction_items_returned == 1
+            head = compacted.state.payload["messages"][0]["content"][0]
+            assert head["type"] == "compaction" and head["content"].strip()
+            assert any(
+                iteration["type"] == "compaction"
+                for iteration in compacted.response.raw_response["usage"]["iterations"]
+            )
+            state = compacted.state
+        final = _turn(
+            adapter,
+            state,
+            config,
+            "Reply with both exact remembered tokens and their associated numeric answers.",
+        )
+    assert final.transition.compaction_items_returned == 0
+    for memory, answer in memories:
+        assert memory in final.response.output_text
+        assert str(answer) in final.response.output_text
+    assert config["model"] == "claude-opus-5"
+    assert config["output_config"]["effort"] == "low"

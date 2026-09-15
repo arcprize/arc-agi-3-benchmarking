@@ -33,6 +33,17 @@ def native_mapping(value: Any) -> dict[str, Any]:
     return deepcopy(value)
 
 
+def serialize_replay_content(content: list[Any]) -> list[dict[str, Any]]:
+    blocks = [native_mapping(block) for block in content]
+    for block in blocks:
+        if block.get("type") == "text":
+            block.pop("parsed_output", None)
+        elif block.get("type") == "compaction":
+            if block.get("encrypted_content") is None:
+                block.pop("encrypted_content", None)
+    return blocks
+
+
 def validate_continuous_conversation_request(
     request_config: dict[str, Any],
 ) -> None:
@@ -121,6 +132,7 @@ def normalize_native_usage(value: Any) -> NormalizedUsage:
     iterations = usage.get("iterations")
     entries = iterations if isinstance(iterations, list) and iterations else [usage]
     total = NormalizedUsage()
+    compaction_thinking_tokens = 0
     for entry in entries:
         item = native_mapping(entry)
         cached_tokens = item.get("cache_read_input_tokens") or 0
@@ -129,12 +141,25 @@ def normalize_native_usage(value: Any) -> NormalizedUsage:
             (item.get("input_tokens") or 0) + cached_tokens + cache_write_tokens
         )
         output_tokens = item.get("output_tokens") or 0
+        details = native_mapping(item.get("output_tokens_details") or {})
+        thinking_tokens = details.get("thinking_tokens") or 0
+        if item.get("type") == "compaction":
+            compaction_thinking_tokens += thinking_tokens
         total += NormalizedUsage(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=input_tokens + output_tokens,
+            reasoning_tokens=thinking_tokens,
             cached_tokens=cached_tokens,
             cache_write_tokens=cache_write_tokens,
+        )
+    details = native_mapping(usage.get("output_tokens_details") or {})
+    if iterations and details.get("thinking_tokens") is not None:
+        total = total.model_copy(
+            update={
+                "reasoning_tokens": details["thinking_tokens"]
+                + compaction_thinking_tokens
+            }
         )
     return total
 
@@ -310,7 +335,10 @@ class AnthropicContinuousConversationRuntimeAdapter:
             response.raw_response, request.request_config
         )
         raw = native_mapping(response.raw_response)
-        output = {"role": "assistant", "content": raw["content"]}
+        output = {
+            "role": "assistant",
+            "content": serialize_replay_content(raw["content"]),
+        }
         all_messages = [*messages, output]
         next_messages = prune_after_latest_compaction(all_messages)
         compaction_count = sum(

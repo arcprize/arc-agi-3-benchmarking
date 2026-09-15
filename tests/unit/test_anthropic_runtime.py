@@ -11,6 +11,7 @@ from benchmarking.anthropic_runtime import (
     normalize_native_response,
     normalize_native_usage,
     prune_after_latest_compaction,
+    serialize_replay_content,
     validate_continuous_conversation_request,
 )
 from benchmarking.compaction import SummaryCompactionPolicy, SummaryCompactor
@@ -96,6 +97,90 @@ def _turn(adapter, state, text="frame"):
 
 @pytest.mark.unit
 class TestAnthropicRuntime:
+    @pytest.mark.parametrize("sdk_blocks", [False, True])
+    def test_replay_removes_only_response_only_sdk_fields(self, sdk_blocks):
+        blocks = [
+            {"type": "thinking", "thinking": "", "signature": "opaque-thinking"},
+            {"type": "redacted_thinking", "data": "opaque-redacted"},
+            {"type": "text", "text": "ACTION1", "parsed_output": {"action": 1}},
+            {"type": "compaction", "content": "summary", "encrypted_content": None},
+            {
+                "type": "compaction",
+                "content": "later summary",
+                "encrypted_content": "opaque-compaction",
+                "signature": "opaque-compaction-signature",
+                "future_field": {"version": 1},
+            },
+        ]
+        snapshot = deepcopy(blocks)
+        if sdk_blocks:
+            message = anthropic.types.beta.BetaMessage.model_validate(
+                {"id": "msg_test", "type": "message", **_raw_response(blocks=blocks)}
+            )
+            serialized = serialize_replay_content(message.content)
+        else:
+            serialized = serialize_replay_content(blocks)
+        expected = deepcopy(snapshot)
+        expected[2].pop("parsed_output")
+        expected[3].pop("encrypted_content")
+        assert serialized == expected
+        assert blocks == snapshot
+
+    @pytest.mark.parametrize(
+        "details",
+        [
+            None,
+            {},
+            {"thinking_tokens": None},
+            {"thinking_tokens": 0},
+            {"thinking_tokens": 3},
+        ],
+    )
+    def test_optional_thinking_breakdown_does_not_increase_output_or_cost(
+        self, details
+    ):
+        usage = normalize_native_usage(
+            {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "output_tokens_details": details,
+            }
+        )
+        assert usage.reasoning_tokens == ((details or {}).get("thinking_tokens") or 0)
+        assert usage.output_tokens == 5
+        assert usage.total_tokens == 15
+        assert usage.cost == 0
+
+    @pytest.mark.parametrize("top_thinking,expected", [(None, 5), (0, 2), (3, 5)])
+    def test_iteration_thinking_is_not_added_to_top_level_breakdown_twice(
+        self, top_thinking, expected
+    ):
+        usage = normalize_native_usage(
+            {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "output_tokens_details": {"thinking_tokens": top_thinking},
+                "iterations": [
+                    {
+                        "type": "compaction",
+                        "input_tokens": 100,
+                        "output_tokens": 10,
+                        "output_tokens_details": {"thinking_tokens": 2},
+                    },
+                    {
+                        "type": "message",
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "output_tokens_details": {"thinking_tokens": 3},
+                    },
+                ],
+            }
+        )
+        assert usage.reasoning_tokens == expected
+        assert usage.input_tokens == 110
+        assert usage.output_tokens == 15
+        assert usage.total_tokens == 125
+
     def test_exact_replay_and_readable_projection(self):
         raw = _raw_response()
         raw["content"].append({"type": "future_block", "opaque": {"version": 1}})
@@ -338,11 +423,17 @@ class TestAnthropicRuntime:
 
 @pytest.mark.unit
 class TestAnthropicConfiguration:
+    def test_thinking_telemetry_beta_is_optional(self):
+        config = deepcopy(get_model_config(CONFIG_ID))
+        config["request"]["betas"].remove("thinking-token-count-2026-05-13")
+        _validate_model_config_entry(config, 1, set())
+
     def test_checked_in_profile_and_registry(self):
         config = get_model_config(CONFIG_ID)
         assert config["request"]["model"] == "claude-opus-5"
         assert config["request"]["output_config"] == {"effort": "low"}
         assert config["request"]["max_tokens"] == 128_000
+        assert "thinking-token-count-2026-05-13" in config["request"]["betas"]
         assert config["agent"]["MAX_CONTEXT_LENGTH"] == 1_000_000
         assert config["pricing"] == {"input": 5, "output": 25}
         assert "store" not in config["request"]
@@ -425,7 +516,7 @@ class TestAnthropicConfiguration:
             _validate_model_config_entry(config, 1, set())
 
 
-def _stream_events(*, stop_reason="end_turn", complete=True):
+def _stream_events(*, stop_reason="end_turn", complete=True, sdk_extras=False):
     message = {
         "id": "msg_test",
         "type": "message",
@@ -461,6 +552,10 @@ def _stream_events(*, stop_reason="end_turn", complete=True):
         ({"type": "text", "text": ""}, [{"type": "text_delta", "text": "ACTION1"}]),
     ]
     for index, (block, deltas) in enumerate(blocks_and_deltas):
+        if sdk_extras and block["type"] == "text":
+            block["parsed_output"] = None
+        if sdk_extras and block["type"] == "compaction":
+            block["encrypted_content"] = None
         events.append(
             {"type": "content_block_start", "index": index, "content_block": block}
         )
@@ -482,6 +577,7 @@ def _stream_events(*, stop_reason="end_turn", complete=True):
             "usage": {
                 "input_tokens": 10,
                 "output_tokens": 5,
+                "output_tokens_details": {"thinking_tokens": 3},
                 "iterations": [
                     {"type": "compaction", "input_tokens": 50000, "output_tokens": 100},
                     {"type": "message", "input_tokens": 10, "output_tokens": 5},
@@ -516,18 +612,33 @@ def _sdk_adapter(client):
 @pytest.mark.unit
 class TestAnthropicSDKBoundary:
     @pytest.mark.parametrize("streaming", [False, True])
-    def test_real_sdk_roundtrips_native_content(self, streaming):
+    @pytest.mark.parametrize("sdk_extras", [False, True])
+    def test_real_sdk_roundtrips_native_content(self, streaming, sdk_extras):
         captured = []
         raw = {"id": "msg_test", "type": "message", **_raw_response()}
+        raw["usage"]["output_tokens_details"] = {"thinking_tokens": 3}
+        if sdk_extras:
+            raw["content"][-1]["parsed_output"] = None
+            raw["content"].insert(
+                0,
+                {
+                    "type": "compaction",
+                    "content": "SDK summary",
+                    "encrypted_content": None,
+                },
+            )
 
         def handle(request):
             captured.append(json.loads(request.content))
             assert "compact-2026-01-12" in request.headers["anthropic-beta"]
+            assert (
+                "thinking-token-count-2026-05-13" in request.headers["anthropic-beta"]
+            )
             if streaming:
                 return httpx.Response(
                     200,
                     headers={"content-type": "text/event-stream"},
-                    content=_stream_events(),
+                    content=_stream_events(sdk_extras=sdk_extras),
                 )
             return httpx.Response(200, json=raw)
 
@@ -551,7 +662,8 @@ class TestAnthropicSDKBoundary:
             adapter.invoke_turn(request)
         native = first.response.raw_response["content"]
         replay = captured[1]["messages"][-2]["content"]
-        assert replay == native
+        assert replay == serialize_replay_content(native)
+        assert first.response.usage.reasoning_tokens == 3
         assert captured[0]["system"] == captured[1]["system"] == "system"
         assert all("store" not in body for body in captured)
         assert next(block for block in replay if block["type"] == "redacted_thinking")[
@@ -568,7 +680,7 @@ class TestAnthropicSDKBoundary:
             assert first.response.reasoning_text == "SDK thinking"
             assert replay[0] == {"type": "compaction", "content": "SDK summary"}
         else:
-            assert replay == raw["content"]
+            assert replay == serialize_replay_content(raw["content"])
 
     def test_stream_refusal_details_survive_sdk_accumulation(self):
         def handle(_request):
@@ -587,6 +699,7 @@ class TestAnthropicSDKBoundary:
                 _turn(adapter, adapter.initial_state())
         assert raised.value.response["stop_details"]["category"] == "synthetic-category"
         assert raised.value.usage.total_tokens == 50115
+        assert raised.value.usage.reasoning_tokens == 3
         assert "sdk-signature" not in str(raised.value.response)
         assert "sdk-ciphertext" not in str(raised.value.response)
 
@@ -615,6 +728,7 @@ class TestAnthropicSDKBoundary:
                 _turn(adapter, state)
         assert state.payload == {"messages": []}
         assert raised.value.usage.total_tokens == 50115
+        assert raised.value.usage.reasoning_tokens == 3
         assert "sdk-signature" not in str(raised.value)
 
     def test_real_sdk_error_body_does_not_leak_to_logs(self):
