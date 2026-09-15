@@ -202,11 +202,20 @@ class TestAdapterRegistryAndProvenance:
                 "nested": {
                     "encrypted_content": "opaque",
                     "signature": "signed",
+                    "thought_signature": "google-signed",
                     "thoughtSignature": "signed-again",
                 },
+                "content": [
+                    {"type": "redacted_thinking", "data": "anthropic-ciphertext"},
+                    {"type": "text", "data": "readable"},
+                ],
             }
         ) == {
             "max_output_tokens": 128_000,
             "api_key": "[redacted]",
             "nested": {},
+            "content": [
+                {"type": "redacted_thinking"},
+                {"type": "text", "data": "readable"},
+            ],
         }

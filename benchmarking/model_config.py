@@ -28,6 +28,7 @@ SUPPORTED_RUNTIME_STATE = DEFAULT_RUNTIME_STATE
 SERVER_STATE_RUNTIME_PAIRS = frozenset({("openai-python", "responses")})
 CONTINUOUS_CONVERSATION_RUNTIME_PAIRS = frozenset(
     {
+        ("anthropic-python", "messages"),
         ("google-genai", "interactions"),
         ("openai-python", "responses"),
     }
@@ -94,8 +95,21 @@ def _validate_anthropic_messages_config(config_id: str, entry: dict[str, Any]) -
 def _validate_continuous_conversation_config(
     config_id: str, entry: dict[str, Any]
 ) -> None:
+    from .runtime_registry import resolve_adapter_id
+
     runtime = entry["runtime"]
     request = entry["request"]
+    adapter_id = resolve_adapter_id(runtime, config_id)
+    if adapter_id == "anthropic.messages.v1":
+        from .anthropic_runtime import validate_continuous_conversation_request
+
+        if "compaction" in entry["runtime"]:
+            raise ValueError("Anthropic supports native request compaction only.")
+        try:
+            validate_continuous_conversation_request(request)
+        except ValueError as exc:
+            raise ValueError(f"Model config '{config_id}': {exc}") from exc
+        return
     if request.get("store") is not False:
         raise ValueError(
             f"Model config '{config_id}' uses runtime.state="
@@ -106,11 +120,6 @@ def _validate_continuous_conversation_config(
             f"Model config '{config_id}' uses runtime.state="
             f"{CONTINUOUS_CONVERSATION_RUNTIME_STATE!r} and cannot enable request.background."
         )
-    # Resolve omitted legacy adapter IDs too, so provider-specific validation
-    # cannot be bypassed by relying on the registered sdk/api mapping.
-    from .runtime_registry import resolve_adapter_id
-
-    adapter_id = resolve_adapter_id(runtime, config_id)
     if adapter_id == "openai.responses.v1":
         incompatible = sorted(
             field

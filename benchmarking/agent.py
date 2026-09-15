@@ -987,7 +987,7 @@ class BenchmarkingAgent(Agent):
                 if e.response is not None:
                     self._save_diagnostic(e.response)
                 logger.warning(
-                    f"Empty API response "
+                    f"Unusable API response "
                     f"(attempt {attempt + 1}/{max_attempts})."
                 )
                 attempt += 1
@@ -1054,6 +1054,12 @@ class BenchmarkingAgent(Agent):
             )
             attempt += 1
 
+        if hasattr(self, "_stateful_adapter") and hasattr(self, "run_record"):
+            self.run_record.total_usage = (
+                self.run_record.total_usage
+                + StepUsage.from_normalized_usage(accumulated_usage)
+            )
+            self._write_run_meta()
         raise RuntimeError(
             f"Failed to get a valid action after {max_attempts} attempts."
         )

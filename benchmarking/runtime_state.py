@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from copy import deepcopy
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -162,6 +162,11 @@ class StatefulRuntimeAdapter(Protocol):
 
     def invoke_turn(self, request: ModelTurnRequest) -> ModelTurnResult: ...
 
+
+@runtime_checkable
+class SummaryCompactionRuntimeAdapter(StatefulRuntimeAdapter, Protocol):
+    """Optional reconstruction contract for harness-managed summary compaction."""
+
     def unwind_latest_accepted_turn(
         self, state: RuntimeState
     ) -> CompactionUnwindResult | None: ...
@@ -300,6 +305,8 @@ def sanitize_settings(value: Any) -> Any:
                 "thought_signature",
                 "thoughtsignature",
             }:
+                continue
+            if lowered == "data" and value.get("type") == "redacted_thinking":
                 continue
             if lowered in {
                 "api_key",
