@@ -104,10 +104,11 @@ carries forward between actions. The Standard harness uses a provider-neutral
 text history and asks the model to preserve useful discoveries in visible
 notes. These configurations use `manual_rolling`.
 
-The Provider Adapter harness uses the provider's native conversation,
-reasoning-state, and compaction capabilities. These configurations use
-`continuous_conversation`; `openai-gpt-5-6-sol-max-provider-adapter` is one
-example.
+The Provider Adapter harness uses the provider's native conversation and
+reasoning state. It uses native compaction when the provider supplies it and a
+domain-neutral harness summary otherwise. These configurations use
+`continuous_conversation`; `openai-gpt-5-6-sol-max-provider-adapter` and
+`google-gemini-3-8-flash-low-provider-adapter` are examples.
 
 Both harnesses use the same games, actions, limits, and scoring. The Standard
 harness supports controlled comparisons across providers, while the Provider

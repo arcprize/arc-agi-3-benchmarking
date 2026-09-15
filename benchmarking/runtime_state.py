@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
 from typing import Any, Protocol
 
 from pydantic import BaseModel, Field, model_validator
@@ -23,6 +24,21 @@ SUPPORTED_RUNTIME_STATES = frozenset(
 )
 
 
+class AcceptedTurn(BaseModel):
+    """Provider-neutral boundary and readable content for one accepted turn."""
+
+    start_item: int = Field(ge=0)
+    end_item: int = Field(gt=0)
+    messages: list[Message] = Field(min_length=1)
+    reasoning_summary: str | None = None
+
+    @model_validator(mode="after")
+    def validate_range(self) -> AcceptedTurn:
+        if self.end_item <= self.start_item:
+            raise ValueError("Accepted turn end_item must be greater than start_item.")
+        return self
+
+
 class RuntimeState(BaseModel):
     """Versioned, JSON-serializable envelope for provider-owned turn state."""
 
@@ -30,6 +46,7 @@ class RuntimeState(BaseModel):
     adapter_id: str
     strategy: str
     payload: dict[str, Any] = Field(default_factory=dict)
+    accepted_turns: list[AcceptedTurn] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_envelope(self) -> RuntimeState:
@@ -46,6 +63,14 @@ class RuntimeState(BaseModel):
             json.dumps(self.payload)
         except (TypeError, ValueError) as exc:
             raise ValueError("Runtime state payload must be JSON-serializable.") from exc
+        previous_end = 0
+        for turn in self.accepted_turns:
+            if turn.start_item < previous_end:
+                raise ValueError(
+                    "Runtime state accepted-turn boundaries must be ordered and "
+                    "non-overlapping."
+                )
+            previous_end = turn.end_item
         return self
 
     def validate_for(self, *, adapter_id: str, strategy: str) -> None:
@@ -89,6 +114,7 @@ class ModelTurnResult(BaseModel):
     sanitized_request: dict[str, Any]
     transition: StateTransitionTelemetry
     action_state: dict[str, Any] | None = None
+    readable_request_messages: list[dict[str, Any]] | None = None
 
 
 class AdapterDescriptor(BaseModel):
@@ -98,6 +124,29 @@ class AdapterDescriptor(BaseModel):
     implementation_path: str
     version: str
     approval_status: str
+
+
+class CompactionUnwindResult(BaseModel):
+    """A shorter candidate state plus the complete turn removed from its tail."""
+
+    state: RuntimeState
+    turn: AcceptedTurn
+    native_items: list[dict[str, Any]] = Field(min_length=1)
+    trailing_native_items: list[dict[str, Any]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_native_items(self) -> CompactionUnwindResult:
+        expected_items = self.turn.end_item - self.turn.start_item
+        if len(self.native_items) != expected_items:
+            raise ValueError(
+                "Compaction unwind native item count must match the accepted-turn "
+                "boundary."
+            )
+        return self
+
+    @property
+    def removed_items(self) -> int:
+        return len(self.native_items) + len(self.trailing_native_items)
 
 
 class StatefulRuntimeAdapter(Protocol):
@@ -113,14 +162,119 @@ class StatefulRuntimeAdapter(Protocol):
 
     def invoke_turn(self, request: ModelTurnRequest) -> ModelTurnResult: ...
 
+    def unwind_latest_accepted_turn(
+        self, state: RuntimeState
+    ) -> CompactionUnwindResult | None: ...
+
+    def rebuild_after_compaction(
+        self,
+        summary_message: Message,
+        retained_turns: list[CompactionUnwindResult],
+    ) -> RuntimeState: ...
+
 
 def replace_runtime_payload(
-    state: RuntimeState, payload: dict[str, Any]
+    state: RuntimeState,
+    payload: dict[str, Any],
+    *,
+    accepted_turns: list[AcceptedTurn] | None = None,
 ) -> RuntimeState:
     """Replace provider payload while re-running envelope validation."""
 
-    return RuntimeState.model_validate(
-        {**state.model_dump(exclude={"payload"}), "payload": payload}
+    values = {**state.model_dump(exclude={"payload"}), "payload": payload}
+    if accepted_turns is not None:
+        values["accepted_turns"] = [
+            turn.model_dump() for turn in accepted_turns
+        ]
+    return RuntimeState.model_validate(values)
+
+
+def append_accepted_turn(
+    *,
+    state: RuntimeState,
+    payload: dict[str, Any],
+    start_item: int,
+    end_item: int,
+    request_messages: list[Message],
+    response: ModelResponse,
+) -> RuntimeState:
+    """Return provisional state with one newly completed turn boundary."""
+
+    turn_messages = [
+        *request_messages,
+        Message(role="assistant", content=response.output_text),
+    ]
+    turn = AcceptedTurn(
+        start_item=start_item,
+        end_item=end_item,
+        messages=turn_messages,
+        reasoning_summary=response.reasoning_text,
+    )
+    return replace_runtime_payload(
+        state,
+        payload,
+        accepted_turns=[*state.accepted_turns, turn],
+    )
+
+
+def unwind_runtime_state_items(
+    state: RuntimeState,
+    *,
+    payload_key: str,
+) -> CompactionUnwindResult | None:
+    """Remove the latest complete accepted turn from a candidate state."""
+
+    if not state.accepted_turns:
+        return None
+    items = runtime_payload_items(state, payload_key)
+    turn = state.accepted_turns[-1]
+    if turn.end_item > len(items):
+        raise ValueError(
+            "Runtime state accepted-turn boundary exceeds provider item count."
+        )
+    native_items = deepcopy(items[turn.start_item : turn.end_item])
+    trailing_native_items = deepcopy(items[turn.end_item :])
+    shortened_payload = dict(state.payload)
+    shortened_payload[payload_key] = items[: turn.start_item]
+    shortened_state = replace_runtime_payload(
+        state,
+        shortened_payload,
+        accepted_turns=state.accepted_turns[:-1],
+    )
+    return CompactionUnwindResult(
+        state=shortened_state,
+        turn=turn,
+        native_items=native_items,
+        trailing_native_items=trailing_native_items,
+    )
+
+
+def restore_unwound_runtime_state_items(
+    state: RuntimeState,
+    *,
+    payload_key: str,
+    retained_turns: list[CompactionUnwindResult],
+) -> RuntimeState:
+    """Append exact unwound turns and remap their accepted boundaries."""
+
+    items = runtime_payload_items(state, payload_key)
+    accepted_turns = list(state.accepted_turns)
+    for retained in retained_turns:
+        start_item = len(items)
+        items.extend(deepcopy(retained.native_items))
+        end_item = len(items)
+        accepted_turns.append(
+            retained.turn.model_copy(
+                update={"start_item": start_item, "end_item": end_item}
+            )
+        )
+        items.extend(deepcopy(retained.trailing_native_items))
+    payload = dict(state.payload)
+    payload[payload_key] = items
+    return replace_runtime_payload(
+        state,
+        payload,
+        accepted_turns=accepted_turns,
     )
 
 
@@ -134,13 +288,18 @@ def runtime_payload_items(state: RuntimeState, key: str) -> list[dict[str, Any]]
 
 
 def sanitize_settings(value: Any) -> Any:
-    """Remove secrets and encrypted bodies from provenance and recordings."""
+    """Remove secrets and opaque provider state from persisted artifacts."""
 
     if isinstance(value, dict):
         sanitized: dict[str, Any] = {}
         for key, item in value.items():
             lowered = key.lower()
-            if lowered == "encrypted_content":
+            if lowered in {
+                "encrypted_content",
+                "signature",
+                "thought_signature",
+                "thoughtsignature",
+            }:
                 continue
             if lowered in {
                 "api_key",

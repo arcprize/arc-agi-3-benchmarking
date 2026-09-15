@@ -1,12 +1,20 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from google import genai as google_genai
+from google.genai import _interactions as google_genai_interactions
 
-from benchmarking.exceptions import EmptyResponseError
+from benchmarking.exceptions import (
+    ContextOverflowError,
+    EmptyResponseError,
+    TransientProviderError,
+)
 from benchmarking.model_config import get_model_config
 from benchmarking.runtime_adapters import (
     AnthropicMessagesAdapter,
     GoogleGenAIGenerateContentAdapter,
+    GoogleGenAIInteractionsAdapter,
     OpenAIChatCompletionsAdapter,
     OpenAIResponsesAdapter,
     OpenAIResponsesServerStateAdapter,
@@ -244,6 +252,223 @@ def _anthropic_request() -> ModelRequest:
         ],
         request_config={"model": "claude-sonnet-4-6", "max_tokens": 128},
     )
+
+
+@pytest.mark.unit
+@pytest.mark.filterwarnings("ignore:Interactions usage is experimental")
+class TestGoogleGenAIInteractionsAdapter:
+    @staticmethod
+    def _request() -> ModelRequest:
+        return ModelRequest(
+            messages=[Message(role="user", content="summarize this context")],
+            request_config={"model": "gemini-test"},
+        )
+
+    def test_real_sdk_context_error_is_translated_for_overflow_recovery(self):
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(
+                400,
+                request=request,
+                json={
+                    "error": {
+                        "message": "input token count exceeds maximum input tokens",
+                        "status": "INVALID_ARGUMENT",
+                    }
+                },
+            )
+
+        http_client = httpx.Client(transport=httpx.MockTransport(handler))
+        client = google_genai.Client(
+            api_key="test-key",
+            http_options={
+                "base_url": "https://example.test",
+                "httpx_client": http_client,
+            },
+        )
+        try:
+            adapter = GoogleGenAIInteractionsAdapter(client)
+
+            with pytest.raises(ContextOverflowError, match="maximum input tokens"):
+                adapter.invoke(self._request())
+        finally:
+            client.close()
+
+        assert len(requests) == 1
+        assert requests[0].url.path == "/v1beta/interactions"
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "generation configuration is invalid",
+            "thought signature is invalid or could not be verified",
+        ],
+    )
+    def test_real_sdk_unrelated_bad_request_is_not_misclassified_as_overflow(
+        self,
+        message,
+    ):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                request=request,
+                json={
+                    "error": {
+                        "message": message,
+                        "status": "INVALID_ARGUMENT",
+                    }
+                },
+            )
+
+        http_client = httpx.Client(transport=httpx.MockTransport(handler))
+        client = google_genai.Client(
+            api_key="test-key",
+            http_options={
+                "base_url": "https://example.test",
+                "httpx_client": http_client,
+            },
+        )
+        try:
+            adapter = GoogleGenAIInteractionsAdapter(client)
+
+            with pytest.raises(google_genai_interactions.BadRequestError):
+                adapter.invoke(self._request())
+        finally:
+            client.close()
+
+    @pytest.mark.parametrize(
+        ("status_code", "status"),
+        [
+            (408, "DEADLINE_EXCEEDED"),
+            (429, "RESOURCE_EXHAUSTED"),
+            (503, "UNAVAILABLE"),
+        ],
+    )
+    def test_real_sdk_transient_error_is_classified_for_harness_retry(
+        self,
+        status_code,
+        status,
+    ):
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(
+                status_code,
+                request=request,
+                json={
+                    "error": {
+                        "message": "service temporarily unavailable",
+                        "status": status,
+                    }
+                },
+            )
+
+        http_client = httpx.Client(transport=httpx.MockTransport(handler))
+        client = google_genai.Client(
+            api_key="test-key",
+            http_options={
+                "base_url": "https://example.test",
+                "httpx_client": http_client,
+                "retry_options": {"attempts": 1},
+            },
+        )
+        try:
+            adapter = GoogleGenAIInteractionsAdapter(client)
+
+            with pytest.raises(TransientProviderError, match="unavailable"):
+                adapter.invoke(self._request())
+        finally:
+            client.close()
+
+        assert requests
+
+    @pytest.mark.parametrize(
+        ("error_type", "message"),
+        [
+            (httpx.ReadTimeout, "timed out"),
+            (httpx.ConnectError, "connection failed"),
+        ],
+    )
+    def test_real_sdk_transport_error_is_classified_for_harness_retry(
+        self,
+        error_type,
+        message,
+    ):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise error_type(message, request=request)
+
+        http_client = httpx.Client(transport=httpx.MockTransport(handler))
+        client = google_genai.Client(
+            api_key="test-key",
+            http_options={
+                "base_url": "https://example.test",
+                "httpx_client": http_client,
+                "retry_options": {"attempts": 1},
+            },
+        )
+        try:
+            adapter = GoogleGenAIInteractionsAdapter(client)
+
+            with pytest.raises(TransientProviderError):
+                adapter.invoke(self._request())
+        finally:
+            client.close()
+
+    @pytest.mark.parametrize(
+        "steps",
+        [
+            [],
+            [{"type": "unexpected_step"}],
+            [
+                {
+                    "type": "thought",
+                    "signature": "opaque-thought-only",
+                    "summary": [{"type": "text", "text": "still reasoning"}],
+                }
+            ],
+        ],
+    )
+    def test_real_sdk_empty_success_response_preserves_usage_for_retry(self, steps):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "id": "interaction-empty",
+                    "created": "2026-09-14T00:00:00Z",
+                    "updated": "2026-09-14T00:00:00Z",
+                    "status": "completed",
+                    "steps": steps,
+                    "usage": {
+                        "total_input_tokens": 80,
+                        "total_output_tokens": 0,
+                        "total_thought_tokens": 20,
+                        "total_tokens": 100,
+                    },
+                },
+            )
+
+        http_client = httpx.Client(transport=httpx.MockTransport(handler))
+        client = google_genai.Client(
+            api_key="test-key",
+            http_options={
+                "base_url": "https://example.test",
+                "httpx_client": http_client,
+            },
+        )
+        try:
+            adapter = GoogleGenAIInteractionsAdapter(client)
+
+            with pytest.raises(EmptyResponseError) as error:
+                adapter.invoke(self._request())
+        finally:
+            client.close()
+
+        assert error.value.usage.total_tokens == 100
+        assert error.value.response is not None
 
 
 @pytest.mark.unit

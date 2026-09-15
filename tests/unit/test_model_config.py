@@ -276,6 +276,31 @@ class TestModelConfig:
         ):
             model_config.load_model_configs()
 
+    def test_manual_rolling_rejects_harness_compaction(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        config = _valid_config(
+            "manual-compaction",
+            runtime={
+                "sdk": "openai-python",
+                "api": "chat_completions",
+                "state": "manual_rolling",
+                "compaction": {"strategy": "harness_summary"},
+            },
+        )
+        _write_model_configs(tmp_path, monkeypatch, [config])
+
+        with pytest.raises(
+            ValueError,
+            match=(
+                "runtime.compaction, which requires "
+                "runtime.state='continuous_conversation'"
+            ),
+        ):
+            model_config.load_model_configs()
+
     def test_load_model_configs_accepts_server_state_for_responses_runtime(
         self,
         tmp_path,
@@ -738,6 +763,111 @@ class TestModelConfig:
         assert config["request"]["context_management"] == [
             {"type": "compaction", "compact_threshold": 175_000}
         ]
+
+    def test_checked_in_google_provider_adapter_profile(self):
+        config = model_config.get_model_config(
+            "google-gemini-3-8-flash-low-provider-adapter"
+        )
+
+        assert config["agent"] == {
+            "MAX_ACTIONS_BASELINE_MULTIPLIER": 5.0,
+            "MAX_CONTEXT_LENGTH": 1_048_576,
+        }
+        assert config["runtime"] == {
+            "adapter_id": "google.interactions.v1",
+            "sdk": "google-genai",
+            "api": "interactions",
+            "state": "continuous_conversation",
+            "compaction": {
+                "strategy": "harness_summary",
+                "trigger_tokens": 175_000,
+                "summary_max_output_tokens": 8_192,
+                "summary_input_headroom_tokens": 8_192,
+            },
+        }
+        assert config["client"] == {"api_key_env": "GOOGLE_API_KEY"}
+        assert config["request"] == {
+            "model": "gemini-3.8-flash",
+            "store": False,
+            "generation_config": {
+                "max_output_tokens": 65_536,
+                "thinking_level": "low",
+                "thinking_summaries": "auto",
+            },
+        }
+        assert config["pricing"] == {"input": 0.75, "output": 3.75}
+
+    @pytest.mark.parametrize(
+        ("runtime_update", "request_update", "message"),
+        [
+            ({}, {"store": True}, "must set request.store=false"),
+            (
+                {},
+                {"generation_config": {"thinking_level": "low"}},
+                "thinking_summaries='auto'",
+            ),
+            (
+                {"adapter_id": None},
+                {"generation_config": {"thinking_level": "low"}},
+                "thinking_summaries='auto'",
+            ),
+            (
+                {
+                    "compaction": {
+                        "strategy": "harness_summary",
+                        "trigger_tokens": 175_000,
+                        "summary_max_output_tokens": 175_000,
+                        "summary_input_headroom_tokens": 8_192,
+                    }
+                },
+                {},
+                "must total less than agent.MAX_CONTEXT_LENGTH",
+            ),
+        ],
+    )
+    def test_google_provider_adapter_rejects_invalid_settings(
+        self,
+        tmp_path,
+        monkeypatch,
+        runtime_update,
+        request_update,
+        message,
+    ):
+        runtime = {
+            "adapter_id": "google.interactions.v1",
+            "sdk": "google-genai",
+            "api": "interactions",
+            "state": "continuous_conversation",
+            "compaction": {
+                "strategy": "harness_summary",
+                "trigger_tokens": 100_000,
+                "summary_max_output_tokens": 8_192,
+                "summary_input_headroom_tokens": 8_192,
+            },
+            **runtime_update,
+        }
+        request = {
+            "model": "gemini-3.8-flash",
+            "store": False,
+            "generation_config": {
+                "max_output_tokens": 65_536,
+                "thinking_level": "low",
+                "thinking_summaries": "auto",
+            },
+            **request_update,
+        }
+        config = _valid_config(
+            "google-provider-adapter",
+            runtime_sdk="google-genai",
+            runtime_api="interactions",
+            runtime=runtime,
+            client={"api_key_env": "GOOGLE_API_KEY"},
+            request=request,
+        )
+        _write_model_configs(tmp_path, monkeypatch, [config])
+
+        with pytest.raises(ValueError, match=message):
+            model_config.load_model_configs()
 
     def test_list_model_config_ids_supports_mixed_chat_and_responses_configs(
         self,

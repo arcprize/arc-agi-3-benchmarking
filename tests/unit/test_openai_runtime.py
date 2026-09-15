@@ -114,6 +114,29 @@ class TestOpenAIContinuousConversation:
         assert orphan.state != accepted.state
         assert accepted.state.payload["input_items"][-2:] == _output(2)
 
+    def test_rebuild_after_compaction_preserves_unwound_native_turn(self):
+        adapter, _ = _adapter([_response(1)])
+        accepted = adapter.invoke_turn(
+            _turn(adapter, adapter.initial_state(), "recent frame")
+        )
+        unwind = adapter.unwind_latest_accepted_turn(accepted.state)
+
+        assert unwind is not None
+        rebuilt = adapter.rebuild_after_compaction(
+            Message(role="user", content="summary"),
+            [unwind],
+        )
+
+        assert rebuilt.payload["input_items"] == [
+            {"role": "user", "content": "summary"},
+            *unwind.native_items,
+        ]
+        assert rebuilt.payload["input_items"][2]["encrypted_content"] == "encrypted-1"
+        assert [
+            (turn.start_item, turn.end_item)
+            for turn in rebuilt.accepted_turns
+        ] == [(1, 4)]
+
     def test_buffered_forced_reset_input_precedes_next_frame(self):
         adapter, low_level = _adapter([_response(1)])
         state = adapter.buffer_inputs(

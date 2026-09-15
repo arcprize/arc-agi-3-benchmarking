@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from google.genai import _interactions as google_genai_interactions
 from google.genai import types as google_genai_types
 
+from .exceptions import ContextOverflowError, TransientProviderError
 from .runtime_models import (
     ModelRequest,
     ModelResponse,
     normalize_anthropic_messages_response,
     normalize_chat_completion_response,
     normalize_google_genai_response,
+    normalize_google_interaction_response,
     normalize_responses_response,
 )
 from .runtime_state import (
@@ -23,6 +26,44 @@ from .runtime_state import (
 SUPPORTED_RUNTIME_STATE = DEFAULT_RUNTIME_STATE
 # Server-managed state is only available on the OpenAI Responses runtime.
 SERVER_STATE_RUNTIME_KEYS = frozenset({("openai-python", "responses")})
+CONTINUOUS_CONVERSATION_RUNTIME_KEYS = frozenset(
+    {
+        ("google-genai", "interactions"),
+        ("openai-python", "responses"),
+    }
+)
+
+_GOOGLE_CONTEXT_OVERFLOW_MARKERS = (
+    "context length",
+    "context_length",
+    "context window",
+    "exceeds the maximum number of tokens",
+    "input token count exceeds",
+    "maximum input tokens",
+    "too many input tokens",
+    "too many tokens",
+)
+
+
+def _is_google_context_overflow(error: Exception) -> bool:
+    if not isinstance(error, google_genai_interactions.APIStatusError):
+        return False
+    if error.status_code not in {400, 413}:
+        return False
+    details = " ".join(
+        str(value)
+        for value in (error.message, error.body)
+        if value is not None
+    ).lower()
+    return any(marker in details for marker in _GOOGLE_CONTEXT_OVERFLOW_MARKERS)
+
+
+def _is_google_transient_error(error: Exception) -> bool:
+    if isinstance(error, google_genai_interactions.APIConnectionError):
+        return True
+    return isinstance(error, google_genai_interactions.APIStatusError) and (
+        error.status_code in {408, 409, 429} or error.status_code >= 500
+    )
 
 
 class ModelRuntimeAdapter(Protocol):
@@ -291,6 +332,65 @@ class GoogleGenAIGenerateContentAdapter:
         return normalize_google_genai_response(raw_response)
 
 
+class GoogleGenAIInteractionsAdapter:
+    """Adapter for the stateless Gemini Interactions API."""
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    @staticmethod
+    def _message_step(message: Any) -> dict[str, Any]:
+        if message.role == "user":
+            return {
+                "type": "user_input",
+                "content": [{"type": "text", "text": message.content}],
+            }
+        if message.role == "assistant":
+            return {
+                "type": "model_output",
+                "content": [{"type": "text", "text": message.content}],
+            }
+        raise ValueError(
+            "Google Interactions system messages must be sent as "
+            "system_instruction."
+        )
+
+    @classmethod
+    def _build_call_kwargs(cls, request: ModelRequest) -> dict[str, Any]:
+        request_config = dict(request.request_config)
+        model = request_config.pop("model", None)
+        if not model:
+            raise ValueError(
+                "Google Interactions request_config is missing required 'model'."
+            )
+
+        messages = list(request.messages)
+        if messages and messages[0].role == "system":
+            request_config["system_instruction"] = messages[0].content
+            messages = messages[1:]
+
+        request_config["model"] = model
+        request_config["input"] = (
+            list(request.native_input)
+            if request.native_input is not None
+            else [cls._message_step(message) for message in messages]
+        )
+        return request_config
+
+    def invoke(self, request: ModelRequest) -> ModelResponse:
+        try:
+            raw_response = self._client.interactions.create(
+                **self._build_call_kwargs(request),
+            )
+        except google_genai_interactions.APIError as exc:
+            if _is_google_context_overflow(exc):
+                raise ContextOverflowError(str(exc)) from exc
+            if _is_google_transient_error(exc):
+                raise TransientProviderError(str(exc)) from exc
+            raise
+        return normalize_google_interaction_response(raw_response)
+
+
 def build_model_runtime_adapter(
     *,
     client: Any,
@@ -317,14 +417,15 @@ def build_model_runtime_adapter(
         return OpenAIResponsesServerStateAdapter(client)
 
     if runtime_state == CONTINUOUS_CONVERSATION_RUNTIME_STATE:
-        if runtime_key not in SERVER_STATE_RUNTIME_KEYS:
+        if runtime_key not in CONTINUOUS_CONVERSATION_RUNTIME_KEYS:
             raise ValueError(
                 f"Model config '{config_id}' uses runtime.state="
-                f"{CONTINUOUS_CONVERSATION_RUNTIME_STATE!r}, which is only supported "
-                f"on the OpenAI Responses runtime "
-                f"(sdk='openai-python', api='responses')."
+                f"{CONTINUOUS_CONVERSATION_RUNTIME_STATE!r}, which is not supported "
+                f"for sdk={runtime_key[0]!r}, api={runtime_key[1]!r}."
             )
-        return OpenAIResponsesAdapter(client)
+        if runtime_key == ("openai-python", "responses"):
+            return OpenAIResponsesAdapter(client)
+        return GoogleGenAIInteractionsAdapter(client)
 
     if runtime_key == ("openai-python", "chat_completions"):
         return OpenAIChatCompletionsAdapter(client)
@@ -334,6 +435,8 @@ def build_model_runtime_adapter(
         return AnthropicMessagesAdapter(client)
     if runtime_key == ("google-genai", "generate_content"):
         return GoogleGenAIGenerateContentAdapter(client)
+    if runtime_key == ("google-genai", "interactions"):
+        return GoogleGenAIInteractionsAdapter(client)
 
     raise ValueError(
         f"Model config '{config_id}' uses unsupported runtime "
