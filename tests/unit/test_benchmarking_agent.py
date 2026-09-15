@@ -13,6 +13,18 @@ from benchmarking.action_metadata import (
 )
 from benchmarking.agent import BenchmarkingAgent
 from benchmarking.base import ExitReason
+from benchmarking.compaction import (
+    SUMMARY_BRIDGE_TEMPLATE,
+    SUMMARY_SYSTEM_PROMPT,
+    SummaryCompactionPolicy,
+    SummaryCompactor,
+)
+from benchmarking.exceptions import (
+    ContextOverflowError,
+    EmptyResponseError,
+    TransientProviderError,
+)
+from benchmarking.google_runtime import GoogleContinuousConversationRuntimeAdapter
 from benchmarking.model_config import get_model_config
 from benchmarking.recording import RunRecord
 from benchmarking.runtime_adapters import (
@@ -25,8 +37,15 @@ from benchmarking.runtime_models import (
     ModelResponse,
     NormalizedUsage,
 )
-from benchmarking.runtime_registry import build_stateful_runtime_adapter
-from benchmarking.runtime_state import RuntimeState
+from benchmarking.runtime_registry import (
+    ADAPTER_DESCRIPTORS,
+    build_stateful_runtime_adapter,
+)
+from benchmarking.runtime_state import (
+    ModelTurnRequest,
+    RuntimeState,
+    SummaryCompactionRuntimeAdapter,
+)
 
 
 class _FakeAdapter:
@@ -173,8 +192,98 @@ def _responses_response(text: str = "RESET") -> SimpleNamespace:
     )
 
 
+def _google_model_response(
+    *,
+    text: str = "ACTION1",
+    signature: str = "opaque",
+    status: str | None = "completed",
+    total_tokens: int = 10,
+) -> ModelResponse:
+    return ModelResponse(
+        output_text=text,
+        reasoning_text=f"reasoning for {signature}",
+        usage=NormalizedUsage(total_tokens=total_tokens),
+        raw_response={
+            "steps": [
+                {
+                    "type": "thought",
+                    "signature": signature,
+                    "summary": [
+                        {
+                            "type": "text",
+                            "text": f"reasoning for {signature}",
+                        }
+                    ],
+                },
+                {
+                    "type": "model_output",
+                    "content": [{"type": "text", "text": text}],
+                },
+            ]
+        },
+        response_status=status,
+    )
+
+
 @pytest.mark.unit
 class TestBenchmarkingAgentRuntimeClient:
+    @pytest.mark.parametrize(
+        "config_id,model_adapter_name,supports_summary,uses_summary",
+        [
+            (
+                "openai-gpt-5-6-sol-max-provider-adapter",
+                "OpenAIResponsesAdapter",
+                True,
+                False,
+            ),
+            (
+                "google-gemini-3-8-flash-low-provider-adapter",
+                "GoogleGenAIInteractionsAdapter",
+                True,
+                True,
+            ),
+            (
+                "anthropic-opus-5-low-provider-adapter",
+                "AnthropicMessagesAdapter",
+                False,
+                False,
+            ),
+        ],
+    )
+    def test_provider_profiles_keep_their_compaction_strategy(
+        self,
+        monkeypatch,
+        tmp_path,
+        config_id,
+        model_adapter_name,
+        supports_summary,
+        uses_summary,
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "benchmarking.agent.build_model_runtime_client", lambda **_kwargs: object()
+        )
+        config = get_model_config(config_id)
+        agent = BenchmarkingAgent(
+            card_id="card-id",
+            game_id="game-id",
+            agent_name="agent-name",
+            ROOT_URL="https://arcprize.org",
+            record=False,
+            arc_env=SimpleNamespace(info=SimpleNamespace(baseline_actions=[])),
+            config=config_id,
+        )
+        assert type(agent._adapter).__name__ == model_adapter_name
+        assert agent._runtime_state.adapter_id == config["runtime"]["adapter_id"]
+        assert isinstance(
+            agent._stateful_adapter, SummaryCompactionRuntimeAdapter
+        ) is supports_summary
+        assert (agent._summary_compactor is not None) is uses_summary
+        agent._schedule_compaction(NormalizedUsage(total_tokens=200_000))
+        assert agent._pending_compaction_trigger_tokens == (
+            200_000 if uses_summary else None
+        )
+
     @pytest.mark.parametrize(
         ("runtime_state", "runtime_api"),
         [
@@ -634,6 +743,52 @@ class TestBenchmarkingAgentRetries:
             {"role": "system", "content": "system"},
             {"role": "user", "content": "frame"},
         ]
+        assert agent.token_counter == 10
+
+    def test_empty_response_usage_is_counted_before_retry(self):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+        agent.conversation = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "frame"},
+        ]
+        responses = [
+            EmptyResponseError(
+                "empty output",
+                usage=NormalizedUsage(
+                    input_tokens=3,
+                    output_tokens=1,
+                    total_tokens=4,
+                ),
+            ),
+            ModelResponse(
+                output_text="RESET",
+                usage=NormalizedUsage(
+                    input_tokens=4,
+                    output_tokens=2,
+                    total_tokens=6,
+                ),
+            ),
+        ]
+
+        def fake_call_api(_request: ModelRequest) -> ModelResponse:
+            response = responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        agent._call_api = fake_call_api
+
+        model_response, action, retries, _ = agent._request_with_retries(
+            [GameAction.RESET]
+        )
+
+        assert action == GameAction.RESET
+        assert retries == 1
+        assert model_response.usage == NormalizedUsage(
+            input_tokens=7,
+            output_tokens=3,
+            total_tokens=10,
+        )
         assert agent.token_counter == 10
 
     def test_normalized_responses_output_parses_action_like_chat_output(self):
@@ -1326,6 +1481,13 @@ class TestBenchmarkingAgentContinuousConversationState:
         agent._runtime_state = agent._stateful_adapter.initial_state()
         agent._pending_turn_messages = []
         agent._last_turn_result = None
+        agent._summary_compactor = SummaryCompactor(
+            SummaryCompactionPolicy(
+                strategy="harness_summary", trigger_tokens=6
+            )
+        )
+        agent._pending_compaction_trigger_tokens = None
+        agent.MAX_CONTEXT_LENGTH = 6
         agent._request_kwargs = {
             "model": "gpt-5.6-sol",
             "store": False,
@@ -1347,6 +1509,329 @@ class TestBenchmarkingAgentContinuousConversationState:
         assert "accepted-secret" not in step_json
         assert "orphan-secret" not in step_json
         assert agent._pending_action_reasoning["reasoning"] == "accepted summary"
+        assert "reasoning_summary" not in agent._pending_action_reasoning
+        assert agent._pending_compaction_trigger_tokens == 7
+
+    @pytest.mark.parametrize("status", ["incomplete", "failed"])
+    def test_non_completed_action_response_is_retried_without_committing_state(
+        self,
+        status,
+    ):
+        agent = _agent_for_choose_action(
+            analysis_mode=False,
+            responses=[
+                _google_model_response(
+                    signature="discarded",
+                    status=status,
+                    total_tokens=5,
+                ),
+                _google_model_response(
+                    signature="accepted",
+                    total_tokens=7,
+                ),
+            ],
+        )
+        agent.MODEL = "gemini-3.8-flash"
+        agent._request_kwargs = {
+            "model": agent.MODEL,
+            "store": False,
+            "generation_config": {
+                "max_output_tokens": 65_536,
+                "thinking_level": "low",
+                "thinking_summaries": "auto",
+            },
+        }
+        agent._stateful_adapter = GoogleContinuousConversationRuntimeAdapter(
+            model_adapter=agent._adapter,
+            descriptor=ADAPTER_DESCRIPTORS["google.interactions.v1"],
+        )
+        agent._runtime_state = agent._stateful_adapter.initial_state()
+        agent._pending_turn_messages = []
+        agent._last_turn_result = None
+        agent._summary_compactor = None
+        agent._pending_compaction_trigger_tokens = None
+
+        action = agent.choose_action([], _playable_frame())
+
+        assert action == GameAction.ACTION1
+        assert len(agent._adapter.requests) == 2
+        assert (
+            agent._adapter.requests[0].native_input
+            == agent._adapter.requests[1].native_input
+        )
+        state_json = agent._runtime_state.model_dump_json()
+        assert "accepted" in state_json
+        assert "discarded" not in state_json
+        assert agent._saved_steps[0].retries == 1
+        assert agent._saved_steps[0].usage.total_tokens == 12
+
+    def test_transient_retry_exhaustion_preserves_state_and_pending_input(self):
+        class SequenceAdapter:
+            def __init__(self):
+                self.requests = []
+                self.responses = [
+                    _google_model_response(signature="accepted-history"),
+                    TransientProviderError("unavailable"),
+                    TransientProviderError("unavailable"),
+                    TransientProviderError("unavailable"),
+                ]
+
+            def invoke(self, request):
+                self.requests.append(request)
+                response = self.responses.pop(0)
+                if isinstance(response, Exception):
+                    raise response
+                return response
+
+        low_level = SequenceAdapter()
+        adapter = GoogleContinuousConversationRuntimeAdapter(
+            model_adapter=low_level,
+            descriptor=ADAPTER_DESCRIPTORS["google.interactions.v1"],
+        )
+        request_config = {
+            "model": "gemini-3.8-flash",
+            "store": False,
+            "generation_config": {"thinking_summaries": "auto"},
+        }
+        accepted = adapter.invoke_turn(
+            ModelTurnRequest(
+                system_prompt="system",
+                new_messages=[Message(role="user", content="accepted observation")],
+                request_config=request_config,
+                previous_state=adapter.initial_state(),
+            )
+        )
+        original_state = accepted.state.model_copy(deep=True)
+        pending = [Message(role="user", content="pending observation")]
+        agent = _agent_for_request_kwargs(request_config)
+        agent._stateful_adapter = adapter
+        agent._runtime_state = accepted.state
+        agent._pending_turn_messages = list(pending)
+        agent._last_turn_result = None
+
+        with pytest.raises(RuntimeError, match="valid action"):
+            agent._request_with_retries([GameAction.ACTION1])
+
+        assert agent._runtime_state == original_state
+        assert agent._pending_turn_messages == pending
+        assert len(low_level.requests) == 4
+        assert all(
+            request.native_input == low_level.requests[1].native_input
+            for request in low_level.requests[1:]
+        )
+
+    def test_action_overflow_compacts_accepted_history_before_one_retry(
+        self,
+        tmp_path,
+    ):
+        class CapacityModelAdapter:
+            def __init__(self):
+                self.requests = []
+
+            def invoke(self, request):
+                self.requests.append(request)
+                is_summary = request.messages[0].content == SUMMARY_SYSTEM_PROMPT
+                input_chars = sum(
+                    len(content["text"])
+                    for step in request.native_input
+                    for content in step.get("content", [])
+                    if content.get("type") == "text"
+                )
+                if not is_summary and input_chars > 1_000:
+                    raise ContextOverflowError("input token count exceeds")
+                output = "retained state" if is_summary else "ACTION1"
+                return ModelResponse(
+                    output_text=output,
+                    usage=NormalizedUsage(total_tokens=input_chars + 10),
+                    raw_response={
+                        "steps": [
+                            {
+                                "type": "model_output",
+                                "content": [{"type": "text", "text": output}],
+                            }
+                        ]
+                    },
+                )
+
+        low_level = CapacityModelAdapter()
+        adapter = GoogleContinuousConversationRuntimeAdapter(
+            model_adapter=low_level,
+            descriptor=ADAPTER_DESCRIPTORS["google.interactions.v1"],
+        )
+        request_config = {
+            "model": "gemini-3.8-flash",
+            "store": False,
+            "generation_config": {
+                "max_output_tokens": 65_536,
+                "thinking_level": "low",
+                "thinking_summaries": "auto",
+            },
+        }
+        initial = adapter.invoke_turn(
+            ModelTurnRequest(
+                system_prompt="original system",
+                new_messages=[
+                    Message(role="user", content="previous observation " * 30)
+                ],
+                request_config=request_config,
+                previous_state=adapter.initial_state(),
+            )
+        )
+        compactor = SummaryCompactor(
+            SummaryCompactionPolicy(
+                strategy="harness_summary",
+                trigger_tokens=700,
+                summary_max_output_tokens=100,
+                summary_input_headroom_tokens=20,
+            )
+        )
+        assert not compactor.should_compact(initial.response.usage)
+
+        agent = _agent_for_request_kwargs(request_config)
+        agent._stateful_adapter = adapter
+        agent._runtime_state = initial.state
+        agent._pending_turn_messages = [
+            Message(role="user", content="next observation " * 30)
+        ]
+        agent._summary_compactor = compactor
+        agent._pending_compaction_trigger_tokens = None
+        agent.MAX_CONTEXT_LENGTH = 1_000
+        agent.MAX_RETRIES = 0
+        agent.MODEL = "gemini-3.8-flash"
+        agent._pricing = {}
+        agent._compaction_counter = 0
+        agent.step_counter = 1
+        agent.run_dir = str(tmp_path)
+        agent.run_record = RunRecord(
+            run_id="action-overflow",
+            game_id="id",
+            agent_name="agent",
+            model=agent.MODEL,
+            started_at=datetime.now(timezone.utc),
+            run_dir=str(tmp_path),
+            runtime={"compaction_count": 0},
+        )
+
+        response, action, retries, messages_sent = agent._request_with_retries(
+            [GameAction.ACTION1]
+        )
+
+        assert response.output_text == "ACTION1"
+        assert action == GameAction.ACTION1
+        assert retries == 1
+        assert len(low_level.requests) == 4
+        assert low_level.requests[2].messages[0].content == SUMMARY_SYSTEM_PROMPT
+        assert low_level.requests[1].native_input[-1] == {
+            "type": "user_input",
+            "content": [{"type": "text", "text": "next observation " * 30}],
+        }
+        assert low_level.requests[3].native_input[-1] == (
+            low_level.requests[1].native_input[-1]
+        )
+        assert low_level.requests[3].native_input[0]["type"] == "user_input"
+        assert "retained state" in low_level.requests[3].native_input[0]["content"][
+            0
+        ]["text"]
+        assert "previous observation" not in str(low_level.requests[3].native_input)
+        assert messages_sent[0] == {
+            "role": "system",
+            "content": agent._build_system_prompt(),
+        }
+        assert "retained state" in messages_sent[1]["content"]
+        assert messages_sent[-1] == {
+            "role": "user",
+            "content": "next observation " * 30,
+        }
+        assert "previous observation" not in str(messages_sent)
+        assert (tmp_path / "compaction_001.json").exists()
+
+    def test_second_action_overflow_fails_without_repeating_request(self, tmp_path):
+        class AlwaysOverflowAdapter:
+            def __init__(self):
+                self.requests = []
+
+            def invoke(self, request):
+                self.requests.append(request)
+                is_summary = request.messages[0].content == SUMMARY_SYSTEM_PROMPT
+                if not is_summary:
+                    raise ContextOverflowError("still too large")
+                return ModelResponse(
+                    output_text="retained state",
+                    usage=NormalizedUsage(total_tokens=20),
+                    raw_response={
+                        "steps": [
+                            {
+                                "type": "model_output",
+                                "content": [
+                                    {"type": "text", "text": "retained state"}
+                                ],
+                            }
+                        ]
+                    },
+                )
+
+        low_level = AlwaysOverflowAdapter()
+        adapter = GoogleContinuousConversationRuntimeAdapter(
+            model_adapter=low_level,
+            descriptor=ADAPTER_DESCRIPTORS["google.interactions.v1"],
+        )
+        request_config = {
+            "model": "gemini-3.8-flash",
+            "store": False,
+            "generation_config": {"thinking_summaries": "auto"},
+        }
+        agent = _agent_for_request_kwargs(request_config)
+        agent._stateful_adapter = adapter
+        agent._runtime_state = adapter.initial_state()
+        agent._pending_turn_messages = [Message(role="user", content="observation")]
+        agent._summary_compactor = SummaryCompactor(
+            SummaryCompactionPolicy(strategy="harness_summary", trigger_tokens=10)
+        )
+        agent._pending_compaction_trigger_tokens = None
+        agent.MAX_RETRIES = 2
+        agent.MODEL = "gemini-3.8-flash"
+        agent._pricing = {}
+        agent._compaction_counter = 0
+        agent.step_counter = 0
+        agent.run_dir = str(tmp_path)
+        agent.run_record = RunRecord(
+            run_id="repeated-overflow",
+            game_id="id",
+            agent_name="agent",
+            model=agent.MODEL,
+            started_at=datetime.now(timezone.utc),
+            run_dir=str(tmp_path),
+            runtime={"compaction_count": 0},
+        )
+
+        with pytest.raises(ContextOverflowError, match="still too large"):
+            agent._request_with_retries([GameAction.ACTION1])
+
+        action_requests = [
+            request
+            for request in low_level.requests
+            if request.messages[0].content != SUMMARY_SYSTEM_PROMPT
+        ]
+        assert len(action_requests) == 2
+
+
+def _agent_with_env(step_frame: FrameData) -> BenchmarkingAgent:
+    """Reuse _agent_for_choose_action and patch in a minimal arc_env."""
+    agent = _agent_for_choose_action(analysis_mode=False, responses=[])
+    agent.arc_env = SimpleNamespace(step=lambda action, *, data, reasoning: step_frame)
+    agent._convert_raw_frame_data = lambda raw: raw
+    return agent
+
+
+def _is_done_agent() -> BenchmarkingAgent:
+    agent = BenchmarkingAgent.__new__(BenchmarkingAgent)
+    agent.game_id = "game-id"
+    agent.exit_reason = ExitReason.UNKNOWN
+    agent._level_action_budgets = []
+    agent._level_action_counter = 0
+    agent._last_levels_completed = 0
+    agent._level_just_advanced = False
+    return agent
 
 
 def _anthropic_response(text="ACTION1", *, stop_reason="end_turn", summary=None):
@@ -1456,26 +1941,6 @@ class TestBenchmarkingAgentAnthropicState:
         assert "active summary" in str(step["messages_sent"])
         assert step["messages_sent"][1]["role"] == "assistant"
         assert "Include any context you want to carry forward" not in agent._build_system_prompt()
-        assert "reasoning_summary" not in agent._pending_action_reasoning
-
-
-def _agent_with_env(step_frame: FrameData) -> BenchmarkingAgent:
-    """Reuse _agent_for_choose_action and patch in a minimal arc_env."""
-    agent = _agent_for_choose_action(analysis_mode=False, responses=[])
-    agent.arc_env = SimpleNamespace(step=lambda action, *, data, reasoning: step_frame)
-    agent._convert_raw_frame_data = lambda raw: raw
-    return agent
-
-
-def _is_done_agent() -> BenchmarkingAgent:
-    agent = BenchmarkingAgent.__new__(BenchmarkingAgent)
-    agent.game_id = "game-id"
-    agent.exit_reason = ExitReason.UNKNOWN
-    agent._level_action_budgets = []
-    agent._level_action_counter = 0
-    agent._last_levels_completed = 0
-    agent._level_just_advanced = False
-    return agent
 
 
 @pytest.mark.unit
@@ -1501,6 +1966,80 @@ class TestBenchmarkingAgentExitReason:
 
         assert agent.is_done([], _playable_frame()) is False
         assert agent.exit_reason is ExitReason.UNKNOWN
+
+
+@pytest.mark.unit
+def test_pending_compaction_usage_is_included_in_next_action_cost_metadata():
+    agent = _agent_for_choose_action(
+        analysis_mode=False,
+        responses=[
+            ModelResponse(
+                output_text="ACTION1",
+                usage=NormalizedUsage(
+                    input_tokens=100,
+                    output_tokens=10,
+                    total_tokens=110,
+                ),
+            )
+        ],
+    )
+    agent._pricing = {"input": 0.75, "output": 3.75}
+    agent._pending_compaction_usage = NormalizedUsage(
+        input_tokens=200,
+        output_tokens=20,
+        total_tokens=220,
+        reasoning_tokens=5,
+        cached_tokens=25,
+    )
+
+    action = agent.choose_action([], _playable_frame())
+
+    assert action == GameAction.ACTION1
+    metadata = agent._pending_action_reasoning
+    assert metadata["usage"]["input_tokens"] == 300
+    assert metadata["usage"]["output_tokens"] == 30
+    assert metadata["usage"]["total_tokens"] == 330
+    assert metadata["cost"]["input_cost"] == pytest.approx(0.000225)
+    assert metadata["cost"]["output_cost"] == pytest.approx(0.0001125)
+    assert metadata["cost"]["total_cost"] == pytest.approx(0.0003375)
+    compaction = metadata["state"]["harness_compaction"]
+    assert compaction["usage"]["input_tokens"] == 200
+    assert compaction["usage"]["output_tokens"] == 20
+    assert compaction["usage"]["total_tokens"] == 220
+    assert compaction["usage"]["input_tokens_details"]["cached_tokens"] == 25
+    assert compaction["usage"]["output_tokens_details"]["reasoning_tokens"] == 5
+    assert compaction["cost"]["total_cost"] == pytest.approx(0.000225)
+    assert agent._pending_compaction_usage is None
+    assert agent._saved_steps[0].usage.total_tokens == 110
+
+
+@pytest.mark.unit
+def test_compaction_continuation_is_recorded_on_only_the_next_step():
+    bridge = SUMMARY_BRIDGE_TEMPLATE.format(summary="Important prior state.")
+    agent = _agent_for_choose_action(
+        analysis_mode=False,
+        responses=[
+            ModelResponse(output_text="ACTION1", usage=NormalizedUsage()),
+            ModelResponse(output_text="ACTION1", usage=NormalizedUsage()),
+        ],
+    )
+    agent._pending_compaction_continuation = {
+        "compaction": 3,
+        "summary": "Important prior state.",
+        "bridge": bridge,
+    }
+
+    assert agent.choose_action([], _playable_frame()) == GameAction.ACTION1
+    assert agent.choose_action([], _playable_frame()) == GameAction.ACTION1
+
+    assert agent._saved_steps[0].continuation is not None
+    assert agent._saved_steps[0].continuation.model_dump() == {
+        "compaction": 3,
+        "summary": "Important prior state.",
+        "bridge": bridge,
+    }
+    assert agent._saved_steps[1].continuation is None
+    assert agent._pending_compaction_continuation is None
 
 
 @pytest.mark.unit

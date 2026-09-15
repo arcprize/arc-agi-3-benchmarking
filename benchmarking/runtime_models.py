@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
 
@@ -63,9 +63,22 @@ class ModelResponse(BaseModel):
     reasoning_text: str | None = None
     usage: NormalizedUsage
     raw_response: Any | None = None
+    response_status: str | None = None
     # Server-side response identifier (OpenAI Responses API). Used to chain
     # turns via previous_response_id when runtime.state == "previous_response_id".
     response_id: str | None = None
+
+
+def _extract_output_text_with_usage(
+    response: Any,
+    usage: NormalizedUsage,
+    extractor: Callable[[Any], str],
+) -> str:
+    try:
+        return extractor(response)
+    except EmptyResponseError as exc:
+        exc.usage = usage
+        raise
 
 
 def _value_from_response_object(item: Any, key: str, default: Any = None) -> Any:
@@ -182,6 +195,36 @@ def _normalize_google_genai_usage(usage: Any) -> dict[str, Any]:
         "total_tokens": prompt_tokens + candidates_tokens + thoughts_tokens,
         "reasoning_tokens": thoughts_tokens,
         "cached_tokens": cached_tokens,
+    }
+
+
+def _normalize_google_interactions_usage(usage: Any) -> dict[str, Any]:
+    """Normalize Gemini Interactions usage and retain billable thinking tokens."""
+    if not usage:
+        return {}
+
+    input_tokens = (
+        _value_from_response_object(usage, "total_input_tokens", 0) or 0
+    )
+    output_tokens = (
+        _value_from_response_object(usage, "total_output_tokens", 0) or 0
+    )
+    thought_tokens = (
+        _value_from_response_object(usage, "total_thought_tokens", 0) or 0
+    )
+    total_tokens = _value_from_response_object(usage, "total_tokens")
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens + thought_tokens,
+        "total_tokens": (
+            total_tokens
+            if total_tokens is not None
+            else input_tokens + output_tokens + thought_tokens
+        ),
+        "reasoning_tokens": thought_tokens,
+        "cached_tokens": (
+            _value_from_response_object(usage, "total_cached_tokens", 0) or 0
+        ),
     }
 
 
@@ -311,6 +354,49 @@ def _extract_google_genai_reasoning_text(response: Any) -> str | None:
     return "\n".join(reasoning_parts)
 
 
+def _google_interaction_steps(response: Any) -> list[Any]:
+    return list(_value_from_response_object(response, "steps", []) or [])
+
+
+def _extract_google_interaction_output_text(response: Any) -> str:
+    helper_text = _value_from_response_object(response, "output_text")
+    if helper_text:
+        return str(helper_text)
+
+    text_parts: list[str] = []
+    for step in _google_interaction_steps(response):
+        if _value_from_response_object(step, "type") != "model_output":
+            continue
+        for content in _value_from_response_object(step, "content", []) or []:
+            if _value_from_response_object(content, "type") != "text":
+                continue
+            text_parts.append(
+                _value_from_response_object(content, "text", "") or ""
+            )
+
+    output_text = "".join(text_parts)
+    if not output_text:
+        raise EmptyResponseError(
+            "API returned 200 with empty output.",
+            response=response,
+        )
+    return output_text
+
+
+def extract_google_interaction_reasoning_summary(response: Any) -> str | None:
+    reasoning_parts: list[str] = []
+    for step in _google_interaction_steps(response):
+        if _value_from_response_object(step, "type") != "thought":
+            continue
+        for item in _value_from_response_object(step, "summary", []) or []:
+            text = _value_from_response_object(item, "text")
+            if text:
+                reasoning_parts.append(str(text))
+    if not reasoning_parts:
+        return None
+    return "\n".join(reasoning_parts)
+
+
 def _extract_reasoning_text_fragment(item: Any) -> str | None:
     if isinstance(item, str):
         return item
@@ -360,60 +446,102 @@ def _extract_responses_reasoning_text(response: Any) -> str | None:
 
 
 def normalize_chat_completion_response(response: Any) -> ModelResponse:
+    usage = NormalizedUsage(
+        **_normalize_chat_usage(getattr(response, "usage", None))
+    )
     if not getattr(response, "choices", None):
         raise EmptyResponseError(
             "API returned 200 with empty choices.",
             response=response,
+            usage=usage,
         )
 
     message = response.choices[0].message
-    usage = getattr(response, "usage", None)
 
     return ModelResponse(
         output_text=message.content or "",
         reasoning_text=getattr(message, "reasoning", None)
         or getattr(message, "reasoning_content", None),
-        usage=NormalizedUsage(**_normalize_chat_usage(usage)),
+        usage=usage,
         raw_response=response,
     )
 
 
 def normalize_responses_response(response: Any) -> ModelResponse:
+    usage = NormalizedUsage(
+        **_normalize_responses_usage(
+            _value_from_response_object(response, "usage"),
+        )
+    )
     return ModelResponse(
-        output_text=_extract_responses_output_text(response),
-        reasoning_text=_extract_responses_reasoning_text(response),
-        usage=NormalizedUsage(
-            **_normalize_responses_usage(
-                _value_from_response_object(response, "usage"),
-            )
+        output_text=_extract_output_text_with_usage(
+            response,
+            usage,
+            _extract_responses_output_text,
         ),
+        reasoning_text=_extract_responses_reasoning_text(response),
+        usage=usage,
         raw_response=response,
         response_id=_value_from_response_object(response, "id"),
     )
 
 
 def normalize_google_genai_response(response: Any) -> ModelResponse:
+    usage = NormalizedUsage(
+        **_normalize_google_genai_usage(
+            _value_from_response_object(response, "usage_metadata"),
+        )
+    )
     return ModelResponse(
-        output_text=_extract_google_genai_output_text(response),
-        reasoning_text=_extract_google_genai_reasoning_text(response),
-        usage=NormalizedUsage(
-            **_normalize_google_genai_usage(
-                _value_from_response_object(response, "usage_metadata"),
-            )
+        output_text=_extract_output_text_with_usage(
+            response,
+            usage,
+            _extract_google_genai_output_text,
         ),
+        reasoning_text=_extract_google_genai_reasoning_text(response),
+        usage=usage,
         raw_response=response,
     )
 
 
-def normalize_anthropic_messages_response(response: Any) -> ModelResponse:
+def normalize_google_interaction_response(response: Any) -> ModelResponse:
+    usage = NormalizedUsage(
+        **_normalize_google_interactions_usage(
+            _value_from_response_object(response, "usage"),
+        )
+    )
     return ModelResponse(
-        output_text=_extract_anthropic_messages_output_text(response),
-        reasoning_text=None,
-        usage=NormalizedUsage(
-            **_normalize_anthropic_messages_usage(
-                _value_from_response_object(response, "usage"),
-            )
+        output_text=_extract_output_text_with_usage(
+            response,
+            usage,
+            _extract_google_interaction_output_text,
         ),
+        reasoning_text=extract_google_interaction_reasoning_summary(response),
+        usage=usage,
+        raw_response=response,
+        response_status=(
+            str(status)
+            if (status := _value_from_response_object(response, "status")) is not None
+            else None
+        ),
+        response_id=_value_from_response_object(response, "id"),
+    )
+
+
+def normalize_anthropic_messages_response(response: Any) -> ModelResponse:
+    usage = NormalizedUsage(
+        **_normalize_anthropic_messages_usage(
+            _value_from_response_object(response, "usage"),
+        )
+    )
+    return ModelResponse(
+        output_text=_extract_output_text_with_usage(
+            response,
+            usage,
+            _extract_anthropic_messages_output_text,
+        ),
+        reasoning_text=None,
+        usage=usage,
         raw_response=response,
     )
 

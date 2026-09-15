@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .anthropic_runtime import AnthropicContinuousConversationRuntimeAdapter
+from .google_runtime import GoogleContinuousConversationRuntimeAdapter
 from .openai_runtime import OpenAIContinuousConversationRuntimeAdapter
 from .runtime_state import (
     CONTINUOUS_CONVERSATION_RUNTIME_STATE,
@@ -14,12 +15,14 @@ from .runtime_state import (
 
 OPENAI_RESPONSES_ADAPTER_ID = "openai.responses.v1"
 ANTHROPIC_MESSAGES_ADAPTER_ID = "anthropic.messages.v1"
+GOOGLE_INTERACTIONS_ADAPTER_ID = "google.interactions.v1"
 
 _LEGACY_RUNTIME_ADAPTER_IDS = {
     ("openai-python", "chat_completions"): "openai.chat_completions.v1",
     ("openai-python", "responses"): OPENAI_RESPONSES_ADAPTER_ID,
     ("anthropic-python", "messages"): "anthropic.messages.v1",
     ("google-genai", "generate_content"): "google.generate_content.v1",
+    ("google-genai", "interactions"): GOOGLE_INTERACTIONS_ADAPTER_ID,
 }
 
 ADAPTER_DESCRIPTORS = {
@@ -52,6 +55,14 @@ ADAPTER_DESCRIPTORS = {
         provider="google",
         api_surface="generate_content",
         implementation_path="benchmarking/runtime_adapters.py",
+        version="1",
+        approval_status="unreviewed",
+    ),
+    GOOGLE_INTERACTIONS_ADAPTER_ID: AdapterDescriptor(
+        adapter_id=GOOGLE_INTERACTIONS_ADAPTER_ID,
+        provider="google",
+        api_surface="interactions",
+        implementation_path="benchmarking/google_runtime.py",
         version="1",
         approval_status="unreviewed",
     ),
@@ -98,13 +109,17 @@ def build_stateful_runtime_adapter(
             return AnthropicContinuousConversationRuntimeAdapter(
                 model_adapter=model_adapter, descriptor=descriptor
             )
-        if adapter_id != OPENAI_RESPONSES_ADAPTER_ID:
-            raise ValueError(
-                f"Model config '{config_id}' uses continuous_conversation with "
-                f"unsupported adapter_id={adapter_id!r}."
+        if adapter_id == OPENAI_RESPONSES_ADAPTER_ID:
+            return OpenAIContinuousConversationRuntimeAdapter(
+                model_adapter=model_adapter, descriptor=descriptor
             )
-        return OpenAIContinuousConversationRuntimeAdapter(
-            model_adapter=model_adapter, descriptor=descriptor
+        if adapter_id == GOOGLE_INTERACTIONS_ADAPTER_ID:
+            return GoogleContinuousConversationRuntimeAdapter(
+                model_adapter=model_adapter, descriptor=descriptor
+            )
+        raise ValueError(
+            f"Model config '{config_id}' uses continuous_conversation with "
+            f"unsupported adapter_id={adapter_id!r}."
         )
     raise ValueError(
         f"Model config '{config_id}' cannot use the stateful turn contract with "

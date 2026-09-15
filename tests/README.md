@@ -44,4 +44,15 @@ Mocked tests establish transport and state behavior, not provider acceptance or
 summary quality. Live tests are a separate verification boundary and do not
 launch an ARC benchmark.
 
+Paid Google continuous-conversation tests are also skipped by default. Run
+them explicitly with a paid Gemini project and `GOOGLE_API_KEY`:
+
+```bash
+RUN_GOOGLE_LIVE_TESTS=1 uv run pytest -q \
+  tests/integration/test_google_continuous_conversation_live.py::test_google_continuous_conversation_two_turn_live
+
+RUN_GOOGLE_COMPACTION_LIVE_TESTS=1 uv run pytest -q \
+  tests/integration/test_google_continuous_conversation_live.py::test_google_harness_summary_compaction_live
+```
+
 For more information on tests, please see the [tests documentation](https://arcprize.org/docs#testing).

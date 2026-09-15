@@ -16,6 +16,7 @@ SUPPORTED_RUNTIME_PAIRS = frozenset(
     {
         ("anthropic-python", "messages"),
         ("google-genai", "generate_content"),
+        ("google-genai", "interactions"),
         ("openai-python", "chat_completions"),
         ("openai-python", "responses"),
     }
@@ -25,6 +26,13 @@ SUPPORTED_RUNTIME_STATE = DEFAULT_RUNTIME_STATE
 # Server-managed conversation state (previous_response_id + compaction) is only
 # available on the OpenAI Responses runtime.
 SERVER_STATE_RUNTIME_PAIRS = frozenset({("openai-python", "responses")})
+CONTINUOUS_CONVERSATION_RUNTIME_PAIRS = frozenset(
+    {
+        ("anthropic-python", "messages"),
+        ("google-genai", "interactions"),
+        ("openai-python", "responses"),
+    }
+)
 ANTHROPIC_OPENAI_COMPAT_CLIENT_FIELDS = frozenset({"base_url"})
 ANTHROPIC_OPENAI_COMPAT_REQUEST_FIELDS = frozenset(
     {
@@ -89,8 +97,9 @@ def _validate_continuous_conversation_config(
 ) -> None:
     from .runtime_registry import resolve_adapter_id
 
+    runtime = entry["runtime"]
     request = entry["request"]
-    adapter_id = resolve_adapter_id(entry["runtime"], config_id)
+    adapter_id = resolve_adapter_id(runtime, config_id)
     if adapter_id == "anthropic.messages.v1":
         from .anthropic_runtime import validate_continuous_conversation_request
 
@@ -111,39 +120,101 @@ def _validate_continuous_conversation_config(
             f"Model config '{config_id}' uses runtime.state="
             f"{CONTINUOUS_CONVERSATION_RUNTIME_STATE!r} and cannot enable request.background."
         )
-    incompatible = sorted(
-        field for field in ("conversation", "previous_response_id") if field in request
-    )
-    if incompatible:
-        raise ValueError(
-            f"Model config '{config_id}' uses runtime.state="
-            f"{CONTINUOUS_CONVERSATION_RUNTIME_STATE!r} with incompatible request field(s): "
-            f"{', '.join(incompatible)}."
+    if adapter_id == "openai.responses.v1":
+        incompatible = sorted(
+            field
+            for field in ("conversation", "previous_response_id")
+            if field in request
         )
-    include = request.get("include", [])
-    if not isinstance(include, list) or "reasoning.encrypted_content" not in include:
-        raise ValueError(
-            f"Model config '{config_id}' uses continuous_conversation and must include "
-            "'reasoning.encrypted_content'."
-        )
-    reasoning = request.get("reasoning")
-    if not isinstance(reasoning, dict):
-        raise ValueError(
-            f"Model config '{config_id}' uses continuous_conversation and must configure "
-            "request.reasoning."
-        )
-    if reasoning.get("context") != "auto":
-        raise ValueError(
-            f"Model config '{config_id}' uses continuous_conversation and must set "
-            "request.reasoning.context='auto'."
-        )
-    if reasoning.get("summary") != "auto":
-        raise ValueError(
-            f"Model config '{config_id}' uses continuous_conversation and must set "
-            "request.reasoning.summary='auto'."
-        )
+        if incompatible:
+            raise ValueError(
+                f"Model config '{config_id}' uses runtime.state="
+                f"{CONTINUOUS_CONVERSATION_RUNTIME_STATE!r} with incompatible "
+                f"request field(s): {', '.join(incompatible)}."
+            )
+        include = request.get("include", [])
+        if (
+            not isinstance(include, list)
+            or "reasoning.encrypted_content" not in include
+        ):
+            raise ValueError(
+                f"Model config '{config_id}' uses continuous_conversation and "
+                "must include 'reasoning.encrypted_content'."
+            )
+        reasoning = request.get("reasoning")
+        if not isinstance(reasoning, dict):
+            raise ValueError(
+                f"Model config '{config_id}' uses continuous_conversation and "
+                "must configure request.reasoning."
+            )
+        if reasoning.get("context") != "auto":
+            raise ValueError(
+                f"Model config '{config_id}' uses continuous_conversation and "
+                "must set request.reasoning.context='auto'."
+            )
+        if reasoning.get("summary") != "auto":
+            raise ValueError(
+                f"Model config '{config_id}' uses continuous_conversation and "
+                "must set request.reasoning.summary='auto'."
+            )
+    elif adapter_id == "google.interactions.v1":
+        if "previous_interaction_id" in request:
+            raise ValueError(
+                f"Model config '{config_id}' uses continuous_conversation and "
+                "cannot set request.previous_interaction_id."
+            )
+        generation_config = request.get("generation_config")
+        if not isinstance(generation_config, dict):
+            raise ValueError(
+                f"Model config '{config_id}' uses continuous_conversation and "
+                "must configure request.generation_config."
+            )
+        if generation_config.get("thinking_summaries") != "auto":
+            raise ValueError(
+                f"Model config '{config_id}' uses continuous_conversation and "
+                "must set request.generation_config.thinking_summaries='auto'."
+            )
 
-def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> dict[str, Any]:
+    compaction = runtime.get("compaction")
+    if compaction is not None:
+        if not isinstance(compaction, dict):
+            raise ValueError(
+                f"Model config '{config_id}' runtime.compaction must be a mapping."
+            )
+        from .compaction import SummaryCompactionPolicy
+
+        try:
+            policy = SummaryCompactionPolicy.model_validate(compaction)
+        except ValueError as exc:
+            raise ValueError(
+                f"Model config '{config_id}' has invalid runtime.compaction: {exc}"
+            ) from exc
+        max_context_length = entry.get("agent", {}).get("MAX_CONTEXT_LENGTH")
+        if (
+            isinstance(max_context_length, bool)
+            or not isinstance(max_context_length, int)
+            or max_context_length <= 0
+        ):
+            raise ValueError(
+                f"Model config '{config_id}' uses harness summary compaction and "
+                "must set agent.MAX_CONTEXT_LENGTH to a positive integer."
+            )
+        reserved_tokens = (
+            policy.trigger_tokens
+            + policy.summary_max_output_tokens
+            + policy.summary_input_headroom_tokens
+        )
+        if reserved_tokens >= max_context_length:
+            raise ValueError(
+                f"Model config '{config_id}' runtime.compaction trigger, summary "
+                "output, and input headroom must total less than "
+                "agent.MAX_CONTEXT_LENGTH."
+            )
+
+
+def _validate_model_config_entry(
+    entry: Any, index: int, seen_ids: set[str]
+) -> dict[str, Any]:
     if not isinstance(entry, dict):
         raise ValueError(
             f"Model config entry #{index} in {MODEL_CONFIG_PATH} must be a mapping."
@@ -226,6 +297,14 @@ def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> 
             f"but only {supported} are supported."
         )
     if (
+        runtime.get("compaction") is not None
+        and runtime_state != CONTINUOUS_CONVERSATION_RUNTIME_STATE
+    ):
+        raise ValueError(
+            f"Model config '{config_id}' uses runtime.compaction, which requires "
+            f"runtime.state={CONTINUOUS_CONVERSATION_RUNTIME_STATE!r}."
+        )
+    if (
         runtime_state == SERVER_RUNTIME_STATE
         and runtime_pair not in SERVER_STATE_RUNTIME_PAIRS
     ):
@@ -234,11 +313,16 @@ def _validate_model_config_entry(entry: Any, index: int, seen_ids: set[str]) -> 
             f"which is only supported on the OpenAI Responses runtime "
             f"(sdk='openai-python', api='responses')."
         )
+    if (
+        runtime_state == CONTINUOUS_CONVERSATION_RUNTIME_STATE
+        and runtime_pair not in CONTINUOUS_CONVERSATION_RUNTIME_PAIRS
+    ):
+        raise ValueError(
+            f"Model config '{config_id}' uses runtime.state={runtime_state!r}, "
+            f"which is not supported for sdk={runtime['sdk']!r}, "
+            f"api={runtime['api']!r}."
+        )
     if runtime_state == CONTINUOUS_CONVERSATION_RUNTIME_STATE:
-        if runtime_pair not in SERVER_STATE_RUNTIME_PAIRS | {("anthropic-python", "messages")}:
-            raise ValueError(
-                f"Model config '{config_id}' uses continuous_conversation with an unsupported runtime."
-            )
         _validate_continuous_conversation_config(config_id, entry)
     if runtime_pair == ("anthropic-python", "messages"):
         _validate_anthropic_messages_config(config_id, entry)

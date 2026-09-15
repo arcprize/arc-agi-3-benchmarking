@@ -13,6 +13,7 @@ from benchmarking.anthropic_runtime import (
     prune_after_latest_compaction,
     validate_continuous_conversation_request,
 )
+from benchmarking.compaction import SummaryCompactionPolicy, SummaryCompactor
 from benchmarking.exceptions import EmptyResponseError, InvalidProviderResponseError
 from benchmarking.model_config import _validate_model_config_entry, get_model_config
 from benchmarking.runtime_adapters import (
@@ -111,7 +112,8 @@ class TestAnthropicRuntime:
             {"role": "user", "content": "next"},
         ]
         assert second.response.reasoning_text == "Visible summary"
-        readable = str(second.sanitized_request)
+        readable = str(second.readable_request_messages)
+        assert "messages" not in second.sanitized_request
         assert "Visible summary" in readable
         assert "secret-signature" not in readable
         assert "secret-ciphertext" not in readable
@@ -153,14 +155,14 @@ class TestAnthropicRuntime:
         assert second.transition.history_items_before_prune == 5
         assert second.transition.history_items_after_prune == 1
         third = _turn(adapter, second.state, "post-compaction")
-        readable = str(third.sanitized_request["messages"])
+        readable = str(third.readable_request_messages)
         assert "summary one" in readable
         assert "old frame" not in readable
         assert "reset frame" not in readable
         fourth = _turn(adapter, third.state, "another")
         fifth = _turn(adapter, fourth.state, "final")
-        assert "summary two" in str(fifth.sanitized_request)
-        assert "summary one" not in str(fifth.sanitized_request)
+        assert "summary two" in str(fifth.readable_request_messages)
+        assert "summary one" not in str(fifth.readable_request_messages)
         assert (
             fifth.state.payload["messages"][0]["content"][1]["signature"]
             == "new-signature"
@@ -214,6 +216,25 @@ class TestAnthropicRuntime:
         )
         with pytest.raises(ValueError, match="adapter mismatch"):
             _turn(adapter, state)
+
+    def test_harness_compaction_is_rejected_before_any_provider_call(self):
+        adapter, low_level = _adapter([])
+        state = adapter.initial_state()
+        snapshot = state.model_dump_json()
+        compactor = SummaryCompactor(
+            SummaryCompactionPolicy(strategy="harness_summary", trigger_tokens=175_000)
+        )
+        with pytest.raises(ValueError, match="does not support harness summary"):
+            compactor.compact(
+                adapter=adapter,
+                state=state,
+                request_config=_request_config(),
+                trigger_tokens=175_000,
+                max_context_length=1_000_000,
+                max_retries=2,
+            )
+        assert low_level.requests == []
+        assert state.model_dump_json() == snapshot
 
     def test_provider_error_does_not_expose_native_state(self):
         adapter, _ = _adapter([RuntimeError("secret-signature")])
@@ -386,12 +407,20 @@ class TestAnthropicConfiguration:
         with pytest.raises(ValueError):
             validate_continuous_conversation_request(request)
 
-    def test_compaction_is_optional_but_harness_compaction_is_rejected(self):
+    @pytest.mark.parametrize("explicit_adapter", [False, True])
+    def test_compaction_is_optional_but_harness_compaction_is_rejected(
+        self, explicit_adapter
+    ):
         config = deepcopy(get_model_config(CONFIG_ID))
+        if not explicit_adapter:
+            config["runtime"].pop("adapter_id")
         config["request"].pop("context_management")
         config["request"].pop("betas")
         _validate_model_config_entry(config, 1, set())
-        config["runtime"]["compaction"] = {}
+        config["runtime"]["compaction"] = {
+            "strategy": "harness_summary",
+            "trigger_tokens": 175_000,
+        }
         with pytest.raises(ValueError, match="native request compaction only"):
             _validate_model_config_entry(config, 1, set())
 

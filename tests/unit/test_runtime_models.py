@@ -520,6 +520,11 @@ class TestRuntimeModels:
 
         assert str(exc_info.value) == "API returned 200 with empty output."
         assert exc_info.value.response is raw_response
+        assert exc_info.value.usage == NormalizedUsage(
+            input_tokens=15,
+            output_tokens=7,
+            total_tokens=22,
+        )
 
     def test_anthropic_messages_content_without_text_raises_empty_response_error(self):
         raw_response = _anthropic_response(
@@ -597,6 +602,11 @@ class TestRuntimeModels:
 
         assert str(exc_info.value) == "API returned 200 with empty output."
         assert exc_info.value.response is response
+        assert exc_info.value.usage == NormalizedUsage(
+            input_tokens=11,
+            output_tokens=7,
+            total_tokens=18,
+        )
 
     def test_google_genai_normalizer_raises_when_no_candidates(self):
         response = SimpleNamespace(

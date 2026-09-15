@@ -344,10 +344,12 @@ class AnthropicContinuousConversationRuntimeAdapter:
                 },
             ),
             sanitized_request={
-                "messages": readable_messages(request.system_prompt, messages),
                 "input_items": descriptors,
                 "settings": sanitize_settings(request.request_config),
             },
+            readable_request_messages=readable_messages(
+                request.system_prompt, messages
+            ),
             transition=StateTransitionTelemetry(**counts, sanitized_items=descriptors),
             action_state={**counts, "stop_reason": raw.get("stop_reason")},
         )

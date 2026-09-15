@@ -13,9 +13,26 @@ from arcengine import FrameData, GameAction, GameState
 
 from .action_metadata import fit_action_metadata_payload
 from .base import Agent, ExitReason
-from .exceptions import EmptyResponseError
+from .compaction import (
+    HARNESS_SUMMARY_COMPACTION,
+    SummaryCompactionPolicy,
+    SummaryCompactor,
+    build_summary_bridge,
+)
+from .exceptions import (
+    CompactionContextOverflowError,
+    CompactionFailureError,
+    ContextOverflowError,
+    EmptyResponseError,
+)
 from .model_config import get_model_config
-from .recording import RunRecord, StepRecord, StepUsage
+from .recording import (
+    CompactionContinuationRecord,
+    CompactionRecord,
+    RunRecord,
+    StepRecord,
+    StepUsage,
+)
 from .runtime_adapters import build_model_runtime_adapter
 from .runtime_clients import build_model_runtime_client
 from .runtime_models import (
@@ -85,6 +102,18 @@ class BenchmarkingAgent(Agent):
         self._continuous_conversation = (
             runtime_cfg.get("state") == CONTINUOUS_CONVERSATION_RUNTIME_STATE
         )
+        self._summary_compactor: SummaryCompactor | None = None
+        compaction_cfg = runtime_cfg.get("compaction")
+        if self._continuous_conversation and isinstance(compaction_cfg, dict):
+            self._summary_compactor = SummaryCompactor(
+                SummaryCompactionPolicy.model_validate(compaction_cfg)
+            )
+        self._pending_compaction_trigger_tokens: int | None = None
+        self._pending_compaction_usage: NormalizedUsage | None = None
+        self._pending_compaction_continuation: CompactionContinuationRecord | None = (
+            None
+        )
+        self._compaction_counter = 0
         self._previous_response_id: str | None = None
         self._pending_user_messages: list[dict[str, Any]] = []
 
@@ -182,6 +211,12 @@ class BenchmarkingAgent(Agent):
                     commit_sha=commit_sha,
                 ),
             }
+            if self._summary_compactor is not None:
+                runtime_metadata["compaction"] = {
+                    **self._summary_compactor.policy.model_dump(),
+                    "context_limit_tokens": self.MAX_CONTEXT_LENGTH,
+                }
+                runtime_metadata["compaction_count"] = 0
         self.run_record = RunRecord(
             run_id=str(run_id),
             game_id=self.game_id,
@@ -496,12 +531,104 @@ class BenchmarkingAgent(Agent):
         with open(filename, "w") as f:
             exclude = {
                 field
-                for field in ("request_record", "state_transition")
+                for field in ("request_record", "state_transition", "continuation")
                 if getattr(step, field) is None
             }
             f.write(step.model_dump_json(indent=2, exclude=exclude))
         self._write_run_meta()
         logger.info(f"Saved step {self.step_counter} to {filename}")
+
+    def _save_compaction(self, compaction: CompactionRecord) -> None:
+        self._compaction_counter = compaction.compaction
+        self.run_record.total_usage = self.run_record.total_usage + compaction.usage
+        if self.run_record.runtime is not None:
+            self.run_record.runtime["compaction_count"] = self._compaction_counter
+        filename = os.path.join(
+            self.run_dir,
+            f"compaction_{self._compaction_counter:03d}.json",
+        )
+        with open(filename, "w") as f:
+            f.write(compaction.model_dump_json(indent=2))
+        self._write_run_meta()
+        logger.info(
+            "Saved harness summary compaction %s before step %s",
+            self._compaction_counter,
+            compaction.before_step,
+        )
+
+    def _run_pending_compaction(self) -> None:
+        trigger_tokens = getattr(self, "_pending_compaction_trigger_tokens", None)
+        summary_compactor = getattr(self, "_summary_compactor", None)
+        if trigger_tokens is None or summary_compactor is None:
+            return
+
+        started = time.monotonic()
+        try:
+            result = summary_compactor.compact(
+                adapter=self._stateful_adapter,
+                state=self._runtime_state,
+                request_config=dict(self._request_kwargs),
+                trigger_tokens=trigger_tokens,
+                max_context_length=self.MAX_CONTEXT_LENGTH,
+                max_retries=self.MAX_RETRIES,
+                estimated_chars_per_token=self.ESTIMATED_CHARS_PER_TOKEN,
+            )
+        except (CompactionFailureError, CompactionContextOverflowError) as exc:
+            if isinstance(exc.usage, NormalizedUsage):
+                self.track_tokens(exc.usage.total_tokens)
+                self.run_record.total_usage = (
+                    self.run_record.total_usage
+                    + StepUsage.from_normalized_usage(exc.usage)
+                )
+                self._write_run_meta()
+            logger.error(
+                "Harness summary compaction failed before step %s after %.3fs: %s",
+                self.step_counter + 1,
+                time.monotonic() - started,
+                exc,
+            )
+            raise
+        duration = round(time.monotonic() - started, 3)
+        self._runtime_state = result.state
+        self._pending_compaction_trigger_tokens = None
+        self.track_tokens(result.usage.total_tokens)
+        compaction_usage = StepUsage.from_normalized_usage(result.usage)
+        self._save_compaction(
+            CompactionRecord(
+                compaction=self._compaction_counter + 1,
+                before_step=self.step_counter + 1,
+                timestamp=datetime.now(timezone.utc),
+                duration_seconds=duration,
+                model=self.MODEL,
+                mechanism=HARNESS_SUMMARY_COMPACTION,
+                prompt=result.prompt,
+                summary=result.summary,
+                trigger_tokens=result.trigger_tokens,
+                context_limit_tokens=self.MAX_CONTEXT_LENGTH,
+                history_items_to_compact=result.history_items_to_compact,
+                attempts=result.attempts,
+                overflow_recoveries=result.overflow_recoveries,
+                excluded_turns=result.excluded_turns,
+                excluded_history_items=result.excluded_history_items,
+                usage=compaction_usage,
+            )
+        )
+        self._pending_compaction_continuation = CompactionContinuationRecord(
+            compaction=self._compaction_counter,
+            summary=result.summary,
+            bridge=build_summary_bridge(result.summary),
+        )
+        pending_usage = getattr(self, "_pending_compaction_usage", None)
+        self._pending_compaction_usage = (
+            result.usage if pending_usage is None else pending_usage + result.usage
+        )
+
+    def _schedule_compaction(self, usage: NormalizedUsage) -> None:
+        summary_compactor = getattr(self, "_summary_compactor", None)
+        if summary_compactor is None:
+            return
+        if summary_compactor.should_compact(usage):
+            self._pending_compaction_trigger_tokens = usage.total_tokens
 
     def _build_model_request(self) -> ModelRequest:
         if self._server_state:
@@ -625,6 +752,8 @@ class BenchmarkingAgent(Agent):
             )
             return forced_action
 
+        self._run_pending_compaction()
+
         self._sync_level_progress(latest_frame)
         self._level_action_counter += 1
 
@@ -670,6 +799,8 @@ class BenchmarkingAgent(Agent):
                     self._runtime_state.payload.get("pending_inputs", [])
                 )
             self._pending_turn_messages = []
+            if self._last_turn_result is not None:
+                self._schedule_compaction(self._last_turn_result.response.usage)
         elif self._server_state:
             self._previous_response_id = model_response.response_id
             self._pending_user_messages = []
@@ -692,6 +823,7 @@ class BenchmarkingAgent(Agent):
             state_transition = self._last_turn_result.transition.model_dump(
                 exclude_none=True
             )
+        continuation = getattr(self, "_pending_compaction_continuation", None)
         self._save_step(
             StepRecord(
                 step=self.step_counter + 1,
@@ -706,12 +838,20 @@ class BenchmarkingAgent(Agent):
                 retries=retries,
                 request_record=request_record,
                 state_transition=state_transition,
+                continuation=continuation,
             )
         )
+        self._pending_compaction_continuation = None
 
         # Build ActionMetadata and pass as dict through the reasoning field
+        pending_compaction_usage = getattr(self, "_pending_compaction_usage", None)
+        metadata_response = model_response
+        if pending_compaction_usage is not None:
+            metadata_response = model_response.model_copy(
+                update={"usage": model_response.usage + pending_compaction_usage}
+            )
         metadata = action_metadata_from_model_response(
-            model_response=model_response,
+            model_response=metadata_response,
             pricing=self._pricing,
         )
         action_metadata = metadata.model_dump()
@@ -719,8 +859,24 @@ class BenchmarkingAgent(Agent):
             self._last_turn_result is not None
             and self._last_turn_result.action_state is not None
         ):
-            action_metadata["state"] = self._last_turn_result.action_state
+            action_metadata["state"] = dict(
+                self._last_turn_result.action_state
+            )
+        if pending_compaction_usage is not None:
+            compaction_metadata = action_metadata_from_model_response(
+                model_response=ModelResponse(
+                    output_text="",
+                    usage=pending_compaction_usage,
+                ),
+                pricing=self._pricing,
+            )
+            state_metadata = action_metadata.setdefault("state", {})
+            state_metadata["harness_compaction"] = {
+                "usage": compaction_metadata.usage.model_dump(),
+                "cost": compaction_metadata.cost.model_dump(),
+            }
         self._pending_action_reasoning = fit_action_metadata_payload(action_metadata)
+        self._pending_compaction_usage = None
         total_cost = metadata.cost.total_cost
         input_cost = metadata.cost.input_cost
         output_cost = metadata.cost.output_cost
@@ -763,12 +919,16 @@ class BenchmarkingAgent(Agent):
         """Call the API with retries.
 
         Returns (model_response, action, retries, messages_sent) where
-        messages_sent is the exact request transcript used by the successful
-        attempt before the current assistant reply is appended locally.
+        messages_sent is the exact normalized transcript for message-based
+        requests or the adapter's safe readable projection of a provider-native
+        request. The current assistant reply is not included.
         """
         accumulated_usage = NormalizedUsage()
         self._last_turn_result = None
-        for attempt in range(self.MAX_RETRIES + 1):
+        attempt = 0
+        max_attempts = self.MAX_RETRIES + 1
+        action_overflow_recoveries = 0
+        while attempt < max_attempts:
             try:
                 # Server-managed state compacts on OpenAI's side; the docs say not
                 # to manually prune when chaining via previous_response_id.
@@ -790,22 +950,54 @@ class BenchmarkingAgent(Agent):
                 else:
                     model_request = self._build_model_request()
                     model_response = self._call_api(model_request)
+            except ContextOverflowError as e:
+                summary_compactor = getattr(self, "_summary_compactor", None)
+                can_recover = (
+                    hasattr(self, "_stateful_adapter")
+                    and summary_compactor is not None
+                    and action_overflow_recoveries == 0
+                )
+                if can_recover:
+                    self._pending_compaction_trigger_tokens = max(
+                        self.MAX_CONTEXT_LENGTH,
+                        1,
+                    )
+                    self._run_pending_compaction()
+                    action_overflow_recoveries += 1
+                    max_attempts += 1
+                    logger.warning(
+                        "Action request exceeded provider capacity; compacted "
+                        "accepted history before retrying."
+                    )
+                else:
+                    logger.error(
+                        "Action request context overflow could not be recovered: "
+                        "%s (attempt %s/%s).",
+                        e,
+                        attempt + 1,
+                        max_attempts,
+                    )
+                    raise
+                attempt += 1
+                continue
             except EmptyResponseError as e:
                 if isinstance(e.usage, NormalizedUsage):
-                    accumulated_usage = accumulated_usage + e.usage
                     self.track_tokens(e.usage.total_tokens)
+                    accumulated_usage = accumulated_usage + e.usage
                 if e.response is not None:
                     self._save_diagnostic(e.response)
                 logger.warning(
                     f"Unusable API response "
-                    f"(attempt {attempt + 1}/{self.MAX_RETRIES + 1})."
+                    f"(attempt {attempt + 1}/{max_attempts})."
                 )
+                attempt += 1
                 continue
             except Exception as e:
                 logger.warning(
                     f"API error: {type(e).__name__}: {e} "
-                    f"(attempt {attempt + 1}/{self.MAX_RETRIES + 1})."
+                    f"(attempt {attempt + 1}/{max_attempts})."
                 )
+                attempt += 1
                 continue
 
             self.track_tokens(model_response.usage.total_tokens)
@@ -815,12 +1007,30 @@ class BenchmarkingAgent(Agent):
             )
             logger.info(f"Assistant response: {model_response.output_text[:200]}")
 
+            if (
+                model_response.response_status is not None
+                and model_response.response_status != "completed"
+            ):
+                logger.warning(
+                    "Provider returned response status %r "
+                    "(attempt %s/%s); discarding provisional state.",
+                    model_response.response_status,
+                    attempt + 1,
+                    max_attempts,
+                )
+                attempt += 1
+                continue
+
             action = self._parse_action(model_response.output_text, actions)
             if action is not None:
                 if hasattr(self, "_stateful_adapter"):
                     self._runtime_state = turn_result.state
                     self._last_turn_result = turn_result
-                    sanitized_messages = turn_result.sanitized_request.get("messages")
+                    sanitized_messages = turn_result.readable_request_messages
+                    if sanitized_messages is None:
+                        sanitized_messages = turn_result.sanitized_request.get(
+                            "messages"
+                        )
                     messages_sent = (
                         sanitized_messages
                         if isinstance(sanitized_messages, list)
@@ -840,8 +1050,9 @@ class BenchmarkingAgent(Agent):
 
             logger.warning(
                 f"Could not parse action from response "
-                f"(attempt {attempt + 1}/{self.MAX_RETRIES + 1})."
+                f"(attempt {attempt + 1}/{max_attempts})."
             )
+            attempt += 1
 
         if hasattr(self, "_stateful_adapter") and hasattr(self, "run_record"):
             self.run_record.total_usage = (
@@ -850,7 +1061,7 @@ class BenchmarkingAgent(Agent):
             )
             self._write_run_meta()
         raise RuntimeError(
-            f"Failed to get a valid action after {self.MAX_RETRIES + 1} attempts."
+            f"Failed to get a valid action after {max_attempts} attempts."
         )
 
     def _call_api(self, model_request: ModelRequest) -> ModelResponse:
