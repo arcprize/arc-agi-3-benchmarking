@@ -22,14 +22,14 @@ COPY pyproject.toml uv.lock* ./
 # ---- create non-root user ----
 RUN useradd -m -u 10001 appuser
 
-# Install deps (do this as root, then chown site-packages not needed; just chown /app)
+# Install the exact production dependency set recorded in uv.lock.
 COPY . .
-RUN test -f uv.lock
-RUN uv pip install --system -e .
+RUN uv sync --locked --no-dev
 
 RUN mkdir -p results logs .checkpoint \
   && chown -R appuser:appuser /app
 
+ENV PATH="/app/.venv/bin:$PATH"
 ENV ARC_URL_BASE="https://arcprize.org"
 ENV ARC_HARNESS_COMMIT_SHA=${ARC_HARNESS_COMMIT_SHA}
 ENV PYTHONUNBUFFERED=1
