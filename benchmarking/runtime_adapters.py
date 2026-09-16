@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from google.genai import _interactions as google_genai_interactions
 from google.genai import types as google_genai_types
 
 from .exceptions import ContextOverflowError, TransientProviderError
@@ -46,23 +45,29 @@ _GOOGLE_CONTEXT_OVERFLOW_MARKERS = (
 
 
 def _is_google_context_overflow(error: Exception) -> bool:
-    if not isinstance(error, google_genai_interactions.APIStatusError):
-        return False
-    if error.status_code not in {400, 413}:
+    if getattr(error, "status_code", None) not in {400, 413}:
         return False
     details = " ".join(
         str(value)
-        for value in (error.message, error.body)
+        for value in (
+            getattr(error, "message", None),
+            getattr(error, "body", None),
+        )
         if value is not None
     ).lower()
     return any(marker in details for marker in _GOOGLE_CONTEXT_OVERFLOW_MARKERS)
 
 
 def _is_google_transient_error(error: Exception) -> bool:
-    if isinstance(error, google_genai_interactions.APIConnectionError):
+    error_type = type(error)
+    if error_type.__module__.startswith("google.genai") and error_type.__name__ in {
+        "APIConnectionError",
+        "APITimeoutError",
+    }:
         return True
-    return isinstance(error, google_genai_interactions.APIStatusError) and (
-        error.status_code in {408, 409, 429} or error.status_code >= 500
+    status_code = getattr(error, "status_code", None)
+    return isinstance(status_code, int) and (
+        status_code in {408, 409, 429} or status_code >= 500
     )
 
 
@@ -378,11 +383,16 @@ class GoogleGenAIInteractionsAdapter:
         return request_config
 
     def invoke(self, request: ModelRequest) -> ModelResponse:
+        call_kwargs = self._build_call_kwargs(request)
         try:
             raw_response = self._client.interactions.create(
-                **self._build_call_kwargs(request),
+                **call_kwargs,
             )
-        except google_genai_interactions.APIError as exc:
+        # Interactions exceptions live in a private SDK module whose package
+        # layout is not stable across google-genai releases. Inspect the
+        # provider error at this boundary and immediately re-raise anything
+        # the harness does not explicitly classify.
+        except Exception as exc:
             if _is_google_context_overflow(exc):
                 raise ContextOverflowError(str(exc)) from exc
             if _is_google_transient_error(exc):
