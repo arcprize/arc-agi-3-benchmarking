@@ -169,6 +169,11 @@ arrive whole in `content_block_start`, with no content delta. The adapter retain
 accumulated message. Complete native content and per-iteration usage are retained
 for both streaming and non-streaming requests.
 
+Failed requests save allowlisted provider diagnostics: exception class, provider
+error type, HTTP status, and request ID when available. This metadata survives
+transport and runtime wrapping for both action and compaction requests. Provider
+error messages and raw error bodies are not copied into those diagnostics.
+
 Token accounting sums `usage.iterations` when present, including compaction;
 top-level usage is a fallback, not an additional contribution. Native normalized
 input tokens include uncached input plus cache reads and writes, with the cache
@@ -188,6 +193,11 @@ action, or persisted in `run_meta.json` if retries are exhausted. No failed acti
 step is fabricated. Configured-price action estimates do not reconstruct cache
 discounts or invoice adjustments, and are not written into provider-reported
 `usage.cost`.
+
+`run_meta.json` records the validated native policy in `runtime.compaction`,
+including its strategy, trigger, summary output cap, and configured context
+limit. Policy defaults are included even when omitted from the profile. This
+does not instantiate the harness-summary compactor or its compaction counter.
 
 The adapter supplies the shared `ModelTurnResult.readable_request_messages`
 field for `messages_sent`. This is a readable projection of the active native

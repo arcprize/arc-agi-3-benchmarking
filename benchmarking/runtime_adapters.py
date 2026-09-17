@@ -10,6 +10,7 @@ from .anthropic_runtime import (
     native_mapping,
     normalize_native_response,
     normalize_native_usage,
+    safe_provider_error_metadata,
     validate_continuous_conversation_request,
 )
 from .exceptions import (
@@ -314,7 +315,10 @@ class AnthropicMessagesAdapter:
         except Exception as exc:
             raise InvalidProviderResponseError(
                 f"Anthropic stream did not complete ({type(exc).__name__}).",
-                response=metadata,
+                response={
+                    **metadata,
+                    "provider_error": safe_provider_error_metadata(exc),
+                },
                 usage=normalize_native_usage(usage),
             ) from None
         final.update(metadata)
@@ -335,7 +339,13 @@ class AnthropicMessagesAdapter:
             if self._should_stream(request_kwargs):
                 raw_response = self._invoke_native_streaming(request_kwargs)
             else:
-                raw_response = self._client.beta.messages.create(**request_kwargs)
+                try:
+                    raw_response = self._client.beta.messages.create(**request_kwargs)
+                except Exception as exc:
+                    raise InvalidProviderResponseError(
+                        f"Anthropic request failed ({type(exc).__name__}).",
+                        response={"provider_error": safe_provider_error_metadata(exc)},
+                    ) from None
             return normalize_native_response(raw_response, request.request_config)
         if self._should_stream(request_kwargs):
             return self._invoke_streaming(request_kwargs)

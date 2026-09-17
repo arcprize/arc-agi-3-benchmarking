@@ -10,6 +10,7 @@ from benchmarking.anthropic_runtime import (
     AnthropicContinuousConversationRuntimeAdapter,
     normalize_native_response,
     normalize_native_usage,
+    safe_provider_error_metadata,
     serialize_replay_content,
     validate_continuous_conversation_request,
 )
@@ -1078,16 +1079,31 @@ class TestAnthropicSDKBoundary:
         assert raised.value.usage.reasoning_tokens == 3
         assert "sdk-signature" not in str(raised.value)
 
-    def test_real_sdk_error_body_does_not_leak_to_logs(self):
+    @pytest.mark.parametrize("streaming", [False, True])
+    @pytest.mark.parametrize("request_id_source", ["header", "body"])
+    def test_real_sdk_error_preserves_only_safe_metadata(
+        self, streaming, request_id_source
+    ):
         def handle(_request):
             return httpx.Response(
                 400,
+                headers=(
+                    {"request-id": "req_test_failure"}
+                    if request_id_source == "header"
+                    else {}
+                ),
                 json={
                     "type": "error",
                     "error": {
                         "type": "invalid_request_error",
                         "message": "sdk-signature",
                     },
+                    "request_id": (
+                        "req_unused_body"
+                        if request_id_source == "header"
+                        else "req_test_failure"
+                    ),
+                    "signature": "sdk-signature",
                 },
             )
 
@@ -1097,9 +1113,89 @@ class TestAnthropicSDKBoundary:
             http_client=httpx.Client(transport=httpx.MockTransport(handle)),
         ) as client:
             adapter = _sdk_adapter(client)
+            config = _request_config()
+            config.update(stream=streaming, max_tokens=4096)
             with pytest.raises(InvalidProviderResponseError) as raised:
-                _turn(adapter, adapter.initial_state())
+                adapter.invoke_turn(
+                    ModelTurnRequest(
+                        system_prompt="system",
+                        new_messages=[Message(role="user", content="frame")],
+                        request_config=config,
+                        previous_state=adapter.initial_state(),
+                        max_context_length=1_000_000,
+                    )
+                )
+        assert raised.value.response == {
+            "provider_error": {
+                "exception_class": "BadRequestError",
+                "provider_error_type": "invalid_request_error",
+                "http_status": 400,
+                "request_id": "req_test_failure",
+            }
+        }
         assert "sdk-signature" not in str(raised.value)
+        assert "sdk-signature" not in str(raised.value.response)
+
+    def test_stream_error_event_preserves_metadata_and_partial_usage(self):
+        body = {
+            "type": "error",
+            "error": {"type": "overloaded_error", "message": "private-error-body"},
+        }
+
+        def handle(_request):
+            return httpx.Response(
+                200,
+                headers={
+                    "content-type": "text/event-stream",
+                    "request-id": "req_stream_failure",
+                },
+                content=_stream_events(complete=False)
+                + f"event: error\ndata: {json.dumps(body)}\n\n".encode(),
+            )
+
+        with anthropic.Anthropic(
+            api_key="synthetic-key",
+            max_retries=0,
+            http_client=httpx.Client(transport=httpx.MockTransport(handle)),
+        ) as client:
+            adapter = _sdk_adapter(client)
+            state = adapter.initial_state()
+            with pytest.raises(InvalidProviderResponseError) as raised:
+                _turn(adapter, state)
+        assert raised.value.response["provider_error"] == {
+            "exception_class": "APIStatusError",
+            "provider_error_type": "overloaded_error",
+            "http_status": 200,
+            "request_id": "req_stream_failure",
+        }
+        assert raised.value.usage.total_tokens == 15
+        assert raised.value.usage.reasoning_tokens == 3
+        assert state.payload == {"messages": []}
+        assert "private-error-body" not in str(raised.value.response)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "private-error-body",
+            {"error": "private-error-body"},
+            {
+                "error": {"type": "private error body"},
+                "request_id": "private request body\nwith control characters",
+            },
+            {"error": {"type": "x" * 81}, "request_id": "x" * 201},
+        ],
+    )
+    def test_error_metadata_drops_malformed_or_unbounded_values(self, body):
+        response = httpx.Response(
+            400, request=httpx.Request("POST", "https://example.com")
+        )
+        error = anthropic.BadRequestError(
+            "private-error-body", response=response, body=body
+        )
+        assert safe_provider_error_metadata(error) == {
+            "exception_class": "BadRequestError",
+            "http_status": 400,
+        }
 
     def test_native_request_builder_does_not_mutate_inputs(self):
         native = [{"role": "assistant", "content": _raw_response()["content"]}]

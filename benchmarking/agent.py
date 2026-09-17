@@ -12,6 +12,7 @@ from typing import Any, Optional
 from arcengine import FrameData, GameAction, GameState
 
 from .action_metadata import fit_action_metadata_payload
+from .anthropic_runtime import AnthropicCompactionPolicy
 from .base import Agent, ExitReason
 from .compaction import (
     HARNESS_SUMMARY_COMPACTION,
@@ -103,15 +104,20 @@ class BenchmarkingAgent(Agent):
             runtime_cfg.get("state") == CONTINUOUS_CONVERSATION_RUNTIME_STATE
         )
         self._summary_compactor: SummaryCompactor | None = None
+        compaction_policy: (
+            SummaryCompactionPolicy | AnthropicCompactionPolicy | None
+        ) = None
         compaction_cfg = runtime_cfg.get("compaction")
-        if (
-            self._continuous_conversation
-            and isinstance(compaction_cfg, dict)
-            and compaction_cfg.get("strategy") == HARNESS_SUMMARY_COMPACTION
-        ):
-            self._summary_compactor = SummaryCompactor(
-                SummaryCompactionPolicy.model_validate(compaction_cfg)
-            )
+        if self._continuous_conversation and isinstance(compaction_cfg, dict):
+            if compaction_cfg.get("strategy") == HARNESS_SUMMARY_COMPACTION:
+                compaction_policy = SummaryCompactionPolicy.model_validate(
+                    compaction_cfg
+                )
+                self._summary_compactor = SummaryCompactor(compaction_policy)
+            elif compaction_cfg.get("strategy") == "native":
+                compaction_policy = AnthropicCompactionPolicy.model_validate(
+                    compaction_cfg
+                )
         self._pending_compaction_trigger_tokens: int | None = None
         self._pending_compaction_usage: NormalizedUsage | None = None
         self._pending_compaction_continuation: CompactionContinuationRecord | None = (
@@ -215,11 +221,12 @@ class BenchmarkingAgent(Agent):
                     commit_sha=commit_sha,
                 ),
             }
-            if self._summary_compactor is not None:
+            if compaction_policy is not None:
                 runtime_metadata["compaction"] = {
-                    **self._summary_compactor.policy.model_dump(),
+                    **compaction_policy.model_dump(),
                     "context_limit_tokens": self.MAX_CONTEXT_LENGTH,
                 }
+            if self._summary_compactor is not None:
                 runtime_metadata["compaction_count"] = 0
         self.run_record = RunRecord(
             run_id=str(run_id),

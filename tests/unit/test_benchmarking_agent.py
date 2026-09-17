@@ -1,8 +1,12 @@
 import json
+import logging
 from copy import deepcopy
 from datetime import datetime, timezone
+from pathlib import Path
 from types import MethodType, SimpleNamespace
 
+import anthropic
+import httpx
 import numpy as np
 import pytest
 from arcengine import ActionInput, FrameData, FrameDataRaw, GameAction, GameState
@@ -283,6 +287,44 @@ class TestBenchmarkingAgentRuntimeClient:
         assert agent._pending_compaction_trigger_tokens == (
             200_000 if uses_summary else None
         )
+        metadata = json.loads((Path(agent.run_dir) / "run_meta.json").read_text())
+        policy = config["runtime"].get("compaction")
+        if policy is None:
+            assert "compaction" not in metadata["runtime"]
+        else:
+            assert metadata["runtime"]["compaction"] == {
+                **policy,
+                "context_limit_tokens": config["agent"]["MAX_CONTEXT_LENGTH"],
+            }
+        assert ("compaction_count" in metadata["runtime"]) is uses_summary
+
+    def test_native_compaction_metadata_includes_validated_defaults(
+        self, monkeypatch, tmp_path
+    ):
+        config = deepcopy(get_model_config("anthropic-opus-5-low-provider-adapter"))
+        config["runtime"]["compaction"].pop("summary_max_output_tokens")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("benchmarking.agent.get_model_config", lambda _id: config)
+        monkeypatch.setattr(
+            "benchmarking.agent.build_model_runtime_client", lambda **_kwargs: object()
+        )
+        agent = BenchmarkingAgent(
+            card_id="card-id",
+            game_id="game-id",
+            agent_name="agent-name",
+            ROOT_URL="https://arcprize.org",
+            record=False,
+            arc_env=SimpleNamespace(info=SimpleNamespace(baseline_actions=[])),
+            config=config["id"],
+        )
+        metadata = json.loads((Path(agent.run_dir) / "run_meta.json").read_text())
+        assert metadata["runtime"]["compaction"] == {
+            "strategy": "native",
+            "trigger_tokens": 175_000,
+            "summary_max_output_tokens": 8_192,
+            "context_limit_tokens": 1_000_000,
+        }
+        assert agent._summary_compactor is None
 
     @pytest.mark.parametrize(
         ("runtime_state", "runtime_api"),
@@ -1899,6 +1941,92 @@ def _anthropic_summary(summary="active summary"):
 
 @pytest.mark.unit
 class TestBenchmarkingAgentAnthropicState:
+    @pytest.mark.parametrize("streaming", [False, True])
+    @pytest.mark.parametrize("during_compaction", [False, True])
+    def test_real_sdk_failures_save_safe_diagnostics(
+        self, tmp_path, monkeypatch, caplog, streaming, during_compaction
+    ):
+        calls = []
+
+        def handle(request):
+            calls.append(request)
+            return httpx.Response(
+                400,
+                headers={"request-id": "req_agent_failure"},
+                json={
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": "private-signature private-error-body",
+                    },
+                    "signature": "private-signature",
+                    "data": "private-redacted-payload",
+                },
+            )
+
+        caplog.set_level(logging.INFO)
+        monkeypatch.chdir(tmp_path)
+        with anthropic.Anthropic(
+            api_key="synthetic-key",
+            max_retries=0,
+            http_client=httpx.Client(transport=httpx.MockTransport(handle)),
+        ) as client:
+            monkeypatch.setattr(
+                "benchmarking.agent.build_model_runtime_client",
+                lambda **_kwargs: client,
+            )
+            agent = BenchmarkingAgent(
+                card_id="card-id",
+                game_id="game-id",
+                agent_name="agent-name",
+                ROOT_URL="https://arcprize.org",
+                record=False,
+                arc_env=SimpleNamespace(info=SimpleNamespace(baseline_actions=[])),
+                config="anthropic-opus-5-low-provider-adapter",
+            )
+            agent._request_kwargs.update(stream=streaming, max_tokens=4096)
+            agent._pending_turn_messages = [Message(role="user", content="frame")]
+            if during_compaction:
+                agent._runtime_state.payload.update(
+                    context_tokens=175_000,
+                    messages=[
+                        {"role": "user", "content": "old frame"},
+                        {"role": "assistant", "content": "ACTION1"},
+                    ],
+                )
+            initial_state = agent._runtime_state.model_dump_json()
+            with pytest.raises(RuntimeError, match="Failed to get a valid action"):
+                agent._request_with_retries([GameAction.ACTION1])
+        assert len(calls) == agent.MAX_RETRIES + 1
+        for request in calls:
+            assert json.loads(request.content).get("compaction") == (
+                {"type": "summarize"} if during_compaction else None
+            )
+        assert agent._runtime_state.model_dump_json() == initial_state
+        assert agent._pending_turn_messages == [Message(role="user", content="frame")]
+        diagnostics = list(Path(agent.run_dir).glob("diagnostic_*.json"))
+        assert diagnostics
+        for diagnostic in diagnostics:
+            assert json.loads(diagnostic.read_text()) == {
+                "provider_error": {
+                    "exception_class": "BadRequestError",
+                    "provider_error_type": "invalid_request_error",
+                    "http_status": 400,
+                    "request_id": "req_agent_failure",
+                }
+            }
+        artifacts = "\n".join(
+            path.read_text() for path in Path(agent.run_dir).glob("*.json")
+        )
+        for secret in (
+            "private-signature",
+            "private-error-body",
+            "private-redacted-payload",
+            "synthetic-key",
+        ):
+            assert secret not in artifacts
+            assert secret not in caplog.text
+
     @pytest.mark.parametrize(
         "failure_kind", ["invalid_action", "refusal", "empty_summary"]
     )

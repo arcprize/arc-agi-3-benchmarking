@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from typing import Any, Literal
 
+from anthropic import APIError
 from pydantic import BaseModel, ConfigDict, Field
 
 from .exceptions import EmptyResponseError, InvalidProviderResponseError
@@ -30,6 +32,29 @@ class AnthropicCompactionPolicy(BaseModel):
     strategy: Literal["native"]
     trigger_tokens: int = Field(strict=True, gt=0)
     summary_max_output_tokens: int = Field(default=8_192, strict=True, gt=0)
+
+
+def safe_provider_error_metadata(exc: Exception) -> dict[str, Any]:
+    metadata: dict[str, Any] = {"exception_class": type(exc).__name__}
+    if not isinstance(exc, APIError):
+        return metadata
+
+    body = exc.body if isinstance(exc.body, dict) else {}
+    error = body.get("error", body)
+    error_type = error.get("type") if isinstance(error, dict) else None
+    if isinstance(error_type, str) and re.fullmatch(
+        r"[a-z][a-z0-9_]{0,79}", error_type
+    ):
+        metadata["provider_error_type"] = error_type
+    status = getattr(exc, "status_code", None)
+    if type(status) is int and 100 <= status <= 599:
+        metadata["http_status"] = status
+    request_id = getattr(exc, "request_id", None) or body.get("request_id")
+    if isinstance(request_id, str) and re.fullmatch(
+        r"[A-Za-z0-9_-]{1,200}", request_id
+    ):
+        metadata["request_id"] = request_id
+    return metadata
 
 
 def native_mapping(value: Any) -> dict[str, Any]:
@@ -433,6 +458,7 @@ class AnthropicContinuousConversationRuntimeAdapter:
         except Exception as exc:
             raise InvalidProviderResponseError(
                 f"Anthropic request failed ({type(exc).__name__}).",
+                response={"provider_error": safe_provider_error_metadata(exc)},
                 usage=compaction_usage,
             ) from None
         context_tokens = response.usage.total_tokens

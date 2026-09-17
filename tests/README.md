@@ -22,7 +22,9 @@ Anthropic Provider Adapter unit tests use synthetic responses and mocked HTTP
 through the pinned Anthropic SDK. They cover native replay, streaming deltas,
 signed on-demand compaction, current-frame and buffered-input isolation, SDK
 replay-field cleanup, refusal details, reported thinking-token accounting,
-failed-attempt usage, and opaque-state redaction:
+failed-attempt usage, and opaque-state redaction. Regression coverage also checks
+saved allowlisted failure diagnostics through the pinned SDK's streaming and
+non-streaming transports, and native compaction policy settings in run metadata:
 
 ```bash
 uv run pytest -q tests/unit/test_anthropic_runtime.py tests/unit/test_benchmarking_agent.py
