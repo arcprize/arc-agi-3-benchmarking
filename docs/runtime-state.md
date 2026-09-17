@@ -107,28 +107,64 @@ The checked-in `anthropic-opus-5-low-provider-adapter` profile uses:
 
 - `claude-opus-5`, adaptive thinking, summarized display, and low effort
 - streaming, 128k maximum output, and 1,000k context capacity
-- a 175k input-token compaction trigger and 5x baseline action budget
+- a 175k completed-context compaction trigger and 5x baseline action budget
+- native on-demand compaction with `compact-2026-09-04`, capped at 8k output tokens
 - standard-speed configured prices of $5/$25 per million input/output tokens
 - the native `ANTHROPIC_API_KEY`, with no OpenAI `store` parameter
 - the optional `thinking-token-count-2026-05-13` beta for reported thinking usage
 
-Native compaction is optional. When configured, `request.context_management.edits`
-must contain exactly one `compact_20260112` edit, and `request.betas` must
-include `compact-2026-01-12`. An explicit trigger must use
-`input_tokens` and be at least 50k. `pause_after_compaction` must be false or
-omitted, so the provider continues to an action in the same request. No custom
-summary prompt is supplied by the profile.
+Native compaction is optional and configured outside the provider request:
 
-After a successful compaction, the adapter retains the latest nonempty
-compaction block and every subsequent block/message. A null compaction block is
-a provider-defined no-op and never removes history. There is no client-side
-summary fallback, retained-tail reconstruction, or tool execution in this path.
+```yaml
+runtime:
+  compaction:
+    strategy: native
+    trigger_tokens: 175_000
+    summary_max_output_tokens: 8_192
+request:
+  betas: ["compact-2026-09-04", "thinking-token-count-2026-05-13"]
+```
+
+The adapter checks the most recent accepted action's normalized input plus
+output tokens as a completed-context estimate. It does not use cumulative run
+usage, retry totals, or compaction-call usage as the trigger. At the threshold,
+it sends only history through the last completed assistant action in a separate
+Messages request with `compaction: {type: summarize}`. Pending observations,
+including buffered GAME_OVER/reset inputs and the newest frame, are held aside.
+The first frame cannot trigger compaction because no completed history exists.
+
+The summary request keeps the same model, system prompt, thinking settings,
+and effort. It uses the provider's default summary prompt, removes action-only
+stop sequences and structured-output formatting, and caps output separately.
+On success, exactly one nonempty signed `compaction` block replaces that entire
+prefix. It goes first in the next action request, followed by every pending
+observation unchanged and in order. Repeated compaction replaces the previous
+summary and completed turns with one new signed block. Signatures are replayed
+verbatim in memory, never reconstructed from the readable summary.
+
+Action requests have neither `compaction` nor `context_management`. The adapter
+rejects threshold compaction, its old beta, and both values of
+`pause_after_compaction`; changing that flag alone would not protect the newest
+frame. A signed block and the new beta are sent on every continuation request.
+This on-demand API is available on the direct Claude API, not Bedrock or Google
+Cloud. There is no harness-summary fallback, background compaction, tool
+execution, or model switching.
+
+Summary and action state form one provisional turn: neither is committed until
+the action parser accepts a valid action. Failed, empty, unsigned, refused,
+truncated, or interrupted compaction preserves the accepted history and pending
+observations. If compaction succeeds but the action fails, retries compact the
+unchanged accepted history again; returned usage from both calls is still billed
+to the attempted turn. Retries remain bounded by the existing agent policy.
 
 Only `end_turn` or an explicitly configured `stop_sequence` can supply an action.
 Refusals, truncated or paused responses, and unfinished streams cannot execute
 actions, even if partial text names an action. The adapter records sanitized
 refusal details and uses the common bounded retry policy, without switching
-models. The pinned Anthropic SDK remains `0.95.0`; the adapter retains streamed
+models. An inline compaction block is also rejected on an action response. The
+pinned Anthropic SDK remains `0.95.0`; its `extra_body` extension sends the new
+top-level `compaction` parameter without a dependency upgrade. Signed summaries
+arrive whole in `content_block_start`, with no content delta. The adapter retains streamed
 `stop_details` explicitly because this SDK does not copy them into its final
 accumulated message. Complete native content and per-iteration usage are retained
 for both streaming and non-streaming requests.
@@ -144,6 +180,9 @@ per-iteration thinking counts are a fallback, with any separately reported
 compaction thinking added once. Missing counts remain zero, meaning unreported,
 and are never estimated from readable summaries. Streaming captures the
 breakdown from the final `message_delta`, including usage retained on failure.
+Separate compaction and action usage is added once per attempt. The accepted
+action's native-compaction metadata also records the compaction-only usage and
+the number of completed history items summarized, without an opaque payload.
 Returned usage from unsuccessful attempts is attributed to the next accepted
 action, or persisted in `run_meta.json` if retries are exhausted. No failed action
 step is fabricated. Configured-price action estimates do not reconstruct cache
@@ -162,7 +201,7 @@ in memory only. Client-managed state is not a guarantee of provider-side zero
 data retention: use credentials and data-retention terms appropriate for the
 benchmark data.
 
-Contract references, checked September 14, 2026:
+Contract references, with on-demand compaction rechecked September 17, 2026:
 
 - [Anthropic compaction](https://platform.claude.com/docs/en/build-with-claude/compaction)
 - [Thinking and replay](https://platform.claude.com/docs/en/build-with-claude/thinking)

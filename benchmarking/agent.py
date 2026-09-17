@@ -104,7 +104,11 @@ class BenchmarkingAgent(Agent):
         )
         self._summary_compactor: SummaryCompactor | None = None
         compaction_cfg = runtime_cfg.get("compaction")
-        if self._continuous_conversation and isinstance(compaction_cfg, dict):
+        if (
+            self._continuous_conversation
+            and isinstance(compaction_cfg, dict)
+            and compaction_cfg.get("strategy") == HARNESS_SUMMARY_COMPACTION
+        ):
             self._summary_compactor = SummaryCompactor(
                 SummaryCompactionPolicy.model_validate(compaction_cfg)
             )

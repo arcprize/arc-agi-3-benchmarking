@@ -107,7 +107,9 @@ def build_stateful_runtime_adapter(
     if strategy == CONTINUOUS_CONVERSATION_RUNTIME_STATE:
         if adapter_id == ANTHROPIC_MESSAGES_ADAPTER_ID:
             return AnthropicContinuousConversationRuntimeAdapter(
-                model_adapter=model_adapter, descriptor=descriptor
+                model_adapter=model_adapter,
+                descriptor=descriptor,
+                compaction=runtime_config.get("compaction"),
             )
         if adapter_id == OPENAI_RESPONSES_ADAPTER_ID:
             return OpenAIContinuousConversationRuntimeAdapter(

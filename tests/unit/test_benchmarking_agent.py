@@ -1877,8 +1877,101 @@ def _anthropic_agent(tmp_path, responses):
     return agent
 
 
+def _anthropic_summary(summary="active summary"):
+    response = _anthropic_response()
+    response.raw_response["content"] = [
+        {
+            "type": "compaction",
+            "content": summary,
+            "signature": "private-summary-signature",
+        }
+    ]
+    response.raw_response["stop_reason"] = "compaction"
+    response.raw_response["usage"] = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "iterations": [
+            {"type": "compaction", "input_tokens": 100, "output_tokens": 20}
+        ],
+    }
+    return response
+
+
 @pytest.mark.unit
 class TestBenchmarkingAgentAnthropicState:
+    @pytest.mark.parametrize(
+        "failure_kind", ["invalid_action", "refusal", "empty_summary"]
+    )
+    @pytest.mark.parametrize("exhausted", [False, True])
+    def test_native_compaction_retries_preserve_observations_and_accounting(
+        self, tmp_path, failure_kind, exhausted
+    ):
+        failed_attempts = 3 if exhausted else 1
+        responses = [_anthropic_response()]
+        for _ in range(failed_attempts):
+            responses.append(
+                _anthropic_summary(
+                    None if failure_kind == "empty_summary" else "provisional summary"
+                )
+            )
+            if failure_kind != "empty_summary":
+                responses.append(
+                    _anthropic_response(
+                        "not an action"
+                        if failure_kind == "invalid_action"
+                        else "ACTION1",
+                        stop_reason="refusal"
+                        if failure_kind == "refusal"
+                        else "end_turn",
+                    )
+                )
+        if not exhausted:
+            responses.extend(
+                [_anthropic_summary("accepted summary"), _anthropic_response()]
+            )
+        agent = _anthropic_agent(tmp_path, responses)
+        agent.choose_action([], _playable_frame())
+        history = deepcopy(agent._runtime_state.payload["messages"])
+        agent._runtime_state.payload["context_tokens"] = 175_000
+        snapshot = agent._runtime_state.model_dump_json()
+        latest = _playable_frame()
+        if exhausted:
+            with pytest.raises(RuntimeError, match="after 3 attempts"):
+                agent.choose_action([], latest)
+            assert agent._runtime_state.model_dump_json() == snapshot
+            assert agent._pending_turn_messages
+            assert not (tmp_path / "step_002.json").exists()
+        else:
+            agent.choose_action([], latest)
+            assert "accepted summary" in str(agent._runtime_state.payload)
+            assert "provisional summary" not in str(agent._runtime_state.payload)
+            assert not agent._pending_turn_messages
+        failed_usage = 120 if failure_kind == "empty_summary" else 135
+        expected_usage = failed_attempts * failed_usage + (0 if exhausted else 135)
+        assert agent.run_record.total_usage.total_tokens == 15 + expected_usage
+        if not exhausted:
+            assert (
+                agent._pending_action_reasoning["usage"]["total_tokens"]
+                == expected_usage
+            )
+        summary_requests = [
+            request
+            for request in agent._adapter.requests
+            if "compaction" in request.request_config
+        ]
+        assert len(summary_requests) == failed_attempts + (0 if exhausted else 1)
+        assert all(request.native_input == history for request in summary_requests)
+        for request in agent._adapter.requests[1:]:
+            if "compaction" not in request.request_config:
+                assert request.native_input[-1] == {
+                    "role": "user",
+                    "content": agent.build_frame_content(latest),
+                }
+        artifacts = "\n".join(path.read_text() for path in tmp_path.glob("*.json"))
+        assert "private-summary-signature" not in artifacts
+        assert "private-signature" not in artifacts
+        assert "private-ciphertext" not in artifacts
+
     @pytest.mark.parametrize("exhausted", [False, True])
     def test_reported_thinking_is_recorded_without_double_billing(
         self, tmp_path, exhausted
@@ -1944,27 +2037,33 @@ class TestBenchmarkingAgentAnthropicState:
         assert agent._pending_turn_messages
 
     def test_compaction_usage_is_attributed_to_the_action_and_run(self, tmp_path):
-        response = _anthropic_response(summary="compacted")
-        response.raw_response["usage"]["iterations"] = [
-            {"type": "compaction", "input_tokens": 100, "output_tokens": 20},
-            {"type": "message", "input_tokens": 10, "output_tokens": 5},
-        ]
-        agent = _anthropic_agent(tmp_path, [response])
+        agent = _anthropic_agent(
+            tmp_path,
+            [_anthropic_response(), _anthropic_summary(), _anthropic_response()],
+        )
         agent.choose_action([], _playable_frame())
-        assert agent.run_record.total_usage.total_tokens == 135
+        agent._runtime_state.payload["context_tokens"] = 175_000
+        agent.choose_action([], _playable_frame())
+        assert agent.run_record.total_usage.total_tokens == 150
         assert agent._pending_action_reasoning["usage"]["total_tokens"] == 135
         assert agent._pending_action_reasoning["cost"]["total_cost"] == pytest.approx(0.001175)
 
     def test_forced_reset_observation_survives_compaction(self, tmp_path):
-        agent = _anthropic_agent(tmp_path, [_anthropic_response(summary="active summary"), _anthropic_response()])
+        agent = _anthropic_agent(
+            tmp_path,
+            [_anthropic_response(), _anthropic_summary(), _anthropic_response()],
+        )
         frame = _playable_frame()
         agent.choose_action([], frame)
+        accepted_history = deepcopy(agent._runtime_state.payload["messages"])
+        agent._runtime_state.payload["context_tokens"] = 175_000
         terminal = _terminal_frame(GameState.GAME_OVER)
         agent.action_counter = 1
         assert agent._resolve_action([], terminal) == GameAction.RESET
         assert len(agent._adapter.requests) == 1
         agent.choose_action([], frame)
-        messages = agent._adapter.requests[1].native_input
+        assert agent._adapter.requests[1].native_input == accepted_history
+        messages = agent._adapter.requests[2].native_input
         assert messages[-2:] == [
             {"role": "user", "content": agent.build_frame_content(terminal)},
             {"role": "user", "content": agent.build_frame_content(frame)},

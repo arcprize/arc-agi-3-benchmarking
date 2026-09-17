@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from .exceptions import EmptyResponseError, InvalidProviderResponseError
 from .runtime_models import Message, ModelRequest, ModelResponse, NormalizedUsage
@@ -19,8 +21,15 @@ from .runtime_state import (
     sanitize_settings,
 )
 
-COMPACTION_BETA = "compact-2026-01-12"
-COMPACTION_TYPE = "compact_20260112"
+COMPACTION_BETA = "compact-2026-09-04"
+
+
+class AnthropicCompactionPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    strategy: Literal["native"]
+    trigger_tokens: int = Field(strict=True, gt=0)
+    summary_max_output_tokens: int = Field(default=8_192, strict=True, gt=0)
 
 
 def native_mapping(value: Any) -> dict[str, Any]:
@@ -46,6 +55,8 @@ def serialize_replay_content(content: list[Any]) -> list[dict[str, Any]]:
 
 def validate_continuous_conversation_request(
     request_config: dict[str, Any],
+    *,
+    compaction_request: bool = False,
 ) -> None:
     incompatible = sorted(
         set(request_config).intersection(
@@ -66,6 +77,8 @@ def validate_continuous_conversation_request(
                 "container",
                 "messages",
                 "system",
+                "context_management",
+                "pause_after_compaction",
             }
         )
     )
@@ -95,33 +108,29 @@ def validate_continuous_conversation_request(
     betas = request_config.get("betas", [])
     if not isinstance(betas, list) or not all(isinstance(beta, str) for beta in betas):
         raise ValueError("Anthropic request.betas must be a list of strings.")
-    if "context_management" not in request_config:
-        return
-    context = request_config["context_management"]
-    edits = context.get("edits") if isinstance(context, dict) else None
-    if (
-        not isinstance(edits, list)
-        or len(edits) != 1
-        or not isinstance(edits[0], dict)
-        or edits[0].get("type") != COMPACTION_TYPE
-    ):
+    if "compact-2026-01-12" in betas:
         raise ValueError(
-            "Anthropic compaction requires exactly one compact_20260112 edit."
+            "Anthropic threshold compaction is unsupported; use native on-demand compaction."
         )
-    if COMPACTION_BETA not in betas:
-        raise ValueError("Anthropic compaction requires beta compact-2026-01-12.")
-    edit = edits[0]
-    if edit.get("pause_after_compaction", False) is not False:
-        raise ValueError("Anthropic compaction requires pause_after_compaction=false.")
-    trigger = edit.get("trigger")
-    if trigger is not None and (
-        not isinstance(trigger, dict)
-        or trigger.get("type") != "input_tokens"
-        or type(trigger.get("value")) is not int
-        or trigger["value"] < 50_000
-    ):
+    output_config = request_config.get("output_config", {})
+    if not isinstance(output_config, dict):
+        raise ValueError("Anthropic output_config must be a mapping.")
+    if compaction_request:
+        if request_config.get("compaction") != {"type": "summarize"}:
+            raise ValueError("Anthropic compaction requires type='summarize'.")
+        if COMPACTION_BETA not in betas:
+            raise ValueError(f"Anthropic compaction requires beta {COMPACTION_BETA}.")
+        if "stop_sequences" in request_config or "format" in output_config:
+            raise ValueError(
+                "Anthropic compaction cannot constrain the summary format."
+            )
+    elif "compaction" in request_config:
         raise ValueError(
-            "Anthropic compaction requires an input_tokens trigger of at least 50000."
+            "Configure native compaction in runtime.compaction, not request."
+        )
+    if "remaining" in (output_config.get("task_budget") or {}):
+        raise ValueError(
+            "Anthropic native replay does not support task_budget.remaining."
         )
 
 
@@ -169,7 +178,37 @@ def normalize_native_response(
 ) -> ModelResponse:
     raw = native_mapping(value)
     usage = normalize_native_usage(raw.get("usage"))
+    content = raw.get("content", []) or []
+    try:
+        if not isinstance(content, list):
+            raise TypeError("Native content must be a list.")
+        blocks = [native_mapping(block) for block in content]
+    except (TypeError, ValueError):
+        raise InvalidProviderResponseError(
+            "Anthropic response contained malformed native content.",
+            response=sanitize_settings(raw),
+            usage=usage,
+        ) from None
     stop_reason = raw.get("stop_reason")
+    if "compaction" in request_config:
+        if not (
+            stop_reason == "compaction"
+            and len(blocks) == 1
+            and blocks[0].get("type") == "compaction"
+            and isinstance(blocks[0].get("content"), str)
+            and blocks[0]["content"].strip()
+            and isinstance(blocks[0].get("signature"), str)
+            and blocks[0]["signature"].strip()
+        ):
+            raise InvalidProviderResponseError(
+                "Anthropic compaction did not return a completed, nonempty signed summary.",
+                response=sanitize_settings(raw),
+                usage=usage,
+            )
+        raw["content"] = blocks
+        return ModelResponse(
+            output_text=blocks[0]["content"], usage=usage, raw_response=raw
+        )
     completed = stop_reason == "end_turn" or (
         stop_reason == "stop_sequence"
         and raw.get("stop_sequence") in (request_config.get("stop_sequences") or [])
@@ -180,13 +219,13 @@ def normalize_native_response(
             response=sanitize_settings(raw),
             usage=usage,
         )
-    blocks = [native_mapping(block) for block in raw.get("content", []) or []]
     if any(
-        block.get("type") in {"tool_use", "server_tool_use", "mcp_tool_use"}
+        block.get("type")
+        in {"tool_use", "server_tool_use", "mcp_tool_use", "compaction"}
         for block in blocks
     ):
         raise InvalidProviderResponseError(
-            "Anthropic action turns cannot contain tool calls.",
+            "Anthropic action turns cannot contain tool calls or inline compaction.",
             response=sanitize_settings(raw),
             usage=usage,
         )
@@ -211,29 +250,6 @@ def normalize_native_response(
         usage=usage,
         raw_response=raw,
     )
-
-
-def prune_after_latest_compaction(
-    messages: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    for message_index in range(len(messages) - 1, -1, -1):
-        message = messages[message_index]
-        blocks = message.get("content")
-        if message.get("role") != "assistant" or not isinstance(blocks, list):
-            continue
-        for block_index in range(len(blocks) - 1, -1, -1):
-            block = blocks[block_index]
-            summary = block.get("content")
-            if (
-                block.get("type") == "compaction"
-                and isinstance(summary, str)
-                and summary.strip()
-            ):
-                return [
-                    {**message, "content": blocks[block_index:]},
-                    *messages[message_index + 1 :],
-                ]
-    return messages
 
 
 def readable_messages(
@@ -264,9 +280,20 @@ class AnthropicContinuousConversationRuntimeAdapter:
     strategy = CONTINUOUS_CONVERSATION_RUNTIME_STATE
     provides_continuous_conversation = True
 
-    def __init__(self, *, model_adapter: Any, descriptor: AdapterDescriptor) -> None:
+    def __init__(
+        self,
+        *,
+        model_adapter: Any,
+        descriptor: AdapterDescriptor,
+        compaction: dict[str, Any] | None = None,
+    ) -> None:
         self._model_adapter = model_adapter
         self.descriptor = descriptor
+        self._compaction = (
+            AnthropicCompactionPolicy.model_validate(compaction)
+            if compaction is not None
+            else None
+        )
 
     def initial_state(self) -> RuntimeState:
         return RuntimeState(
@@ -292,6 +319,22 @@ class AnthropicContinuousConversationRuntimeAdapter:
                 raise ValueError(
                     "Anthropic state must contain native user/assistant messages."
                 )
+        compactions = [
+            (message_index, block_index, block)
+            for message_index, message in enumerate(messages)
+            if isinstance(message["content"], list)
+            for block_index, block in enumerate(message["content"])
+            if block.get("type") == "compaction"
+        ]
+        if compactions and (
+            len(compactions) != 1
+            or compactions[0][:2] != (0, 0)
+            or not isinstance(compactions[0][2].get("signature"), str)
+            or not compactions[0][2]["signature"].strip()
+        ):
+            raise ValueError(
+                "Anthropic replay requires exactly one signed compaction block first."
+            )
         return messages
 
     def buffer_inputs(
@@ -309,41 +352,99 @@ class AnthropicContinuousConversationRuntimeAdapter:
 
     def invoke_turn(self, request: ModelTurnRequest) -> ModelTurnResult:
         validate_continuous_conversation_request(request.request_config)
-        state = self.buffer_inputs(request.previous_state, request.new_messages)
+        state = request.previous_state
+        history = self._messages(state)
         model = request.request_config["model"]
         for key, value in (("model", model), ("system_prompt", request.system_prompt)):
             if key in state.payload and state.payload[key] != value:
                 raise ValueError(
                     f"Anthropic continuous conversation cannot change {key}."
                 )
-        messages = self._messages(state)
+        has_summary = any(
+            isinstance(message["content"], list)
+            and any(block.get("type") == "compaction" for block in message["content"])
+            for message in history
+        )
+        if (
+            self._compaction is not None or has_summary
+        ) and COMPACTION_BETA not in request.request_config.get("betas", []):
+            raise ValueError(
+                f"Anthropic native compaction requires beta {COMPACTION_BETA}."
+            )
+        history_count = len(history)
+        completed_end = next(
+            (
+                index + 1
+                for index in range(len(history) - 1, -1, -1)
+                if history[index]["role"] == "assistant"
+            ),
+            0,
+        )
+        compaction_usage = NormalizedUsage()
+        compaction_count = 0
+        trigger_tokens = state.payload.get("context_tokens", 0)
         try:
-            response = self._model_adapter.invoke(
-                ModelRequest(
-                    messages=[Message(role="system", content=request.system_prompt)],
-                    request_config=deepcopy(request.request_config),
-                    native_input=deepcopy(messages),
+            if (
+                self._compaction is not None
+                and completed_end
+                and trigger_tokens >= self._compaction.trigger_tokens
+            ):
+                config = deepcopy(request.request_config)
+                config["compaction"] = {"type": "summarize"}
+                config["max_tokens"] = self._compaction.summary_max_output_tokens
+                config.pop("stop_sequences", None)
+                config.get("output_config", {}).pop("format", None)
+                compacted = self._invoke(
+                    request.system_prompt, history[:completed_end], config
+                )
+                compaction_usage = compacted.usage
+                history = [
+                    {
+                        "role": "assistant",
+                        "content": serialize_replay_content(
+                            native_mapping(compacted.raw_response)["content"]
+                        ),
+                    },
+                    *history[completed_end:],
+                ]
+                compaction_count = 1
+            messages = self._messages(
+                self.buffer_inputs(
+                    replace_runtime_payload(
+                        state, {**state.payload, "messages": history}
+                    ),
+                    request.new_messages,
                 )
             )
-        except EmptyResponseError:
-            raise
+            response = self._invoke(
+                request.system_prompt, messages, request.request_config
+            )
+        except EmptyResponseError as exc:
+            usage = (
+                exc.usage
+                if isinstance(exc.usage, NormalizedUsage)
+                else NormalizedUsage()
+            )
+            raise InvalidProviderResponseError(
+                "Anthropic compaction or action request did not complete.",
+                response=sanitize_settings(exc.response),
+                usage=compaction_usage + usage,
+            ) from None
         except Exception as exc:
             raise InvalidProviderResponseError(
-                f"Anthropic request failed ({type(exc).__name__})."
+                f"Anthropic request failed ({type(exc).__name__}).",
+                usage=compaction_usage,
             ) from None
-        response = normalize_native_response(
-            response.raw_response, request.request_config
+        context_tokens = response.usage.total_tokens
+        response = response.model_copy(
+            update={"usage": compaction_usage + response.usage}
         )
         raw = native_mapping(response.raw_response)
         output = {
             "role": "assistant",
             "content": serialize_replay_content(raw["content"]),
         }
-        all_messages = [*messages, output]
-        next_messages = prune_after_latest_compaction(all_messages)
-        compaction_count = sum(
-            block.get("type") == "compaction" for block in raw["content"]
-        )
+        next_messages = [*messages, output]
         descriptors = [
             {
                 "role": message["role"],
@@ -358,7 +459,7 @@ class AnthropicContinuousConversationRuntimeAdapter:
         counts = {
             "input_items_sent": len(messages),
             "compaction_items_returned": compaction_count,
-            "history_items_before_prune": len(all_messages),
+            "history_items_before_prune": history_count + len(request.new_messages) + 1,
             "history_items_after_prune": len(next_messages),
         }
         return ModelTurnResult(
@@ -369,6 +470,7 @@ class AnthropicContinuousConversationRuntimeAdapter:
                     "messages": next_messages,
                     "model": model,
                     "system_prompt": request.system_prompt,
+                    "context_tokens": context_tokens,
                 },
             ),
             sanitized_request={
@@ -379,5 +481,31 @@ class AnthropicContinuousConversationRuntimeAdapter:
                 request.system_prompt, messages
             ),
             transition=StateTransitionTelemetry(**counts, sanitized_items=descriptors),
-            action_state={**counts, "stop_reason": raw.get("stop_reason")},
+            action_state={
+                **counts,
+                "stop_reason": raw.get("stop_reason"),
+                **(
+                    {
+                        "native_compaction": {
+                            "trigger_tokens": trigger_tokens,
+                            "history_items_to_compact": completed_end,
+                            "usage": compaction_usage.model_dump(),
+                        }
+                    }
+                    if compaction_count
+                    else {}
+                ),
+            },
         )
+
+    def _invoke(
+        self, system_prompt: str, messages: list[dict[str, Any]], config: dict[str, Any]
+    ) -> ModelResponse:
+        response = self._model_adapter.invoke(
+            ModelRequest(
+                messages=[Message(role="system", content=system_prompt)],
+                request_config=deepcopy(config),
+                native_input=deepcopy(messages),
+            )
+        )
+        return normalize_native_response(response.raw_response, config)

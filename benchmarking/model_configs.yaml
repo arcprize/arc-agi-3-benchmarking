@@ -217,6 +217,10 @@
     sdk: "anthropic-python"
     api: "messages"
     state: "continuous_conversation"
+    compaction:
+      strategy: "native"
+      trigger_tokens: 175_000
+      summary_max_output_tokens: 8_192
   client:
     api_key_env: "ANTHROPIC_API_KEY"
   request:
@@ -228,14 +232,7 @@
       display: "summarized"
     output_config:
       effort: "low"
-    betas: ["compact-2026-01-12", "thinking-token-count-2026-05-13"]
-    context_management:
-      edits:
-        - type: "compact_20260112"
-          trigger:
-            type: "input_tokens"
-            value: 175_000
-          pause_after_compaction: false
+    betas: ["compact-2026-09-04", "thinking-token-count-2026-05-13"]
   pricing:
     input: 5.00
     output: 25.00

@@ -10,7 +10,6 @@ from benchmarking.anthropic_runtime import (
     AnthropicContinuousConversationRuntimeAdapter,
     normalize_native_response,
     normalize_native_usage,
-    prune_after_latest_compaction,
     serialize_replay_content,
     validate_continuous_conversation_request,
 )
@@ -60,6 +59,20 @@ def _raw_response(text="ACTION1", *, blocks=None, stop_reason="end_turn", usage=
     }
 
 
+def _compaction_response(summary="summary", *, signature="summary-signature"):
+    return _raw_response(
+        blocks=[{"type": "compaction", "content": summary, "signature": signature}],
+        stop_reason="compaction",
+        usage={
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "iterations": [
+                {"type": "compaction", "input_tokens": 100, "output_tokens": 20}
+            ],
+        },
+    )
+
+
 class _FakeModelAdapter:
     def __init__(self, responses):
         self.responses = iter(responses)
@@ -73,11 +86,13 @@ class _FakeModelAdapter:
         return normalize_native_response(raw, request.request_config)
 
 
-def _adapter(responses):
+def _adapter(responses, *, trigger_tokens=175_000):
     low_level = _FakeModelAdapter(responses)
+    runtime = deepcopy(get_model_config(CONFIG_ID)["runtime"])
+    runtime["compaction"]["trigger_tokens"] = trigger_tokens
     adapter = build_stateful_runtime_adapter(
         model_adapter=low_level,
-        runtime_config=get_model_config(CONFIG_ID)["runtime"],
+        runtime_config=runtime,
         config_id=CONFIG_ID,
     )
     return adapter, low_level
@@ -207,82 +222,68 @@ class TestAnthropicRuntime:
         assert first.state.model_dump_json() == snapshot
 
     def test_multiple_compactions_and_buffered_inputs(self):
-        def compacted(summary):
-            return _raw_response(
-                blocks=[
-                    {"type": "compaction", "content": summary},
-                    {
-                        "type": "thinking",
-                        "thinking": "after",
-                        "signature": "new-signature",
-                    },
-                    {"type": "text", "text": "ACTION1"},
-                ]
-            )
-
         adapter, low_level = _adapter(
             [
                 _raw_response(),
-                compacted("summary one"),
+                _compaction_response("summary one"),
                 _raw_response(),
-                compacted("summary two"),
+                _compaction_response("summary two"),
                 _raw_response(),
-            ]
+            ],
+            trigger_tokens=15,
         )
         first = _turn(adapter, adapter.initial_state(), "old frame")
         buffered = adapter.buffer_inputs(
             first.state, [Message(role="user", content="GAME_OVER")]
         )
         second = _turn(adapter, buffered, "reset frame")
+        assert low_level.requests[1].native_input == first.state.payload["messages"]
+        assert low_level.requests[1].request_config["compaction"] == {
+            "type": "summarize"
+        }
         assert [
-            message["content"] for message in low_level.requests[1].native_input[-2:]
+            message["content"] for message in low_level.requests[2].native_input[-2:]
         ] == ["GAME_OVER", "reset frame"]
+        assert "compaction" not in low_level.requests[2].request_config
+        assert "context_management" not in low_level.requests[2].request_config
         assert second.transition.history_items_before_prune == 5
-        assert second.transition.history_items_after_prune == 1
+        assert second.transition.history_items_after_prune == 4
+        assert second.response.usage.total_tokens == 135
+        assert second.state.payload["context_tokens"] == 15
+        assert "reset frame" in str(second.readable_request_messages)
         third = _turn(adapter, second.state, "post-compaction")
         readable = str(third.readable_request_messages)
-        assert "summary one" in readable
+        assert "summary two" in readable
+        assert "summary one" not in readable
         assert "old frame" not in readable
-        assert "reset frame" not in readable
-        fourth = _turn(adapter, third.state, "another")
-        fifth = _turn(adapter, fourth.state, "final")
-        assert "summary two" in str(fifth.readable_request_messages)
-        assert "summary one" not in str(fifth.readable_request_messages)
+        assert "post-compaction" not in str(low_level.requests[3].native_input)
+        assert "reset frame" in str(low_level.requests[3].native_input)
         assert (
-            fifth.state.payload["messages"][0]["content"][1]["signature"]
-            == "new-signature"
+            third.state.payload["messages"][0]["content"]
+            == _compaction_response("summary two")["content"]
         )
 
-    def test_prunes_at_latest_successful_block_not_failed_block(self):
-        messages = [
-            {"role": "user", "content": "old"},
-            {
-                "role": "assistant",
-                "content": [
-                    {"type": "compaction", "content": "earlier"},
-                    {"type": "compaction", "content": "latest"},
-                    {"type": "compaction", "content": None},
-                    {"type": "text", "text": "ACTION1"},
-                ],
-            },
-            {"role": "user", "content": "pending"},
-        ]
-        snapshot = deepcopy(messages)
-        pruned = prune_after_latest_compaction(messages)
-        assert messages == snapshot
-        assert pruned[0]["content"] == messages[1]["content"][1:]
-        assert pruned[1]["content"] == "pending"
+    @pytest.mark.parametrize("summary", [None, "", " "])
+    def test_null_compaction_preserves_history(self, summary):
+        adapter, low_level = _adapter(
+            [_raw_response(), _compaction_response(summary)], trigger_tokens=15
+        )
+        state = _turn(adapter, adapter.initial_state()).state
+        snapshot = state.model_dump_json()
+        with pytest.raises(InvalidProviderResponseError) as raised:
+            _turn(adapter, state, "newest")
+        assert raised.value.usage.total_tokens == 120
+        assert state.model_dump_json() == snapshot
+        assert "newest" not in str(low_level.requests[-1].native_input)
 
-    def test_null_compaction_preserves_history(self):
+    def test_inline_compaction_is_rejected_even_with_valid_action(self):
         raw = _raw_response()
         raw["content"].insert(0, {"type": "compaction", "content": None})
         adapter, _ = _adapter([raw])
-        result = _turn(adapter, adapter.initial_state())
-        assert result.state.payload["messages"][0]["content"] == "frame"
-        assert (
-            result.transition.history_items_before_prune
-            == result.transition.history_items_after_prune
-        )
+        state = adapter.initial_state()
+        with pytest.raises(InvalidProviderResponseError):
+            _turn(adapter, state)
+        assert state.payload == {"messages": []}
 
     @pytest.mark.parametrize(
         "field,value", [("model", "different-model"), ("system_prompt", "changed")]
@@ -423,6 +424,60 @@ class TestAnthropicRuntime:
 
 @pytest.mark.unit
 class TestAnthropicConfiguration:
+    @pytest.mark.parametrize(
+        "policy",
+        [
+            {},
+            {"strategy": "harness_summary", "trigger_tokens": 175_000},
+            {"strategy": "native", "trigger_tokens": 0},
+            {"strategy": "native", "trigger_tokens": True},
+            {"strategy": "native", "trigger_tokens": 1_000_000},
+            {
+                "strategy": "native",
+                "trigger_tokens": 175_000,
+                "summary_max_output_tokens": 0,
+            },
+            {
+                "strategy": "native",
+                "trigger_tokens": 175_000,
+                "pause_after_compaction": True,
+            },
+        ],
+    )
+    def test_invalid_native_policy(self, policy):
+        config = deepcopy(get_model_config(CONFIG_ID))
+        config["runtime"]["compaction"] = policy
+        with pytest.raises(ValueError):
+            _validate_model_config_entry(config, 1, set())
+
+    def test_native_policy_requires_beta(self):
+        config = deepcopy(get_model_config(CONFIG_ID))
+        config["request"]["betas"] = []
+        with pytest.raises(ValueError, match="compact-2026-09-04"):
+            _validate_model_config_entry(config, 1, set())
+
+    @pytest.mark.parametrize(
+        "update",
+        [
+            {"compaction": {"type": "summarize"}},
+            {"betas": ["compact-2026-01-12"]},
+            {"output_config": {"task_budget": {"remaining": 10}}},
+        ],
+    )
+    def test_rejects_unsafe_action_request_settings(self, update):
+        config = _request_config()
+        config.update(update)
+        with pytest.raises(ValueError):
+            validate_continuous_conversation_request(config)
+
+    @pytest.mark.parametrize(
+        "model", ["claude-opus-5", "claude-fable-5", "claude-fable-5-1"]
+    )
+    def test_native_policy_does_not_hardcode_the_model(self, model):
+        config = deepcopy(get_model_config(CONFIG_ID))
+        config["request"]["model"] = model
+        _validate_model_config_entry(config, 1, set())
+
     def test_thinking_telemetry_beta_is_optional(self):
         config = deepcopy(get_model_config(CONFIG_ID))
         config["request"]["betas"].remove("thinking-token-count-2026-05-13")
@@ -458,7 +513,6 @@ class TestAnthropicConfiguration:
             {"thinking": {"type": "adaptive"}},
             {"thinking": {"type": "disabled", "display": "summarized"}},
             {"context_management": {}},
-            {"betas": []},
         ],
     )
     def test_request_validation_cannot_be_bypassed_by_legacy_adapter_selection(
@@ -494,7 +548,7 @@ class TestAnthropicConfiguration:
     )
     def test_invalid_compaction_edit(self, edit):
         request = _request_config()
-        request["context_management"]["edits"] = [edit]
+        request["context_management"] = {"edits": [edit]}
         with pytest.raises(ValueError):
             validate_continuous_conversation_request(request)
 
@@ -505,14 +559,14 @@ class TestAnthropicConfiguration:
         config = deepcopy(get_model_config(CONFIG_ID))
         if not explicit_adapter:
             config["runtime"].pop("adapter_id")
-        config["request"].pop("context_management")
+        config["runtime"].pop("compaction")
         config["request"].pop("betas")
         _validate_model_config_entry(config, 1, set())
         config["runtime"]["compaction"] = {
             "strategy": "harness_summary",
             "trigger_tokens": 175_000,
         }
-        with pytest.raises(ValueError, match="native request compaction only"):
+        with pytest.raises(ValueError, match="native"):
             _validate_model_config_entry(config, 1, set())
 
 
@@ -528,10 +582,6 @@ def _stream_events(*, stop_reason="end_turn", complete=True, sdk_extras=False):
     }
     events = [{"type": "message_start", "message": message}]
     blocks_and_deltas = [
-        (
-            {"type": "compaction", "content": None},
-            [{"type": "compaction_delta", "content": "SDK summary"}],
-        ),
         (
             {"type": "thinking", "thinking": "", "signature": ""},
             [
@@ -554,8 +604,6 @@ def _stream_events(*, stop_reason="end_turn", complete=True, sdk_extras=False):
     for index, (block, deltas) in enumerate(blocks_and_deltas):
         if sdk_extras and block["type"] == "text":
             block["parsed_output"] = None
-        if sdk_extras and block["type"] == "compaction":
-            block["encrypted_content"] = None
         events.append(
             {"type": "content_block_start", "index": index, "content_block": block}
         )
@@ -579,10 +627,43 @@ def _stream_events(*, stop_reason="end_turn", complete=True, sdk_extras=False):
                 "output_tokens": 5,
                 "output_tokens_details": {"thinking_tokens": 3},
                 "iterations": [
-                    {"type": "compaction", "input_tokens": 50000, "output_tokens": 100},
                     {"type": "message", "input_tokens": 10, "output_tokens": 5},
                 ],
             },
+        }
+    )
+    if complete:
+        events.append({"type": "message_stop"})
+    return "".join(
+        f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events
+    ).encode()
+
+
+def _summary_stream_events(raw, *, complete=True):
+    message = {
+        "id": "msg_summary",
+        "type": "message",
+        **raw,
+        "content": [],
+        "stop_reason": None,
+    }
+    events = [{"type": "message_start", "message": message}, {"type": "ping"}]
+    for index, block in enumerate(raw["content"]):
+        events.extend(
+            [
+                {"type": "content_block_start", "index": index, "content_block": block},
+                {"type": "content_block_stop", "index": index},
+            ]
+        )
+    events.append(
+        {
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": raw["stop_reason"],
+                "stop_sequence": None,
+                "stop_details": raw.get("stop_details"),
+            },
+            "usage": raw["usage"],
         }
     )
     if complete:
@@ -610,6 +691,281 @@ def _sdk_adapter(client):
 
 
 @pytest.mark.unit
+class TestAnthropicOnDemandCompaction:
+    @pytest.mark.parametrize(
+        "content", [[None], ["invalid block"], {"type": "compaction"}]
+    )
+    def test_malformed_summary_keeps_returned_usage(self, content):
+        summary = _compaction_response()
+        summary["content"] = content
+        adapter, _ = _adapter([_raw_response(), summary], trigger_tokens=15)
+        state = _turn(adapter, adapter.initial_state()).state
+        snapshot = state.model_dump_json()
+        with pytest.raises(InvalidProviderResponseError) as raised:
+            _turn(adapter, state)
+        assert raised.value.usage.total_tokens == 120
+        assert state.model_dump_json() == snapshot
+
+    def test_compaction_usage_does_not_schedule_another_compaction(self):
+        summary = _compaction_response()
+        summary["usage"]["iterations"][0]["input_tokens"] = 200_000
+        adapter, low_level = _adapter(
+            [
+                _raw_response(usage={"input_tokens": 175_000, "output_tokens": 5}),
+                summary,
+                _raw_response(),
+                _raw_response(),
+            ]
+        )
+        first = _turn(adapter, adapter.initial_state())
+        second = _turn(adapter, first.state, "fresh")
+        assert second.response.usage.total_tokens > 175_000
+        assert second.state.payload["context_tokens"] == 15
+        third = _turn(adapter, second.state, "another fresh frame")
+        assert third.transition.compaction_items_returned == 0
+        assert len(low_level.requests) == 4
+
+    @pytest.mark.parametrize(
+        "stop_reason",
+        [
+            "max_tokens",
+            "model_context_window_exceeded",
+            "refusal",
+            "tool_use",
+            "end_turn",
+            "pause_turn",
+        ],
+    )
+    def test_failed_summary_cannot_be_accepted_as_action(self, stop_reason):
+        raw = _compaction_response()
+        raw["stop_reason"] = stop_reason
+        raw["content"].append({"type": "text", "text": "ACTION1"})
+        adapter, low_level = _adapter([_raw_response(), raw], trigger_tokens=15)
+        state = _turn(adapter, adapter.initial_state()).state
+        snapshot = state.model_dump_json()
+        with pytest.raises(InvalidProviderResponseError) as raised:
+            _turn(adapter, state, "untouched next frame")
+        assert state.model_dump_json() == snapshot
+        assert raised.value.usage.total_tokens == 120
+        assert len(low_level.requests) == 2
+        assert "untouched next frame" not in str(low_level.requests[-1].native_input)
+        assert "summary-signature" not in str(raised.value.response)
+
+    @pytest.mark.parametrize("signature", [None, "", " "])
+    def test_unsigned_summary_does_not_replace_history(self, signature):
+        adapter, _ = _adapter(
+            [_raw_response(), _compaction_response(signature=signature)],
+            trigger_tokens=15,
+        )
+        state = _turn(adapter, adapter.initial_state()).state
+        snapshot = state.model_dump_json()
+        with pytest.raises(InvalidProviderResponseError):
+            _turn(adapter, state)
+        assert state.model_dump_json() == snapshot
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            _raw_response(stop_reason="refusal"),
+            _raw_response(stop_reason="max_tokens"),
+            _raw_response(
+                blocks=[
+                    {"type": "thinking", "thinking": "only", "signature": "private"}
+                ]
+            ),
+            RuntimeError("private-summary-signature"),
+        ],
+    )
+    def test_failed_action_discards_provisional_summary_but_keeps_usage(self, failure):
+        adapter, low_level = _adapter(
+            [_raw_response(), _compaction_response(), failure], trigger_tokens=15
+        )
+        state = _turn(adapter, adapter.initial_state()).state
+        snapshot = state.model_dump_json()
+        with pytest.raises(InvalidProviderResponseError) as raised:
+            _turn(adapter, state, "latest untouched frame")
+        assert state.model_dump_json() == snapshot
+        assert raised.value.usage.total_tokens == (
+            120 if isinstance(failure, Exception) else 135
+        )
+        assert "private-summary-signature" not in str(raised.value)
+        assert "latest untouched frame" not in str(low_level.requests[1].native_input)
+        assert (
+            low_level.requests[2].native_input[-1]["content"]
+            == "latest untouched frame"
+        )
+
+    def test_first_frame_is_never_compacted_even_if_large(self):
+        adapter, low_level = _adapter([_raw_response()], trigger_tokens=1)
+        _turn(adapter, adapter.initial_state(), "large frame " * 1000)
+        assert len(low_level.requests) == 1
+        assert "compaction" not in low_level.requests[0].request_config
+
+    def test_summary_strips_action_only_constraints_without_mutating_config(self):
+        adapter, low_level = _adapter(
+            [_raw_response(), _compaction_response(), _raw_response()],
+            trigger_tokens=15,
+        )
+        state = _turn(adapter, adapter.initial_state()).state
+        config = _request_config()
+        config["stop_sequences"] = ["END"]
+        config["output_config"]["format"] = {
+            "type": "json_schema",
+            "schema": {"type": "object"},
+        }
+        snapshot = deepcopy(config)
+        result = adapter.invoke_turn(
+            ModelTurnRequest(
+                system_prompt="system",
+                new_messages=[Message(role="user", content="latest")],
+                request_config=config,
+                previous_state=state,
+            )
+        )
+        summary_config = low_level.requests[1].request_config
+        assert "stop_sequences" not in summary_config
+        assert summary_config["output_config"] == {"effort": "low"}
+        assert summary_config["thinking"] == config["thinking"]
+        assert summary_config["max_tokens"] == 8192
+        assert low_level.requests[2].request_config == snapshot
+        assert config == snapshot
+        assert result.state.payload["context_tokens"] == 15
+
+    @pytest.mark.parametrize("placement", ["misplaced", "duplicate", "unsigned"])
+    def test_invalid_summary_replay_is_rejected_locally(self, placement):
+        block = _compaction_response()["content"]
+        messages = [{"role": "assistant", "content": block}]
+        if placement == "misplaced":
+            messages.insert(0, {"role": "user", "content": "summarized history"})
+        elif placement == "duplicate":
+            messages.append(deepcopy(messages[0]))
+        else:
+            block[0].pop("signature")
+        adapter, low_level = _adapter([])
+        state = adapter.initial_state()
+        state.payload["messages"] = messages
+        with pytest.raises(ValueError, match="signed compaction block first"):
+            _turn(adapter, state)
+        assert low_level.requests == []
+
+    @pytest.mark.parametrize("streaming", [False, True])
+    @pytest.mark.parametrize("failed_summary", [False, True])
+    def test_pinned_sdk_sends_on_demand_and_replays_signed_summary(
+        self, streaming, failed_summary
+    ):
+        captured = []
+        summary = _compaction_response("SDK signed summary")
+        summary["content"][0]["encrypted_content"] = None
+        if failed_summary:
+            summary["content"] = []
+            summary["stop_reason"] = "refusal"
+            summary["stop_details"] = {"category": "synthetic-category"}
+
+        def handle(request):
+            body = json.loads(request.content)
+            captured.append(body)
+            assert "compact-2026-09-04" in request.headers["anthropic-beta"]
+            assert "context_management" not in body
+            assert "extra_body" not in body
+            if "compaction" in body:
+                assert body["compaction"] == {"type": "summarize"}
+                assert "fresh frame" not in str(body["messages"])
+                raw = summary
+            else:
+                raw = _raw_response(
+                    usage={"input_tokens": 175_000, "output_tokens": 5}
+                    if len(captured) == 1
+                    else None
+                )
+            if streaming:
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=_summary_stream_events(raw),
+                )
+            return httpx.Response(
+                200, json={"id": "msg_test", "type": "message", **raw}
+            )
+
+        with anthropic.Anthropic(
+            api_key="synthetic-key",
+            max_retries=0,
+            http_client=httpx.Client(transport=httpx.MockTransport(handle)),
+        ) as client:
+            adapter = _sdk_adapter(client)
+            config = _request_config()
+            config.update(stream=streaming, max_tokens=4096)
+            request = ModelTurnRequest(
+                system_prompt="system",
+                new_messages=[Message(role="user", content="old frame")],
+                request_config=config,
+                previous_state=adapter.initial_state(),
+            )
+            first = adapter.invoke_turn(request)
+            request.previous_state = first.state
+            request.new_messages = [Message(role="user", content="fresh frame")]
+            snapshot = first.state.model_dump_json()
+            if failed_summary:
+                with pytest.raises(InvalidProviderResponseError) as raised:
+                    adapter.invoke_turn(request)
+                assert raised.value.usage.total_tokens == 120
+                assert (
+                    raised.value.response["stop_details"]["category"]
+                    == "synthetic-category"
+                )
+                assert len(captured) == 2
+            else:
+                second = adapter.invoke_turn(request)
+                assert captured[2]["messages"][0][
+                    "content"
+                ] == serialize_replay_content(summary["content"])
+                assert captured[2]["messages"][-1] == {
+                    "role": "user",
+                    "content": "fresh frame",
+                }
+                assert "compaction" not in captured[2]
+                assert second.response.usage.total_tokens == 135
+                assert second.transition.compaction_items_returned == 1
+                assert "summary-signature" not in str(second.readable_request_messages)
+                assert "summary-signature" not in str(second.action_state)
+            assert first.state.model_dump_json() == snapshot
+            assert captured[1]["messages"] == first.state.payload["messages"]
+            assert all(
+                body["model"] == "claude-opus-5"
+                and body["output_config"]["effort"] == "low"
+                for body in captured
+            )
+
+    def test_interrupted_summary_stream_preserves_history_and_billed_usage(self):
+        def handle(_request):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=_summary_stream_events(_compaction_response(), complete=False),
+            )
+
+        with anthropic.Anthropic(
+            api_key="synthetic-key",
+            max_retries=0,
+            http_client=httpx.Client(transport=httpx.MockTransport(handle)),
+        ) as client:
+            adapter = _sdk_adapter(client)
+            state = adapter.initial_state()
+            state.payload.update(
+                messages=[
+                    {"role": "user", "content": "old"},
+                    {"role": "assistant", "content": "ACTION1"},
+                ],
+                context_tokens=175_000,
+            )
+            snapshot = state.model_dump_json()
+            with pytest.raises(InvalidProviderResponseError) as raised:
+                _turn(adapter, state, "fresh frame")
+        assert raised.value.usage.total_tokens == 120
+        assert state.model_dump_json() == snapshot
+
+
+@pytest.mark.unit
 class TestAnthropicSDKBoundary:
     @pytest.mark.parametrize("streaming", [False, True])
     @pytest.mark.parametrize("sdk_extras", [False, True])
@@ -619,18 +975,10 @@ class TestAnthropicSDKBoundary:
         raw["usage"]["output_tokens_details"] = {"thinking_tokens": 3}
         if sdk_extras:
             raw["content"][-1]["parsed_output"] = None
-            raw["content"].insert(
-                0,
-                {
-                    "type": "compaction",
-                    "content": "SDK summary",
-                    "encrypted_content": None,
-                },
-            )
 
         def handle(request):
             captured.append(json.loads(request.content))
-            assert "compact-2026-01-12" in request.headers["anthropic-beta"]
+            assert "compact-2026-09-04" in request.headers["anthropic-beta"]
             assert (
                 "thinking-token-count-2026-05-13" in request.headers["anthropic-beta"]
             )
@@ -676,9 +1024,8 @@ class TestAnthropicSDKBoundary:
             for block in replay
         )
         if streaming:
-            assert first.response.usage.total_tokens == 50115
+            assert first.response.usage.total_tokens == 15
             assert first.response.reasoning_text == "SDK thinking"
-            assert replay[0] == {"type": "compaction", "content": "SDK summary"}
         else:
             assert replay == serialize_replay_content(raw["content"])
 
@@ -698,7 +1045,7 @@ class TestAnthropicSDKBoundary:
             with pytest.raises(InvalidProviderResponseError) as raised:
                 _turn(adapter, adapter.initial_state())
         assert raised.value.response["stop_details"]["category"] == "synthetic-category"
-        assert raised.value.usage.total_tokens == 50115
+        assert raised.value.usage.total_tokens == 15
         assert raised.value.usage.reasoning_tokens == 3
         assert "sdk-signature" not in str(raised.value.response)
         assert "sdk-ciphertext" not in str(raised.value.response)
@@ -727,7 +1074,7 @@ class TestAnthropicSDKBoundary:
             with pytest.raises(InvalidProviderResponseError) as raised:
                 _turn(adapter, state)
         assert state.payload == {"messages": []}
-        assert raised.value.usage.total_tokens == 50115
+        assert raised.value.usage.total_tokens == 15
         assert raised.value.usage.reasoning_tokens == 3
         assert "sdk-signature" not in str(raised.value)
 

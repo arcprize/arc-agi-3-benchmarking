@@ -324,7 +324,14 @@ class AnthropicMessagesAdapter:
     def invoke(self, request: ModelRequest) -> ModelResponse:
         request_kwargs = self._build_request_kwargs(request)
         if request.native_input is not None:
-            validate_continuous_conversation_request(request.request_config)
+            validate_continuous_conversation_request(
+                request.request_config,
+                compaction_request="compaction" in request.request_config,
+            )
+            if "compaction" in request_kwargs:
+                request_kwargs["extra_body"] = {
+                    "compaction": request_kwargs.pop("compaction")
+                }
             if self._should_stream(request_kwargs):
                 raw_response = self._invoke_native_streaming(request_kwargs)
             else:
