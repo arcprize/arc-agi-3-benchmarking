@@ -133,6 +133,21 @@ def validate_continuous_conversation_request(
     betas = request_config.get("betas", [])
     if not isinstance(betas, list) or not all(isinstance(beta, str) for beta in betas):
         raise ValueError("Anthropic request.betas must be a list of strings.")
+    cache_control = request_config.get("cache_control")
+    if cache_control is not None:
+        if not isinstance(cache_control, dict):
+            raise ValueError("Anthropic cache_control must be a mapping.")
+        unsupported_cache_fields = sorted(set(cache_control) - {"type", "ttl"})
+        if unsupported_cache_fields:
+            raise ValueError(
+                "Anthropic cache_control does not support field(s): "
+                + ", ".join(unsupported_cache_fields)
+                + "."
+            )
+        if cache_control.get("type") != "ephemeral":
+            raise ValueError("Anthropic cache_control.type must be 'ephemeral'.")
+        if cache_control.get("ttl", "5m") not in {"5m", "1h"}:
+            raise ValueError("Anthropic cache_control.ttl must be '5m' or '1h'.")
     if "compact-2026-01-12" in betas:
         raise ValueError(
             "Anthropic threshold compaction is unsupported; use native on-demand compaction."

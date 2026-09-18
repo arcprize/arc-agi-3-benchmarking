@@ -107,6 +107,30 @@ def test_anthropic_continuous_conversation_two_turn_live():
 
 @pytest.mark.integration
 @pytest.mark.slow
+def test_anthropic_continuous_conversation_prompt_cache_live():
+    _require_paid_test("RUN_ANTHROPIC_CACHE_LIVE_TESTS")
+    client, adapter, config, _ = _build_live_adapter(max_output_tokens=1024)
+    cacheable_prefix = "Stable prompt-cache prefix for replay validation. " * 200
+    with client:
+        first = _turn(
+            adapter,
+            adapter.initial_state(),
+            config,
+            f"{cacheable_prefix}\nRemember {MEMORY_TOKEN}. Reply CACHE_READY.",
+        )
+        second = _turn(
+            adapter,
+            first.state,
+            config,
+            "Reply only with the exact token I asked you to remember.",
+        )
+    assert first.response.usage.cache_write_tokens > 0
+    assert second.response.usage.cached_tokens > 0
+    assert MEMORY_TOKEN in second.response.output_text
+
+
+@pytest.mark.integration
+@pytest.mark.slow
 def test_anthropic_continuous_conversation_compaction_live():
     _require_paid_test("RUN_ANTHROPIC_COMPACTION_LIVE_TESTS")
     client, adapter, config, requests = _build_live_adapter(trigger_tokens=1)

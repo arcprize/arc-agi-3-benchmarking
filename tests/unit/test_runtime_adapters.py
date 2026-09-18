@@ -1242,6 +1242,7 @@ class TestAnthropicMessagesAdapter:
                     "model": "claude-sonnet-4-6",
                     "max_tokens": 99,
                     "metadata": {"run_id": "run_123"},
+                    "cache_control": {"type": "ephemeral"},
                 },
             )
         )
@@ -1249,6 +1250,7 @@ class TestAnthropicMessagesAdapter:
         assert request_kwargs["model"] == "claude-sonnet-4-6"
         assert request_kwargs["max_tokens"] == 99
         assert request_kwargs["metadata"] == {"run_id": "run_123"}
+        assert request_kwargs["cache_control"] == {"type": "ephemeral"}
 
     def test_passes_thinking_config_unchanged(self):
         request_kwargs = AnthropicMessagesAdapter._build_request_kwargs(

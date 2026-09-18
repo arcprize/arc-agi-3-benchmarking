@@ -38,7 +38,7 @@ The first native Anthropic SDK implementation should not include:
 
 - streaming
 - API-managed conversation state
-- prompt caching configuration beyond passing configured request kwargs through
+- custom block-level prompt caching policies beyond top-level automatic caching
 - tool use
 - multimodal message content
 - automatic provider fallback

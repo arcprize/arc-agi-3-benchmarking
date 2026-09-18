@@ -116,7 +116,8 @@ actions, and uses Anthropic's native on-demand compaction at a 175k completed-
 context threshold. It summarizes completed history before presenting the next
 frame, so the newest observation reaches the action request unchanged. It records
 provider-reported thinking-token usage when available without double-counting
-output tokens. Set
+output tokens. The profile also enables Anthropic automatic prompt caching with
+the default 5-minute TTL so repeated native history can be reused. Set
 `ANTHROPIC_API_KEY` to use it:
 
 ```bash

@@ -242,11 +242,17 @@ class TestAnthropicRuntime:
         assert low_level.requests[1].request_config["compaction"] == {
             "type": "summarize"
         }
+        assert low_level.requests[1].request_config["cache_control"] == {
+            "type": "ephemeral"
+        }
         assert [
             message["content"] for message in low_level.requests[2].native_input[-2:]
         ] == ["GAME_OVER", "reset frame"]
         assert "compaction" not in low_level.requests[2].request_config
         assert "context_management" not in low_level.requests[2].request_config
+        assert low_level.requests[2].request_config["cache_control"] == {
+            "type": "ephemeral"
+        }
         assert second.transition.history_items_before_prune == 5
         assert second.transition.history_items_after_prune == 4
         assert second.response.usage.total_tokens == 135
@@ -472,6 +478,30 @@ class TestAnthropicConfiguration:
             validate_continuous_conversation_request(config)
 
     @pytest.mark.parametrize(
+        "cache_control",
+        [
+            "ephemeral",
+            {},
+            {"type": "persistent"},
+            {"type": "ephemeral", "ttl": "2h"},
+            {"type": "ephemeral", "scope": "conversation"},
+        ],
+    )
+    def test_rejects_invalid_cache_control(self, cache_control):
+        config = _request_config()
+        config["cache_control"] = cache_control
+        with pytest.raises(ValueError, match="cache_control"):
+            validate_continuous_conversation_request(config)
+
+    @pytest.mark.parametrize("ttl", [None, "5m", "1h"])
+    def test_accepts_supported_cache_control(self, ttl):
+        config = _request_config()
+        config["cache_control"] = {"type": "ephemeral"}
+        if ttl is not None:
+            config["cache_control"]["ttl"] = ttl
+        validate_continuous_conversation_request(config)
+
+    @pytest.mark.parametrize(
         "model", ["claude-opus-5", "claude-fable-5", "claude-fable-5-1"]
     )
     def test_native_policy_does_not_hardcode_the_model(self, model):
@@ -489,6 +519,7 @@ class TestAnthropicConfiguration:
         assert config["request"]["model"] == "claude-opus-5"
         assert config["request"]["output_config"] == {"effort": "low"}
         assert config["request"]["max_tokens"] == 128_000
+        assert config["request"]["cache_control"] == {"type": "ephemeral"}
         assert "thinking-token-count-2026-05-13" in config["request"]["betas"]
         assert config["agent"]["MAX_CONTEXT_LENGTH"] == 1_000_000
         assert config["pricing"] == {"input": 5, "output": 25}

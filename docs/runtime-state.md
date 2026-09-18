@@ -109,6 +109,7 @@ The checked-in `anthropic-opus-5-low-provider-adapter` profile uses:
 - streaming, 128k maximum output, and 1,000k context capacity
 - a 175k completed-context compaction trigger and 5x baseline action budget
 - native on-demand compaction with `compact-2026-09-04`, capped at 8k output tokens
+- automatic prompt caching with Anthropic's default 5-minute TTL
 - standard-speed configured prices of $5/$25 per million input/output tokens
 - the native `ANTHROPIC_API_KEY`, with no OpenAI `store` parameter
 - the optional `thinking-token-count-2026-05-13` beta for reported thinking usage
@@ -122,8 +123,14 @@ runtime:
     trigger_tokens: 175_000
     summary_max_output_tokens: 8_192
 request:
+  cache_control:
+    type: "ephemeral"
   betas: ["compact-2026-09-04", "thinking-token-count-2026-05-13"]
 ```
+
+Top-level `cache_control` uses Anthropic's automatic moving breakpoint. The
+adapter validates and preserves this setting on both action and native
+compaction requests; it does not inject caching into profiles that omit it.
 
 The adapter checks the most recent accepted action's normalized input plus
 output tokens as a completed-context estimate. It does not use cumulative run

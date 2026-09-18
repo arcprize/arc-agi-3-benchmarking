@@ -24,7 +24,8 @@ signed on-demand compaction, current-frame and buffered-input isolation, SDK
 replay-field cleanup, refusal details, reported thinking-token accounting,
 failed-attempt usage, and opaque-state redaction. Regression coverage also checks
 saved allowlisted failure diagnostics through the pinned SDK's streaming and
-non-streaming transports, and native compaction policy settings in run metadata:
+non-streaming transports, automatic prompt-cache configuration, and native
+compaction policy settings in run metadata:
 
 ```bash
 uv run pytest -q tests/unit/test_anthropic_runtime.py tests/unit/test_benchmarking_agent.py
@@ -45,6 +46,9 @@ call. Each gate is separate; run it only when intended:
 ```bash
 RUN_ANTHROPIC_LIVE_TESTS=1 uv run pytest -q \
   tests/integration/test_anthropic_continuous_conversation_live.py::test_anthropic_continuous_conversation_two_turn_live
+
+RUN_ANTHROPIC_CACHE_LIVE_TESTS=1 uv run pytest -q \
+  tests/integration/test_anthropic_continuous_conversation_live.py::test_anthropic_continuous_conversation_prompt_cache_live
 
 RUN_ANTHROPIC_COMPACTION_LIVE_TESTS=1 uv run pytest -q \
   tests/integration/test_anthropic_continuous_conversation_live.py::test_anthropic_continuous_conversation_compaction_live
