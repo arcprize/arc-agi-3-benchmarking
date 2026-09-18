@@ -28,6 +28,7 @@ SUPPORTED_RUNTIME_STATE = DEFAULT_RUNTIME_STATE
 SERVER_STATE_RUNTIME_PAIRS = frozenset({("openai-python", "responses")})
 CONTINUOUS_CONVERSATION_RUNTIME_PAIRS = frozenset(
     {
+        ("anthropic-python", "messages"),
         ("google-genai", "interactions"),
         ("openai-python", "responses"),
     }
@@ -94,8 +95,41 @@ def _validate_anthropic_messages_config(config_id: str, entry: dict[str, Any]) -
 def _validate_continuous_conversation_config(
     config_id: str, entry: dict[str, Any]
 ) -> None:
+    from .runtime_registry import resolve_adapter_id
+
     runtime = entry["runtime"]
     request = entry["request"]
+    adapter_id = resolve_adapter_id(runtime, config_id)
+    if adapter_id == "anthropic.messages.v1":
+        from .anthropic_runtime import (
+            COMPACTION_BETA,
+            AnthropicCompactionPolicy,
+            validate_continuous_conversation_request,
+        )
+
+        try:
+            validate_continuous_conversation_request(request)
+            if "compaction" in runtime:
+                native_policy = AnthropicCompactionPolicy.model_validate(
+                    runtime["compaction"]
+                )
+                if COMPACTION_BETA not in request.get("betas", []):
+                    raise ValueError(
+                        f"Anthropic native compaction requires beta {COMPACTION_BETA}."
+                    )
+                capacity = entry.get("agent", {}).get("MAX_CONTEXT_LENGTH")
+                if (
+                    type(capacity) is not int
+                    or capacity
+                    <= native_policy.trigger_tokens
+                    + native_policy.summary_max_output_tokens
+                ):
+                    raise ValueError(
+                        "Anthropic compaction trigger and summary output must fit agent.MAX_CONTEXT_LENGTH."
+                    )
+        except ValueError as exc:
+            raise ValueError(f"Model config '{config_id}': {exc}") from exc
+        return
     if request.get("store") is not False:
         raise ValueError(
             f"Model config '{config_id}' uses runtime.state="
@@ -106,11 +140,6 @@ def _validate_continuous_conversation_config(
             f"Model config '{config_id}' uses runtime.state="
             f"{CONTINUOUS_CONVERSATION_RUNTIME_STATE!r} and cannot enable request.background."
         )
-    # Resolve omitted legacy adapter IDs too, so provider-specific validation
-    # cannot be bypassed by relying on the registered sdk/api mapping.
-    from .runtime_registry import resolve_adapter_id
-
-    adapter_id = resolve_adapter_id(runtime, config_id)
     if adapter_id == "openai.responses.v1":
         incompatible = sorted(
             field

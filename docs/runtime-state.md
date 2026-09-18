@@ -45,8 +45,12 @@ server response handle and any inputs waiting for the next API turn.
 
 `continuous_conversation` carries provider-native conversation and reasoning
 state from one accepted turn to the next. It is implemented by
-`openai.responses.v1` and `google.interactions.v1`. The OpenAI adapter uses the
-Responses API with `store: false`. It requests
+`openai.responses.v1`, `google.interactions.v1`, and `anthropic.messages.v1`.
+
+### OpenAI Responses
+
+The OpenAI adapter implements continuous conversation
+through the Responses API with `store: false`. It requests
 `reasoning.encrypted_content` and sends each accepted user input plus every
 native `response.output` item into the following turn.
 Replaying only serialized reasoning is not enough: every native output item can
@@ -80,6 +84,151 @@ organization. See OpenAI's official documentation for
 [compaction](https://developers.openai.com/api/docs/guides/compaction), and
 [Zero Data Retention controls](https://developers.openai.com/api/docs/guides/your-data#zero-data-retention).
 
+### Anthropic Messages
+
+The Anthropic Provider Adapter is implemented in `benchmarking/anthropic_runtime.py`
+and registered as `anthropic.messages.v1`, with review status `unreviewed`.
+Its `continuous_conversation` state carries native Messages content in memory;
+it does not use server-hosted conversation IDs. The existing Anthropic
+`manual_rolling` path stays separate and retains its existing behavior.
+
+The adapter sends the system prompt separately and replays every accepted native
+assistant content block in its original order, including readable thinking,
+empty thinking text, signatures, redacted thinking, and compaction blocks.
+Serialization preserves supplied empty fields but excludes SDK-added unset
+fields. Native replay also removes response-only `parsed_output` from text
+blocks and null `encrypted_content` from compaction blocks. Non-null encrypted
+metadata, signatures, and unknown provider fields remain intact in memory.
+State is provisional until the common agent parses a valid ARC action.
+Retries reuse the last accepted state, including buffered GAME_OVER/reset
+observations. The model and system prompt cannot change during a session.
+
+The checked-in `anthropic-opus-5-low-provider-adapter` profile uses:
+
+- `claude-opus-5`, adaptive thinking, summarized display, and low effort
+- streaming, 128k maximum output, and 1,000k context capacity
+- a 175k completed-context compaction trigger and 5x baseline action budget
+- native on-demand compaction with `compact-2026-09-04`, capped at 8k output tokens
+- automatic prompt caching with Anthropic's default 5-minute TTL
+- standard-speed configured prices of $5/$25 per million input/output tokens
+- the native `ANTHROPIC_API_KEY`, with no OpenAI `store` parameter
+- the optional `thinking-token-count-2026-05-13` beta for reported thinking usage
+
+Native compaction is optional and configured outside the provider request:
+
+```yaml
+runtime:
+  compaction:
+    strategy: native
+    trigger_tokens: 175_000
+    summary_max_output_tokens: 8_192
+request:
+  cache_control:
+    type: "ephemeral"
+  betas: ["compact-2026-09-04", "thinking-token-count-2026-05-13"]
+```
+
+Top-level `cache_control` uses Anthropic's automatic moving breakpoint. The
+adapter validates and preserves this setting on both action and native
+compaction requests; it does not inject caching into profiles that omit it.
+
+The adapter checks the most recent accepted action's normalized input plus
+output tokens as a completed-context estimate. It does not use cumulative run
+usage, retry totals, or compaction-call usage as the trigger. At the threshold,
+it sends only history through the last completed assistant action in a separate
+Messages request with `compaction: {type: summarize}`. Pending observations,
+including buffered GAME_OVER/reset inputs and the newest frame, are held aside.
+The first frame cannot trigger compaction because no completed history exists.
+
+The summary request keeps the same model, system prompt, thinking settings,
+and effort. It uses the provider's default summary prompt, removes action-only
+stop sequences and structured-output formatting, and caps output separately.
+On success, exactly one nonempty signed `compaction` block replaces that entire
+prefix. It goes first in the next action request, followed by every pending
+observation unchanged and in order. Repeated compaction replaces the previous
+summary and completed turns with one new signed block. Signatures are replayed
+verbatim in memory, never reconstructed from the readable summary.
+
+Action requests have neither `compaction` nor `context_management`. The adapter
+rejects threshold compaction, its old beta, and both values of
+`pause_after_compaction`; changing that flag alone would not protect the newest
+frame. A signed block and the new beta are sent on every continuation request.
+This on-demand API is available on the direct Claude API, not Bedrock or Google
+Cloud. There is no harness-summary fallback, background compaction, tool
+execution, or model switching.
+
+Summary and action state form one provisional turn: neither is committed until
+the action parser accepts a valid action. Failed, empty, unsigned, refused,
+truncated, or interrupted compaction preserves the accepted history and pending
+observations. If compaction succeeds but the action fails, retries compact the
+unchanged accepted history again; returned usage from both calls is still billed
+to the attempted turn. Retries remain bounded by the existing agent policy.
+
+Only `end_turn` or an explicitly configured `stop_sequence` can supply an action.
+Refusals, truncated or paused responses, and unfinished streams cannot execute
+actions, even if partial text names an action. The adapter records sanitized
+refusal details and uses the common bounded retry policy, without switching
+models. An inline compaction block is also rejected on an action response. The
+pinned Anthropic SDK remains `0.95.0`; its `extra_body` extension sends the new
+top-level `compaction` parameter without a dependency upgrade. Signed summaries
+arrive whole in `content_block_start`, with no content delta. The adapter retains streamed
+`stop_details` explicitly because this SDK does not copy them into its final
+accumulated message. Complete native content and per-iteration usage are retained
+for both streaming and non-streaming requests.
+
+Failed requests save allowlisted provider diagnostics: exception class, provider
+error type, HTTP status, and request ID when available. This metadata survives
+transport and runtime wrapping for both action and compaction requests. Provider
+error messages and raw error bodies are not copied into those diagnostics.
+
+Token accounting sums `usage.iterations` when present, including compaction;
+top-level usage is a fallback, not an additional contribution. Native normalized
+input tokens include uncached input plus cache reads and writes, with the cache
+breakdowns retained separately. Output tokens already include thinking.
+When available, `usage.output_tokens_details.thinking_tokens` populates
+`reasoning_tokens` as a provider-reported breakdown, not additional output or
+cost. The top-level breakdown covers non-compaction iterations and is used once;
+per-iteration thinking counts are a fallback, with any separately reported
+compaction thinking added once. Missing counts remain zero, meaning unreported,
+and are never estimated from readable summaries. Streaming captures the
+breakdown from the final `message_delta`, including usage retained on failure.
+Separate compaction and action usage is added once per attempt. The accepted
+action's native-compaction metadata also records the compaction-only usage and
+the number of completed history items summarized, without an opaque payload.
+Returned usage from unsuccessful attempts is attributed to the next accepted
+action, or persisted in `run_meta.json` if retries are exhausted. No failed action
+step is fabricated. Configured-price action estimates do not reconstruct cache
+discounts or invoice adjustments, and are not written into provider-reported
+`usage.cost`.
+
+`run_meta.json` records the validated native policy in `runtime.compaction`,
+including its strategy, trigger, summary output cap, and configured context
+limit. Policy defaults are included even when omitted from the profile. This
+does not instantiate the harness-summary compactor or its compaction counter.
+
+The adapter supplies the shared `ModelTurnResult.readable_request_messages`
+field for `messages_sent`. This is a readable projection of the active native
+request, including
+the current compaction summary, later observations, readable thinking summaries,
+and text responses. Summarized-away history does not reappear in later model
+request records. `request_record.input_items` records structural descriptors,
+not opaque bodies. Signatures and redacted-thinking data are removed from
+diagnostics, settings, logs, and action metadata; exact native replay state is
+in memory only. Client-managed state is not a guarantee of provider-side zero
+data retention: use credentials and data-retention terms appropriate for the
+benchmark data.
+
+Contract references, with on-demand compaction rechecked September 17, 2026:
+
+- [Anthropic compaction](https://platform.claude.com/docs/en/build-with-claude/compaction)
+- [Thinking and replay](https://platform.claude.com/docs/en/build-with-claude/thinking)
+- [Thinking-token usage](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking)
+- [Stop reasons](https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons)
+- [Opus 5 specifications](https://platform.claude.com/docs/en/models/opus-5/overview)
+- [Pricing](https://platform.claude.com/docs/en/about-claude/pricing)
+
+### Google Gemini Interactions
+
 The Google adapter uses the Interactions API with `store: false`. It preserves
 each accepted user input and every model-generated step, including opaque
 thought signatures, exactly as returned. Readable thought summaries are mapped
@@ -92,6 +241,12 @@ requirement. See Google's documentation for
 and [Zero Data Retention](https://ai.google.dev/gemini-api/docs/zdr).
 
 ## Harness summary compaction
+
+Harness-managed reconstruction is an optional adapter capability, represented
+by `SummaryCompactionRuntimeAdapter`. OpenAI and Google implement it; Anthropic
+implements only the common stateful turn contract and uses native compaction.
+Both configuration validation and the summary compactor reject harness-summary
+requests for Anthropic before making a provider call.
 
 Providers without native compaction can select `runtime.compaction.strategy:
 harness_summary`. `runtime.compaction.trigger_tokens` controls when the harness

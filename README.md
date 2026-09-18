@@ -110,6 +110,23 @@ domain-neutral harness summary otherwise. These configurations use
 `continuous_conversation`; `openai-gpt-5-6-sol-max-provider-adapter` and
 `google-gemini-3-8-flash-low-provider-adapter` are examples.
 
+The Anthropic Provider Adapter profile is `anthropic-opus-5-low-provider-adapter`.
+It uses Opus 5 at low reasoning effort, preserves native thinking blocks between
+actions, and uses Anthropic's native on-demand compaction at a 175k completed-
+context threshold. It summarizes completed history before presenting the next
+frame, so the newest observation reaches the action request unchanged. It records
+provider-reported thinking-token usage when available without double-counting
+output tokens. The profile also enables Anthropic automatic prompt caching with
+the default 5-minute TTL so repeated native history can be reused. Set
+`ANTHROPIC_API_KEY` to use it:
+
+```bash
+uv run main.py --game=ls20 --config=anthropic-opus-5-low-provider-adapter
+```
+
+See [runtime state adapters](docs/runtime-state.md) for replay, compaction,
+recording, and data-handling details.
+
 Both harnesses use the same games, actions, limits, and scoring. The Standard
 harness supports controlled comparisons across providers, while the Provider
 Adapter harness measures performance using provider-native context management.

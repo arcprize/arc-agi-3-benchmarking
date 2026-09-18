@@ -12,6 +12,7 @@ from typing import Any, Optional
 from arcengine import FrameData, GameAction, GameState
 
 from .action_metadata import fit_action_metadata_payload
+from .anthropic_runtime import AnthropicCompactionPolicy
 from .base import Agent, ExitReason
 from .compaction import (
     HARNESS_SUMMARY_COMPACTION,
@@ -103,11 +104,20 @@ class BenchmarkingAgent(Agent):
             runtime_cfg.get("state") == CONTINUOUS_CONVERSATION_RUNTIME_STATE
         )
         self._summary_compactor: SummaryCompactor | None = None
+        compaction_policy: (
+            SummaryCompactionPolicy | AnthropicCompactionPolicy | None
+        ) = None
         compaction_cfg = runtime_cfg.get("compaction")
         if self._continuous_conversation and isinstance(compaction_cfg, dict):
-            self._summary_compactor = SummaryCompactor(
-                SummaryCompactionPolicy.model_validate(compaction_cfg)
-            )
+            if compaction_cfg.get("strategy") == HARNESS_SUMMARY_COMPACTION:
+                compaction_policy = SummaryCompactionPolicy.model_validate(
+                    compaction_cfg
+                )
+                self._summary_compactor = SummaryCompactor(compaction_policy)
+            elif compaction_cfg.get("strategy") == "native":
+                compaction_policy = AnthropicCompactionPolicy.model_validate(
+                    compaction_cfg
+                )
         self._pending_compaction_trigger_tokens: int | None = None
         self._pending_compaction_usage: NormalizedUsage | None = None
         self._pending_compaction_continuation: CompactionContinuationRecord | None = (
@@ -211,11 +221,12 @@ class BenchmarkingAgent(Agent):
                     commit_sha=commit_sha,
                 ),
             }
-            if self._summary_compactor is not None:
+            if compaction_policy is not None:
                 runtime_metadata["compaction"] = {
-                    **self._summary_compactor.policy.model_dump(),
+                    **compaction_policy.model_dump(),
                     "context_limit_tokens": self.MAX_CONTEXT_LENGTH,
                 }
+            if self._summary_compactor is not None:
                 runtime_metadata["compaction_count"] = 0
         self.run_record = RunRecord(
             run_id=str(run_id),
@@ -987,7 +998,7 @@ class BenchmarkingAgent(Agent):
                 if e.response is not None:
                     self._save_diagnostic(e.response)
                 logger.warning(
-                    f"Empty API response "
+                    f"Unusable API response "
                     f"(attempt {attempt + 1}/{max_attempts})."
                 )
                 attempt += 1
@@ -1054,6 +1065,12 @@ class BenchmarkingAgent(Agent):
             )
             attempt += 1
 
+        if hasattr(self, "_stateful_adapter") and hasattr(self, "run_record"):
+            self.run_record.total_usage = (
+                self.run_record.total_usage
+                + StepUsage.from_normalized_usage(accumulated_usage)
+            )
+            self._write_run_meta()
         raise RuntimeError(
             f"Failed to get a valid action after {max_attempts} attempts."
         )

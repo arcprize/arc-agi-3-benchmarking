@@ -12,6 +12,10 @@ class EmptyResponseError(Exception):
         self.usage = usage
 
 
+class InvalidProviderResponseError(EmptyResponseError):
+    """A failed or incomplete provider turn with any observed billable usage."""
+
+
 class ContextOverflowError(Exception):
     """Raised when a provider rejects a request for exceeding context capacity."""
 
