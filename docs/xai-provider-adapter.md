@@ -3,8 +3,41 @@
 `xai.responses.v1` adds opt-in client-managed native Responses state to the
 Provider Adapter harness. It uses `openai-python` against xAI, not the xAI SDK
 and not the OpenAI-specific continuous-conversation adapter. The checked-in
-profile is `xai-grok-4-6-xhigh-provider-adapter`; set `XAI_API_KEY` to use it.
+profile is `xai-grok-4-6-low-provider-adapter`; set `XAI_API_KEY` to use it.
 Existing xAI Chat Completions profiles and other providers are unchanged.
+
+## Example configuration
+
+This complete example matches the profile in `benchmarking/model_configs.yaml`:
+
+```yaml
+- id: "xai-grok-4-6-low-provider-adapter"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
+    MAX_CONTEXT_LENGTH: 500_000
+  runtime:
+    sdk: "openai-python"
+    api: "responses"
+    adapter_id: "xai.responses.v1"
+    state: "continuous_conversation"
+    compaction:
+      strategy: "native"
+      trigger_tokens: 200_000
+  client:
+    base_url: "https://api.x.ai/v1"
+    api_key_env: "XAI_API_KEY"
+  request:
+    model: "grok-4.6"
+    max_output_tokens: 128_000
+    store: false
+    reasoning:
+      effort: "low"
+    include:
+      - "reasoning.encrypted_content"
+  pricing:
+    input: 2.00
+    output: 6.00
+```
 
 ## Request and replay contract
 
@@ -18,7 +51,7 @@ Existing xAI Chat Completions profiles and other providers are unchanged.
   are replayed in their original order without reconstructing them from text.
   SDK serialization excludes unset defaults and retains returned fields.
 - `reasoning.effort` is provider/model-specific; the checked-in profile uses
-  `xhigh`. OpenAI's `reasoning.context` and inline `context_management` are not
+  `low`. OpenAI's `reasoning.context` and inline `context_management` are not
   sent. A readable reasoning summary is recorded when returned, not fabricated
   or treated as a replacement for the encrypted replay item.
 - Only completed responses with reusable native items and visible text become
@@ -32,17 +65,6 @@ Existing xAI Chat Completions profiles and other providers are unchanged.
   be explicitly configured; defaults are `https://api.x.ai/v1` and `XAI_API_KEY`.
 
 ## Native compaction
-
-```yaml
-runtime:
-  sdk: openai-python
-  api: responses
-  adapter_id: xai.responses.v1
-  state: continuous_conversation
-  compaction:
-    strategy: native
-    trigger_tokens: 200_000
-```
 
 Compaction is optional: omit `runtime.compaction` to disable it. When enabled,
 the adapter compares the previous accepted action response's total tokens with
@@ -111,7 +133,7 @@ RUN_XAI_COMPACTION_LIVE_TESTS=1 uv run pytest -q \
   tests/integration/test_xai_continuous_conversation_live.py::test_xai_repeated_native_compaction_live
 ```
 
-These use Grok 4.6 at xhigh effort with a 4k action output cap. The second test
+These use Grok 4.6 at low effort with a 4k action output cap. The second test
 lowers the trigger to one token on a small synthetic history and checks recall
 through two native compactions; the compaction endpoint has no output-cap
 parameter. They do not launch ARC games.

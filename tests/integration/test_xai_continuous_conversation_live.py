@@ -15,7 +15,7 @@ from benchmarking.runtime_models import Message
 from benchmarking.runtime_registry import build_stateful_runtime_adapter
 from benchmarking.runtime_state import ModelTurnRequest
 
-CONFIG_ID = "xai-grok-4-6-xhigh-provider-adapter"
+CONFIG_ID = "xai-grok-4-6-low-provider-adapter"
 MEMORY_TOKEN = "ARC-XAI-REPLAY-7Q"
 
 

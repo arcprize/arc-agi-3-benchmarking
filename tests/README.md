@@ -41,7 +41,7 @@ RUN_XAI_COMPACTION_LIVE_TESTS=1 uv run pytest -q \
   tests/integration/test_xai_continuous_conversation_live.py::test_xai_repeated_native_compaction_live
 ```
 
-The xAI tests use the checked-in Grok 4.6 xhigh profile with a 4k action output
+The xAI tests use the checked-in Grok 4.6 low profile with a 4k action output
 cap. Native compaction has no output-cap parameter. Offline tests in
 `tests/unit/test_xai_runtime.py` use mocked HTTP through the pinned SDK.
 
