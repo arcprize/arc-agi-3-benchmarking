@@ -22,7 +22,7 @@ This complete example matches the profile in `benchmarking/model_configs.yaml`:
     state: "continuous_conversation"
     compaction:
       strategy: "native"
-      trigger_tokens: 200_000
+      trigger_tokens: 175_000
   client:
     base_url: "https://api.x.ai/v1"
     api_key_env: "XAI_API_KEY"
@@ -86,7 +86,7 @@ pending inputs; a successful but uncommitted compaction may therefore be billed
 again. There is no lossy manual-rolling or harness-summary fallback.
 
 The trigger is bookkeeping, not a hard context limit or a token-count preflight.
-The profile uses a 200k trigger, a 128k action output cap, and a 500k context
+The profile uses a 175k trigger, a 128k action output cap, and a 500k context
 limit. Validation requires the trigger plus output allowance to be below the
 configured context limit. Large new inputs can still overflow, and compaction
 cannot rescue a prefix that already exceeds the provider's context capacity.

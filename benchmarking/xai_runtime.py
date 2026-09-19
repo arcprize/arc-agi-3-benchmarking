@@ -37,7 +37,7 @@ class XAICompactionPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     strategy: Literal["native"] = "native"
-    trigger_tokens: int = Field(default=200_000, gt=0, strict=True)
+    trigger_tokens: int = Field(default=175_000, gt=0, strict=True)
 
 
 def validate_continuous_conversation_request(config: dict[str, Any]) -> None:

@@ -448,7 +448,7 @@ class TestXAIConfiguration:
         assert agent.run_record.runtime["adapter_id"] == "xai.responses.v1"
         assert agent.run_record.runtime["compaction"] == {
             "strategy": "native",
-            "trigger_tokens": 200_000,
+            "trigger_tokens": 175_000,
             "context_limit_tokens": 500_000,
         }
 
@@ -502,8 +502,9 @@ class TestXAIConfiguration:
         assert config["request"]["reasoning"] == {"effort": "low"}
         assert config["runtime"]["compaction"] == {
             "strategy": "native",
-            "trigger_tokens": 200_000,
+            "trigger_tokens": 175_000,
         }
+        assert XAICompactionPolicy().trigger_tokens == 175_000
         assert config["agent"]["MAX_CONTEXT_LENGTH"] == 500_000
         assert resolve_adapter_id(config["runtime"], CONFIG_ID) == "xai.responses.v1"
 

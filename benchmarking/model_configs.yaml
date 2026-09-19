@@ -9,7 +9,7 @@
     state: "continuous_conversation"
     compaction:
       strategy: "native"
-      trigger_tokens: 200_000
+      trigger_tokens: 175_000
   client:
     base_url: "https://api.x.ai/v1"
     api_key_env: "XAI_API_KEY"
