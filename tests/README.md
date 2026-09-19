@@ -29,4 +29,20 @@ RUN_GOOGLE_COMPACTION_LIVE_TESTS=1 uv run pytest -q \
   tests/integration/test_google_continuous_conversation_live.py::test_google_harness_summary_compaction_live
 ```
 
+Paid xAI tests are skipped by default and require `XAI_API_KEY`. These exercise
+synthetic native replay and recall through two separate native compactions,
+respectively; they do not launch ARC benchmarks:
+
+```bash
+RUN_XAI_LIVE_TESTS=1 uv run pytest -q \
+  tests/integration/test_xai_continuous_conversation_live.py::test_xai_two_turn_native_replay_live
+
+RUN_XAI_COMPACTION_LIVE_TESTS=1 uv run pytest -q \
+  tests/integration/test_xai_continuous_conversation_live.py::test_xai_repeated_native_compaction_live
+```
+
+The xAI tests use the checked-in Grok 4.6 xhigh profile with a 4k action output
+cap. Native compaction has no output-cap parameter. Offline tests in
+`tests/unit/test_xai_runtime.py` use mocked HTTP through the pinned SDK.
+
 For more information on tests, please see the [tests documentation](https://arcprize.org/docs#testing).

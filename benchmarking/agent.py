@@ -104,7 +104,11 @@ class BenchmarkingAgent(Agent):
         )
         self._summary_compactor: SummaryCompactor | None = None
         compaction_cfg = runtime_cfg.get("compaction")
-        if self._continuous_conversation and isinstance(compaction_cfg, dict):
+        if (
+            self._continuous_conversation
+            and isinstance(compaction_cfg, dict)
+            and runtime_cfg.get("adapter_id") != "xai.responses.v1"
+        ):
             self._summary_compactor = SummaryCompactor(
                 SummaryCompactionPolicy.model_validate(compaction_cfg)
             )
@@ -217,6 +221,12 @@ class BenchmarkingAgent(Agent):
                     "context_limit_tokens": self.MAX_CONTEXT_LENGTH,
                 }
                 runtime_metadata["compaction_count"] = 0
+            native_policy = getattr(self._stateful_adapter, "compaction_policy", None)
+            if native_policy is not None:
+                runtime_metadata["compaction"] = {
+                    **native_policy.model_dump(),
+                    "context_limit_tokens": self.MAX_CONTEXT_LENGTH,
+                }
         self.run_record = RunRecord(
             run_id=str(run_id),
             game_id=self.game_id,
@@ -1054,6 +1064,12 @@ class BenchmarkingAgent(Agent):
             )
             attempt += 1
 
+        if hasattr(self, "_stateful_adapter") and hasattr(self, "run_record"):
+            self.run_record.total_usage = (
+                self.run_record.total_usage
+                + StepUsage.from_normalized_usage(accumulated_usage)
+            )
+            self._write_run_meta()
         raise RuntimeError(
             f"Failed to get a valid action after {max_attempts} attempts."
         )

@@ -45,13 +45,16 @@ def build_model_runtime_client(
 ) -> Any:
     sdk = runtime_config.get("sdk")
     if sdk == "openai-python":
+        is_xai = runtime_config.get("adapter_id") == "xai.responses.v1"
         api_key = _read_required_api_key(
             client_config=client_config,
             config_id=config_id,
-            default_api_key_env=DEFAULT_OPENAI_API_KEY_ENV,
+            default_api_key_env="XAI_API_KEY" if is_xai else DEFAULT_OPENAI_API_KEY_ENV,
         )
         return OpenAIClient(
-            base_url=client_config.get("base_url", DEFAULT_OPENAI_BASE_URL),
+            base_url=client_config.get(
+                "base_url", "https://api.x.ai/v1" if is_xai else DEFAULT_OPENAI_BASE_URL
+            ),
             api_key=api_key,
         )
 

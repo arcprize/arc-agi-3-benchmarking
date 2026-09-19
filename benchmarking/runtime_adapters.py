@@ -417,6 +417,13 @@ def build_model_runtime_adapter(
 
     runtime_key = (runtime_config.get("sdk"), runtime_config.get("api"))
 
+    if runtime_config.get("adapter_id") == "xai.responses.v1":
+        from .runtime_registry import resolve_adapter_id
+        from .xai_runtime import XAIResponsesAdapter
+
+        resolve_adapter_id(runtime_config, config_id)
+        return XAIResponsesAdapter(client)
+
     if runtime_state == SERVER_RUNTIME_STATE:
         if runtime_key not in SERVER_STATE_RUNTIME_KEYS:
             raise ValueError(

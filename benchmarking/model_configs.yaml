@@ -1,3 +1,30 @@
+- id: "xai-grok-4-6-xhigh-provider-adapter"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
+    MAX_CONTEXT_LENGTH: 500_000
+  runtime:
+    sdk: "openai-python"
+    api: "responses"
+    adapter_id: "xai.responses.v1"
+    state: "continuous_conversation"
+    compaction:
+      strategy: "native"
+      trigger_tokens: 200_000
+  client:
+    base_url: "https://api.x.ai/v1"
+    api_key_env: "XAI_API_KEY"
+  request:
+    model: "grok-4.6"
+    max_output_tokens: 128_000
+    store: false
+    reasoning:
+      effort: "xhigh"
+    include:
+      - "reasoning.encrypted_content"
+  pricing:
+    input: 2.00
+    output: 6.00
+
 - id: "openai-gpt-5.4-openrouter"
   agent:
     MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0

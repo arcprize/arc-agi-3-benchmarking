@@ -109,6 +109,10 @@ reasoning state. It uses native compaction when the provider supplies it and a
 domain-neutral harness summary otherwise. These configurations use
 `continuous_conversation`; `openai-gpt-5-6-sol-max-provider-adapter` and
 `google-gemini-3-8-flash-low-provider-adapter` are examples.
+The `xai-grok-4-6-xhigh-provider-adapter` profile adds xAI-native encrypted
+reasoning replay and separate Responses compaction using `XAI_API_KEY`.
+See the [xAI Provider Adapter](docs/xai-provider-adapter.md) for its request
+contract, compaction boundaries, and opt-in live tests.
 
 Both harnesses use the same games, actions, limits, and scoring. The Standard
 harness supports controlled comparisons across providers, while the Provider
