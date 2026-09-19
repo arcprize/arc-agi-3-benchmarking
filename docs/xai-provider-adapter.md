@@ -99,8 +99,12 @@ accepted state.
   to the eventual action and local run totals. If retries are exhausted, billed
   usage is still written to the local run metadata. Transport failures without
   returned usage cannot be priced from token counts.
-- Compaction usage is separate in `state.native_compaction` while top-level
-  action usage includes it exactly once. The next trigger uses action-context
+- Compaction usage is separate in `state.native_compaction.usage` while
+  top-level action usage includes it exactly once. The breakdown accumulates
+  returned compaction usage across all attempts for the accepted action,
+  including rejected compaction responses and compactions followed by rejected
+  actions or transport failures. It resets for the next action without
+  committing rejected conversation state. The next trigger uses action-context
   tokens alone, not compaction costs or accumulated retry usage.
 - `run_meta.json` records the validated compaction strategy, trigger, and context
   limit. Native compaction does not create harness-summary compaction files.
@@ -108,9 +112,15 @@ accepted state.
   by the actual remaining messages. Old frames do not reappear after compaction.
   Encrypted values remain in memory, not ordinary recordings, action metadata,
   diagnostics, serialization warnings, or transport-error logs.
+- Provider-reported cost is normalized from `usage.cost_in_usd_ticks` to
+  dollars by dividing by `10_000_000_000`. Integer ticks take precedence,
+  including zero; missing, null, or non-integer ticks fall back to `usage.cost`
+  for custom endpoints. This applies to actions, compactions, and rejected
+  responses. If neither cost field is reported, the normalized zero is not
+  evidence that the request was free.
 - The profile's flat input/output prices are short-context estimates. They do
-  not model caching discounts or xAI's long-context pricing tiers. Provider
-  `usage.cost`, when returned, remains distinct from configured-price estimates.
+  not model caching discounts or xAI's long-context pricing tiers. Actual
+  provider-reported cost remains distinct from configured-price estimates.
 
 Client-managed replay and `store: false` do not establish provider-side zero
 data retention. The adapter is marked `unreviewed`, not provider-approved.
@@ -120,7 +130,9 @@ This implementation adds neither persistent native-state checkpoints nor resume.
 
 Unit tests use the pinned OpenAI SDK with mocked HTTP to exercise both real SDK
 endpoints, exact replay, repeated compaction, pending/reset ordering, response
-validation, retry isolation, usage, configuration, and artifact redaction.
+validation, retry isolation, native billed cost, retry-wide compaction usage,
+configuration, and artifact redaction. Accounting tests also verify persisted
+step and run totals and usage retained after retries are exhausted.
 Mocked acceptance is not live provider verification or a benchmark result.
 
 Two paid tests are skipped unless explicitly enabled:
@@ -145,3 +157,4 @@ parameter. They do not launch ARC games.
 - [Responses API reference](https://docs.x.ai/developers/rest-api-reference/inference/responses)
 - [Grok 4.6 and reasoning effort](https://docs.x.ai/developers/grok-4-6)
 - [Pricing](https://docs.x.ai/developers/pricing)
+- [Actual per-request cost](https://docs.x.ai/developers/cost-tracking)

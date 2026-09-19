@@ -106,6 +106,13 @@ def normalize_xai_usage(value: Any) -> NormalizedUsage:
         for key in ("cost", "cost_details"):
             if value.get(key) is not None:
                 normalized[key] = value[key]
+    cost_ticks = (
+        value.get("cost_in_usd_ticks")
+        if isinstance(value, dict)
+        else getattr(value, "cost_in_usd_ticks", None)
+    )
+    if isinstance(cost_ticks, int) and not isinstance(cost_ticks, bool):
+        normalized["cost"] = cost_ticks / 10_000_000_000
     return NormalizedUsage(**normalized)
 
 
@@ -174,7 +181,10 @@ def normalize_xai_response(value: Any, *, compaction: bool = False) -> ModelResp
     normalization_input = {
         key: value for key, value in raw.items() if key != "output_text"
     }
-    response = normalize_responses_response(normalization_input)
+    try:
+        response = normalize_responses_response(normalization_input)
+    except EmptyResponseError:
+        raise _invalid_response("xAI returned no visible action text.", raw) from None
     if not response.output_text.strip():
         raise _invalid_response("xAI returned no visible action text.", raw)
     return response.model_copy(
@@ -282,6 +292,7 @@ class XAIContinuousConversationRuntimeAdapter:
         history_count = len(history)
         compaction_usage = NormalizedUsage()
         compaction_count = 0
+        compacting = False
         try:
             if (
                 self.compaction_policy is not None
@@ -289,15 +300,17 @@ class XAIContinuousConversationRuntimeAdapter:
                 and state.payload.get("context_tokens", 0)
                 >= self.compaction_policy.trigger_tokens
             ):
+                compacting = True
                 compacted = self._model_adapter.compact(
                     model=model, input_items=history[:completed_end]
                 )
                 compaction_usage = compacted.usage
+                compacting = False
+                compaction_count = 1
                 history = [
                     *native_mapping(compacted.raw_response)["output"],
                     *history[completed_end:],
                 ]
-                compaction_count = 1
             items = [
                 *history,
                 *(message.model_dump() for message in request.new_messages),
@@ -319,6 +332,11 @@ class XAIContinuousConversationRuntimeAdapter:
                 "xAI compaction or action request did not complete.",
                 response=sanitize_settings(exc.response),
                 usage=compaction_usage + usage,
+                native_compaction_usage=(
+                    compaction_usage + usage if compacting else compaction_usage
+                )
+                if compacting or compaction_count
+                else None,
             ) from None
         except Exception as exc:
             raise EmptyResponseError(
@@ -330,6 +348,7 @@ class XAIContinuousConversationRuntimeAdapter:
                     }
                 },
                 usage=compaction_usage,
+                native_compaction_usage=compaction_usage if compaction_count else None,
             ) from None
         next_items = [*items, *native_mapping(response.raw_response)["output"]]
         candidate = replace_runtime_payload(

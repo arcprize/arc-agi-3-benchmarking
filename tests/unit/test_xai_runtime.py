@@ -11,7 +11,7 @@ from openai import OpenAI
 from benchmarking import model_config, runtime_clients
 from benchmarking.agent import BenchmarkingAgent
 from benchmarking.exceptions import EmptyResponseError
-from benchmarking.recording import RunRecord
+from benchmarking.recording import RunRecord, StepRecord, StepUsage
 from benchmarking.runtime_adapters import build_model_runtime_adapter
 from benchmarking.runtime_models import Message, ModelRequest
 from benchmarking.runtime_registry import (
@@ -585,6 +585,12 @@ class TestXAIAgentIntegration:
         assert action == GameAction.ACTION1
         assert retries == 1
         assert response.usage.total_tokens == 280
+        assert (
+            agent._last_turn_result.action_state["native_compaction"]["usage"][
+                "total_tokens"
+            ]
+            == 80
+        )
         assert agent.token_counter == 280
         assert calls[1] == calls[3]
         assert "opaque-reasoning-2" not in json.dumps(agent._runtime_state.payload)
@@ -603,9 +609,11 @@ class TestXAIAgentIntegration:
         assert "opaque-" not in json.dumps(agent.diagnostics)
 
     def test_exhausted_retries_persist_billed_usage_without_advancing_state(self):
-        adapter, _ = _adapter(
-            [_response(text="not an action"), _response(2, text="no action")]
-        )
+        first = _response(text="not an action")
+        first["usage"]["cost_in_usd_ticks"] = 100_000_000
+        second = _response(2, text="no action")
+        second["usage"]["cost_in_usd_ticks"] = 200_000_000
+        adapter, _ = _adapter([first, second])
         agent = _agent(adapter)
         initial = agent._runtime_state.model_dump()
         agent.run_record = RunRecord(
@@ -621,5 +629,233 @@ class TestXAIAgentIntegration:
         with pytest.raises(RuntimeError, match="valid action"):
             agent._request_with_retries([GameAction.ACTION1])
         assert agent.run_record.total_usage.total_tokens == 200
+        assert agent.run_record.total_usage.cost == pytest.approx(0.03)
         assert len(saved) == 1
         assert agent._runtime_state.model_dump() == initial
+
+
+@pytest.mark.unit
+class TestXAIAccounting:
+    @pytest.mark.parametrize(
+        ("usage_fields", "expected_cost"),
+        [
+            ({"cost_in_usd_ticks": 200_000_000}, 0.02),
+            ({"cost_in_usd_ticks": 200_000_000, "cost": 9.99}, 0.02),
+            ({"cost_in_usd_ticks": 0, "cost": 9.99}, 0.0),
+            ({"cost_in_usd_ticks": 1}, 0.0000000001),
+            ({"cost_in_usd_ticks": None, "cost": 0.02}, 0.02),
+            ({"cost_in_usd_ticks": True, "cost": 0.02}, 0.02),
+            ({"cost_in_usd_ticks": "invalid", "cost": 0.02}, 0.02),
+            ({"cost": 0.02}, 0.02),
+            ({}, 0.0),
+        ],
+    )
+    def test_native_ticks_take_precedence_over_custom_cost(
+        self, usage_fields, expected_cost
+    ):
+        raw = _response()
+        raw["usage"].update(usage_fields)
+        adapter, _ = _adapter([raw])
+        result = _turn(adapter)
+        assert result.response.usage.cost == pytest.approx(expected_cost)
+        assert StepUsage.from_normalized_usage(
+            result.response.usage
+        ).cost == pytest.approx(expected_cost)
+
+    @pytest.mark.parametrize("compact", [False, True])
+    def test_billed_cost_reaches_step_and_run_files(self, tmp_path, compact):
+        action = _response(2)
+        action["usage"]["cost_in_usd_ticks"] = 200_000_000
+        if compact:
+            summary = _compaction()
+            summary["usage"]["cost_in_usd_ticks"] = 100_000_000
+            adapter, _ = _adapter([_response(), summary, action], compact=True)
+            previous = _turn(adapter).state
+        else:
+            adapter, _ = _adapter([action])
+            previous = adapter.initial_state()
+        result = _turn(adapter, previous)
+        expected_cost = 0.03 if compact else 0.02
+        agent = _agent(adapter)
+        agent.run_dir = str(tmp_path)
+        agent.step_counter = 0
+        agent.run_record = RunRecord(
+            run_id="test",
+            game_id="test",
+            agent_name="test",
+            model="grok-4.6",
+            started_at=datetime.now(timezone.utc),
+            run_dir=str(tmp_path),
+        )
+        agent._save_step(
+            StepRecord(
+                step=1,
+                timestamp=datetime.now(timezone.utc),
+                model="grok-4.6",
+                messages_sent=result.readable_request_messages,
+                parsed_action="ACTION1",
+                usage=StepUsage.from_normalized_usage(result.response.usage),
+            )
+        )
+        saved_step = json.loads((tmp_path / "step_001.json").read_text())
+        saved_run = json.loads((tmp_path / "run_meta.json").read_text())
+        assert saved_step["usage"]["cost"] == pytest.approx(expected_cost)
+        assert saved_run["total_usage"]["cost"] == pytest.approx(expected_cost)
+        if compact:
+            assert result.action_state["native_compaction"]["usage"][
+                "cost"
+            ] == pytest.approx(0.01)
+
+    @pytest.mark.parametrize(
+        "failure", ["incomplete", "refusal", "thought_only", "empty", "no_output"]
+    )
+    def test_rejected_actions_keep_native_cost(self, failure):
+        raw = _response()
+        raw["usage"]["cost_in_usd_ticks"] = 200_000_000
+        if failure == "incomplete":
+            raw["status"] = "incomplete"
+        elif failure == "refusal":
+            raw["output"][1]["content"] = [{"type": "refusal", "refusal": "No"}]
+        elif failure == "thought_only":
+            raw["output"].pop()
+        elif failure == "empty":
+            raw["output"][1]["content"][0]["text"] = ""
+        else:
+            raw["output"] = []
+        adapter, _ = _adapter([raw])
+        with pytest.raises(EmptyResponseError) as error:
+            _turn(adapter)
+        assert error.value.usage.cost == pytest.approx(0.02)
+        assert error.value.usage.total_tokens == 100
+        assert error.value.native_compaction_usage is None
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            "unparseable",
+            "incomplete",
+            "refusal",
+            "thought_only",
+            "invalid_compaction",
+            "failed_compaction",
+            "action_http_error",
+            "action_timeout",
+            "compaction_http_error",
+        ],
+    )
+    def test_compaction_breakdown_accumulates_all_reported_attempts(self, failure):
+        first_summary = _billed_compaction(1, 100_000_000)
+        first_action = _response(2, total=100_000)
+        first_action["usage"]["cost_in_usd_ticks"] = 200_000_000
+        second_summary = _billed_compaction(2, 150_000_000)
+        second_action = _response(3, total=100_000)
+        second_action["usage"]["cost_in_usd_ticks"] = 250_000_000
+        first_outputs = [first_summary, first_action]
+        expected_tokens = 280_000
+        expected_cost = 0.07
+        expected_compaction_tokens = 80_000
+        expected_compaction_cost = 0.025
+        if failure == "unparseable":
+            first_action["output"][1]["content"][0]["text"] = "not an action"
+        elif failure == "incomplete":
+            first_action["status"] = "incomplete"
+        elif failure == "refusal":
+            first_action["output"][1]["content"] = [
+                {"type": "refusal", "refusal": "No"}
+            ]
+        elif failure == "thought_only":
+            first_action["output"].pop()
+        elif failure in {"invalid_compaction", "failed_compaction"}:
+            if failure == "invalid_compaction":
+                first_summary["output"] = []
+            else:
+                first_summary["status"] = "failed"
+            first_outputs = [first_summary]
+            expected_tokens = 180_000
+            expected_cost = 0.05
+        elif failure in {"action_http_error", "action_timeout"}:
+            first_outputs = [
+                first_summary,
+                (
+                    httpx.ReadTimeout("opaque-secret")
+                    if failure == "action_timeout"
+                    else (429, {"error": {"message": "opaque-secret"}})
+                ),
+            ]
+            expected_tokens = 180_000
+            expected_cost = 0.05
+        else:
+            first_outputs = [(429, {"error": {"message": "opaque-secret"}})]
+            expected_tokens = 140_000
+            expected_cost = 0.04
+            expected_compaction_tokens = 40_000
+            expected_compaction_cost = 0.015
+        adapter, calls = _adapter(
+            [
+                _response(total=100_000),
+                *first_outputs,
+                second_summary,
+                second_action,
+            ],
+            compact=True,
+        )
+        initial = _turn(adapter)
+        original_state = initial.state.model_dump()
+        agent = _agent(adapter, initial.state)
+        response, action, retries, _ = agent._request_with_retries([GameAction.ACTION1])
+        assert action == GameAction.ACTION1
+        assert retries == 1
+        assert response.usage.total_tokens == expected_tokens
+        assert response.usage.cost == pytest.approx(expected_cost)
+        assert agent.token_counter == expected_tokens
+        breakdown = agent._last_turn_result.action_state["native_compaction"]["usage"]
+        assert breakdown["total_tokens"] == expected_compaction_tokens
+        assert breakdown["cost"] == pytest.approx(expected_compaction_cost)
+        assert agent._runtime_state.payload["context_tokens"] == 100_000
+        assert agent._last_turn_result.transition.compaction_items_returned == 1
+        assert calls[1] == calls[-2]
+        assert initial.state.model_dump() == original_state
+        assert "opaque-compaction-1" not in json.dumps(agent._runtime_state.payload)
+        assert "opaque-compaction-2" in json.dumps(agent._runtime_state.payload)
+        assert "opaque-secret" not in json.dumps(agent.diagnostics)
+
+    def test_compaction_accumulator_resets_after_accepted_action(self):
+        adapter, _ = _adapter(
+            [
+                _response(total=100_000),
+                _billed_compaction(1, 100_000_000),
+                _response(2, text="not an action", total=100_000),
+                _billed_compaction(2, 100_000_000),
+                _response(3, total=100_000),
+                _billed_compaction(3, 100_000_000),
+                _response(4, total=100_000),
+            ],
+            compact=True,
+        )
+        agent = _agent(adapter, _turn(adapter).state)
+        agent._request_with_retries([GameAction.ACTION1])
+        first = agent._last_turn_result
+        response, _, retries, _ = agent._request_with_retries([GameAction.ACTION1])
+        assert retries == 0
+        assert response.usage.total_tokens == 140_000
+        assert response.usage.cost == pytest.approx(0.01)
+        assert (
+            first.action_state["native_compaction"]["usage"]["total_tokens"] == 80_000
+        )
+        assert first.action_state["native_compaction"]["usage"][
+            "cost"
+        ] == pytest.approx(0.02)
+        current = agent._last_turn_result.action_state["native_compaction"]["usage"]
+        assert current["total_tokens"] == 40_000
+        assert current["cost"] == pytest.approx(0.01)
+
+
+def _billed_compaction(turn, ticks):
+    response = _compaction(turn)
+    response["usage"].update(
+        input_tokens=30_000,
+        output_tokens=10_000,
+        total_tokens=40_000,
+        cost_in_usd_ticks=ticks,
+    )
+    return response

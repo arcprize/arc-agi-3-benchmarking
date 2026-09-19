@@ -934,6 +934,7 @@ class BenchmarkingAgent(Agent):
         request. The current assistant reply is not included.
         """
         accumulated_usage = NormalizedUsage()
+        accumulated_native_compaction_usage: NormalizedUsage | None = None
         self._last_turn_result = None
         attempt = 0
         max_attempts = self.MAX_RETRIES + 1
@@ -994,6 +995,10 @@ class BenchmarkingAgent(Agent):
                 if isinstance(e.usage, NormalizedUsage):
                     self.track_tokens(e.usage.total_tokens)
                     accumulated_usage = accumulated_usage + e.usage
+                if isinstance(e.native_compaction_usage, NormalizedUsage):
+                    accumulated_native_compaction_usage = (
+                        accumulated_native_compaction_usage or NormalizedUsage()
+                    ) + e.native_compaction_usage
                 if e.response is not None:
                     self._save_diagnostic(e.response)
                 logger.warning(
@@ -1012,6 +1017,14 @@ class BenchmarkingAgent(Agent):
 
             self.track_tokens(model_response.usage.total_tokens)
             accumulated_usage = accumulated_usage + model_response.usage
+            if hasattr(self, "_stateful_adapter"):
+                native_compaction = (turn_result.action_state or {}).get(
+                    "native_compaction"
+                )
+                if isinstance(native_compaction, dict):
+                    accumulated_native_compaction_usage = (
+                        accumulated_native_compaction_usage or NormalizedUsage()
+                    ) + NormalizedUsage.model_validate(native_compaction["usage"])
             model_response = model_response.model_copy(
                 update={"usage": accumulated_usage}
             )
@@ -1034,6 +1047,18 @@ class BenchmarkingAgent(Agent):
             action = self._parse_action(model_response.output_text, actions)
             if action is not None:
                 if hasattr(self, "_stateful_adapter"):
+                    if accumulated_native_compaction_usage is not None:
+                        action_state = dict(turn_result.action_state or {})
+                        native_compaction = dict(
+                            action_state.get("native_compaction") or {}
+                        )
+                        native_compaction["usage"] = (
+                            accumulated_native_compaction_usage.model_dump()
+                        )
+                        action_state["native_compaction"] = native_compaction
+                        turn_result = turn_result.model_copy(
+                            update={"action_state": action_state}
+                        )
                     self._runtime_state = turn_result.state
                     self._last_turn_result = turn_result
                     sanitized_messages = turn_result.readable_request_messages
