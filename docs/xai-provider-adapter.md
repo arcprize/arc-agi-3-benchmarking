@@ -77,7 +77,13 @@ are excluded from compaction. They are appended unchanged, in order, after the
 returned compaction output. The complete returned output replaces the old
 prefix; the adapter requires the documented single nonempty encrypted
 compaction item and never selects, prunes, or edits its blob. It does not
-duplicate the system prompt outside the compacted prefix.
+duplicate the system prompt outside the compacted prefix. xAI documents that
+the opaque item preserves system prompts and rehydrates them on subsequent
+requests. The original prompt is therefore no longer a separate plaintext
+input after compaction; unlike the OpenAI and Google adapter paths, its replay
+is owned by the provider's compacted state. Mocked tests verify that the first
+compaction receives the prompt and later requests do not reinsert it; they
+cannot verify the contents of the opaque blob.
 
 Compaction plus the next action request is transactional. Both remain
 provisional until the action is accepted. If either request fails or the action
@@ -95,6 +101,15 @@ accepted state.
 
 ## Accounting and artifacts
 
+- Normalized `output_tokens` includes billable reasoning exactly once. xAI
+  compaction responses can report reasoning separately from `output_tokens`
+  while including it in `total_tokens`. When the reported total equals input
+  plus output plus reasoning, the adapter folds reasoning into output for
+  configured-price estimates and recorded completion tokens. Already-inclusive
+  output counts, including ordinary Responses usage, remain unchanged. Input,
+  total, and the separate reasoning breakdown are preserved. Missing or
+  inconsistent totals do not cause an inferred addition. Raw responses and
+  provider-reported dollar costs are not changed by this reconciliation.
 - All returned usage from compaction, actions, and rejected attempts contributes
   to the eventual action and local run totals. If retries are exhausted, billed
   usage is still written to the local run metadata. Transport failures without
@@ -130,9 +145,10 @@ This implementation adds neither persistent native-state checkpoints nor resume.
 
 Unit tests use the pinned OpenAI SDK with mocked HTTP to exercise both real SDK
 endpoints, exact replay, repeated compaction, pending/reset ordering, response
-validation, retry isolation, native billed cost, retry-wide compaction usage,
-configuration, and artifact redaction. Accounting tests also verify persisted
-step and run totals and usage retained after retries are exhausted.
+validation, retry isolation, native billed cost, reasoning-inclusive output,
+retry-wide compaction usage, configuration, and artifact redaction. Accounting
+tests also verify configured-price output costs, persisted step and run totals,
+and usage retained after retries are exhausted.
 Mocked acceptance is not live provider verification or a benchmark result.
 
 Two paid tests are skipped unless explicitly enabled:

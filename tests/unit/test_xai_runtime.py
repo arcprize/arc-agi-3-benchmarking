@@ -13,7 +13,11 @@ from benchmarking.agent import BenchmarkingAgent
 from benchmarking.exceptions import EmptyResponseError
 from benchmarking.recording import RunRecord, StepRecord, StepUsage
 from benchmarking.runtime_adapters import build_model_runtime_adapter
-from benchmarking.runtime_models import Message, ModelRequest
+from benchmarking.runtime_models import (
+    Message,
+    ModelRequest,
+    action_metadata_from_model_response,
+)
 from benchmarking.runtime_registry import (
     build_stateful_runtime_adapter,
     resolve_adapter_id,
@@ -219,6 +223,20 @@ class TestXAIReplay:
         assert calls[3][1]["input"][0] == _compaction()["output"][0]
         assert third.state.payload["input_items"][0] == _compaction(2)["output"][0]
         assert "opaque-compaction-1" not in json.dumps(third.state.payload)
+
+    def test_system_prompt_is_compacted_without_plaintext_reinsertion(self):
+        adapter, calls = _adapter(
+            [_response(), _compaction(), _response(2), _compaction(2), _response(3)],
+            compact=True,
+        )
+        first = _turn(adapter)
+        second = _turn(adapter, first.state)
+        third = _turn(adapter, second.state)
+        assert calls[1][1]["input"][0] == {"role": "system", "content": "system"}
+        for _, request in calls[2:]:
+            assert request["input"][0]["type"] == "compaction"
+            assert not any(item.get("role") == "system" for item in request["input"])
+        assert third.state.payload["system_prompt"] == "system"
 
     def test_compaction_cost_does_not_retrigger_compaction(self):
         adapter, calls = _adapter(
@@ -636,6 +654,61 @@ class TestXAIAgentIntegration:
 
 @pytest.mark.unit
 class TestXAIAccounting:
+    @pytest.mark.parametrize("compact", [False, True])
+    @pytest.mark.parametrize(
+        (
+            "input_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+            "total_tokens",
+            "expected_output",
+        ),
+        [
+            (175_000, 695, 600, 176_295, 1295),
+            (175_000, 1295, 600, 176_295, 1295),
+            (12_000, 800, 240, 12_800, 800),
+            (175_000, 695, 0, 175_695, 695),
+            (175_000, 695, 600, None, 695),
+            (175_000, 695, 600, 176_300, 695),
+        ],
+    )
+    def test_reasoning_is_included_once_when_reported_total_confirms_it(
+        self,
+        compact,
+        input_tokens,
+        output_tokens,
+        reasoning_tokens,
+        total_tokens,
+        expected_output,
+    ):
+        raw = _compaction() if compact else _response()
+        raw["usage"].update(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            output_tokens_details={"reasoning_tokens": reasoning_tokens},
+            total_tokens=total_tokens,
+            cost_in_usd_ticks=200_000_000,
+        )
+        original = deepcopy(raw)
+        adapter, _ = _adapter([raw])
+        if compact:
+            response = adapter._model_adapter.compact(model="grok-4.6", input_items=[])
+        else:
+            response = _turn(adapter).response
+        usage = response.usage
+        assert usage.input_tokens == input_tokens
+        assert usage.output_tokens == expected_output
+        assert usage.reasoning_tokens == reasoning_tokens
+        assert usage.total_tokens == (total_tokens or 0)
+        assert usage.cost == pytest.approx(0.02)
+        assert response.raw_response["usage"]["output_tokens"] == output_tokens
+        assert raw == original
+        metadata = action_metadata_from_model_response(response, {"output": 10.0})
+        assert metadata.usage.output_tokens == expected_output
+        assert metadata.cost.output_cost == pytest.approx(
+            expected_output * 10 / 1_000_000
+        )
+
     @pytest.mark.parametrize(
         ("usage_fields", "expected_cost"),
         [
@@ -668,7 +741,13 @@ class TestXAIAccounting:
         action["usage"]["cost_in_usd_ticks"] = 200_000_000
         if compact:
             summary = _compaction()
-            summary["usage"]["cost_in_usd_ticks"] = 100_000_000
+            summary["usage"].update(
+                input_tokens=175_000,
+                output_tokens=695,
+                output_tokens_details={"reasoning_tokens": 600},
+                total_tokens=176_295,
+                cost_in_usd_ticks=100_000_000,
+            )
             adapter, _ = _adapter([_response(), summary, action], compact=True)
             previous = _turn(adapter).state
         else:
@@ -701,10 +780,23 @@ class TestXAIAccounting:
         saved_run = json.loads((tmp_path / "run_meta.json").read_text())
         assert saved_step["usage"]["cost"] == pytest.approx(expected_cost)
         assert saved_run["total_usage"]["cost"] == pytest.approx(expected_cost)
+        expected_output = 1305 if compact else 10
+        assert saved_step["usage"]["completion_tokens"] == expected_output
+        assert saved_run["total_usage"]["completion_tokens"] == expected_output
+        metadata = action_metadata_from_model_response(
+            result.response, {"output": 10.0}
+        )
+        assert metadata.cost.output_cost == pytest.approx(
+            expected_output * 10 / 1_000_000
+        )
         if compact:
             assert result.action_state["native_compaction"]["usage"][
                 "cost"
             ] == pytest.approx(0.01)
+            assert (
+                result.action_state["native_compaction"]["usage"]["output_tokens"]
+                == 1295
+            )
 
     @pytest.mark.parametrize(
         "failure", ["incomplete", "refusal", "thought_only", "empty", "no_output"]
@@ -811,6 +903,18 @@ class TestXAIAccounting:
         breakdown = agent._last_turn_result.action_state["native_compaction"]["usage"]
         assert breakdown["total_tokens"] == expected_compaction_tokens
         assert breakdown["cost"] == pytest.approx(expected_compaction_cost)
+        compaction_attempts = 1 if failure == "compaction_http_error" else 2
+        action_attempts = 2 if expected_tokens == 280_000 else 1
+        assert breakdown["output_tokens"] == 10_000 * compaction_attempts
+        assert breakdown["reasoning_tokens"] == 600 * compaction_attempts
+        assert (
+            response.usage.output_tokens
+            == 10_000 * compaction_attempts + 10 * action_attempts
+        )
+        assert (
+            response.usage.input_tokens + response.usage.output_tokens
+            == response.usage.total_tokens
+        )
         assert agent._runtime_state.payload["context_tokens"] == 100_000
         assert agent._last_turn_result.transition.compaction_items_returned == 1
         assert calls[1] == calls[-2]
@@ -854,7 +958,8 @@ def _billed_compaction(turn, ticks):
     response = _compaction(turn)
     response["usage"].update(
         input_tokens=30_000,
-        output_tokens=10_000,
+        output_tokens=9400,
+        output_tokens_details={"reasoning_tokens": 600},
         total_tokens=40_000,
         cost_in_usd_ticks=ticks,
     )

@@ -101,6 +101,7 @@ def _invalid_response(message: str, raw: dict[str, Any]) -> EmptyResponseError:
 
 
 def normalize_xai_usage(value: Any) -> NormalizedUsage:
+    """Include separately reported reasoning when the total confirms it."""
     normalized = _normalize_responses_usage(value)
     if isinstance(value, dict):
         for key in ("cost", "cost_details"):
@@ -113,7 +114,14 @@ def normalize_xai_usage(value: Any) -> NormalizedUsage:
     )
     if isinstance(cost_ticks, int) and not isinstance(cost_ticks, bool):
         normalized["cost"] = cost_ticks / 10_000_000_000
-    return NormalizedUsage(**normalized)
+    usage = NormalizedUsage(**normalized)
+    if (
+        usage.reasoning_tokens > 0
+        and usage.total_tokens
+        == usage.input_tokens + usage.output_tokens + usage.reasoning_tokens
+    ):
+        usage.output_tokens += usage.reasoning_tokens
+    return usage
 
 
 def normalize_xai_response(value: Any, *, compaction: bool = False) -> ModelResponse:
