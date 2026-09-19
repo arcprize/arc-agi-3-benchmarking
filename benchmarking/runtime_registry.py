@@ -11,9 +11,11 @@ from .runtime_state import (
     AdapterDescriptor,
     StatefulRuntimeAdapter,
 )
+from .xai_runtime import XAIContinuousConversationRuntimeAdapter
 
 OPENAI_RESPONSES_ADAPTER_ID = "openai.responses.v1"
 GOOGLE_INTERACTIONS_ADAPTER_ID = "google.interactions.v1"
+XAI_RESPONSES_ADAPTER_ID = "xai.responses.v1"
 
 _LEGACY_RUNTIME_ADAPTER_IDS = {
     ("openai-python", "chat_completions"): "openai.chat_completions.v1",
@@ -24,6 +26,14 @@ _LEGACY_RUNTIME_ADAPTER_IDS = {
 }
 
 ADAPTER_DESCRIPTORS = {
+    XAI_RESPONSES_ADAPTER_ID: AdapterDescriptor(
+        adapter_id=XAI_RESPONSES_ADAPTER_ID,
+        provider="xai",
+        api_surface="responses",
+        implementation_path="benchmarking/xai_runtime.py",
+        version="1",
+        approval_status="unreviewed",
+    ),
     "openai.chat_completions.v1": AdapterDescriptor(
         adapter_id="openai.chat_completions.v1",
         provider="openai-compatible",
@@ -85,6 +95,15 @@ def resolve_adapter_id(runtime_config: dict[str, Any], config_id: str) -> str:
         raise ValueError(
             f"Model config '{config_id}' uses unknown runtime.adapter_id={explicit!r}."
         )
+    if explicit == XAI_RESPONSES_ADAPTER_ID:
+        if runtime_pair != ("openai-python", "responses") or runtime_config.get(
+            "state"
+        ) != CONTINUOUS_CONVERSATION_RUNTIME_STATE:
+            raise ValueError(
+                "xai.responses.v1 requires openai-python/responses with "
+                "continuous_conversation state."
+            )
+        return explicit
     if derived is not None and explicit != derived:
         raise ValueError(
             f"Model config '{config_id}' uses runtime.adapter_id={explicit!r}, "
@@ -103,6 +122,12 @@ def build_stateful_runtime_adapter(
     descriptor = ADAPTER_DESCRIPTORS[adapter_id]
     strategy = runtime_config.get("state")
     if strategy == CONTINUOUS_CONVERSATION_RUNTIME_STATE:
+        if adapter_id == XAI_RESPONSES_ADAPTER_ID:
+            return XAIContinuousConversationRuntimeAdapter(
+                model_adapter=model_adapter,
+                descriptor=descriptor,
+                compaction=runtime_config.get("compaction"),
+            )
         if adapter_id == OPENAI_RESPONSES_ADAPTER_ID:
             return OpenAIContinuousConversationRuntimeAdapter(
                 model_adapter=model_adapter, descriptor=descriptor

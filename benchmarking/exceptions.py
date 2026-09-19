@@ -6,10 +6,13 @@ class EmptyResponseError(Exception):
         message: str,
         response: object | None = None,
         usage: object | None = None,
+        *,
+        native_compaction_usage: object | None = None,
     ) -> None:
         super().__init__(message)
         self.response = response
         self.usage = usage
+        self.native_compaction_usage = native_compaction_usage
 
 
 class ContextOverflowError(Exception):
