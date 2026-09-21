@@ -12,7 +12,6 @@ from typing import Any, Optional
 from arcengine import FrameData, GameAction, GameState
 
 from .action_metadata import fit_action_metadata_payload
-from .anthropic_runtime import AnthropicCompactionPolicy
 from .base import Agent, ExitReason
 from .compaction import (
     HARNESS_SUMMARY_COMPACTION,
@@ -104,20 +103,15 @@ class BenchmarkingAgent(Agent):
             runtime_cfg.get("state") == CONTINUOUS_CONVERSATION_RUNTIME_STATE
         )
         self._summary_compactor: SummaryCompactor | None = None
-        compaction_policy: (
-            SummaryCompactionPolicy | AnthropicCompactionPolicy | None
-        ) = None
         compaction_cfg = runtime_cfg.get("compaction")
-        if self._continuous_conversation and isinstance(compaction_cfg, dict):
-            if compaction_cfg.get("strategy") == HARNESS_SUMMARY_COMPACTION:
-                compaction_policy = SummaryCompactionPolicy.model_validate(
-                    compaction_cfg
-                )
-                self._summary_compactor = SummaryCompactor(compaction_policy)
-            elif compaction_cfg.get("strategy") == "native":
-                compaction_policy = AnthropicCompactionPolicy.model_validate(
-                    compaction_cfg
-                )
+        if (
+            self._continuous_conversation
+            and isinstance(compaction_cfg, dict)
+            and compaction_cfg.get("strategy") == HARNESS_SUMMARY_COMPACTION
+        ):
+            self._summary_compactor = SummaryCompactor(
+                SummaryCompactionPolicy.model_validate(compaction_cfg)
+            )
         self._pending_compaction_trigger_tokens: int | None = None
         self._pending_compaction_usage: NormalizedUsage | None = None
         self._pending_compaction_continuation: CompactionContinuationRecord | None = (
@@ -221,13 +215,18 @@ class BenchmarkingAgent(Agent):
                     commit_sha=commit_sha,
                 ),
             }
-            if compaction_policy is not None:
+            if self._summary_compactor is not None:
                 runtime_metadata["compaction"] = {
-                    **compaction_policy.model_dump(),
+                    **self._summary_compactor.policy.model_dump(),
                     "context_limit_tokens": self.MAX_CONTEXT_LENGTH,
                 }
-            if self._summary_compactor is not None:
                 runtime_metadata["compaction_count"] = 0
+            native_policy = getattr(self._stateful_adapter, "compaction_policy", None)
+            if native_policy is not None:
+                runtime_metadata["compaction"] = {
+                    **native_policy.model_dump(),
+                    "context_limit_tokens": self.MAX_CONTEXT_LENGTH,
+                }
         self.run_record = RunRecord(
             run_id=str(run_id),
             game_id=self.game_id,
@@ -935,6 +934,7 @@ class BenchmarkingAgent(Agent):
         request. The current assistant reply is not included.
         """
         accumulated_usage = NormalizedUsage()
+        accumulated_native_compaction_usage: NormalizedUsage | None = None
         self._last_turn_result = None
         attempt = 0
         max_attempts = self.MAX_RETRIES + 1
@@ -995,6 +995,10 @@ class BenchmarkingAgent(Agent):
                 if isinstance(e.usage, NormalizedUsage):
                     self.track_tokens(e.usage.total_tokens)
                     accumulated_usage = accumulated_usage + e.usage
+                if isinstance(e.native_compaction_usage, NormalizedUsage):
+                    accumulated_native_compaction_usage = (
+                        accumulated_native_compaction_usage or NormalizedUsage()
+                    ) + e.native_compaction_usage
                 if e.response is not None:
                     self._save_diagnostic(e.response)
                 logger.warning(
@@ -1013,6 +1017,14 @@ class BenchmarkingAgent(Agent):
 
             self.track_tokens(model_response.usage.total_tokens)
             accumulated_usage = accumulated_usage + model_response.usage
+            if hasattr(self, "_stateful_adapter"):
+                native_compaction = (turn_result.action_state or {}).get(
+                    "native_compaction"
+                )
+                if isinstance(native_compaction, dict):
+                    accumulated_native_compaction_usage = (
+                        accumulated_native_compaction_usage or NormalizedUsage()
+                    ) + NormalizedUsage.model_validate(native_compaction["usage"])
             model_response = model_response.model_copy(
                 update={"usage": accumulated_usage}
             )
@@ -1035,6 +1047,18 @@ class BenchmarkingAgent(Agent):
             action = self._parse_action(model_response.output_text, actions)
             if action is not None:
                 if hasattr(self, "_stateful_adapter"):
+                    if accumulated_native_compaction_usage is not None:
+                        action_state = dict(turn_result.action_state or {})
+                        native_compaction = dict(
+                            action_state.get("native_compaction") or {}
+                        )
+                        native_compaction["usage"] = (
+                            accumulated_native_compaction_usage.model_dump()
+                        )
+                        action_state["native_compaction"] = native_compaction
+                        turn_result = turn_result.model_copy(
+                            update={"action_state": action_state}
+                        )
                     self._runtime_state = turn_result.state
                     self._last_turn_result = turn_result
                     sanitized_messages = turn_result.readable_request_messages

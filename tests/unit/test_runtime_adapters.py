@@ -1,9 +1,12 @@
+import os
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from google import genai as google_genai
-from google.genai import _interactions as google_genai_interactions
 
 from benchmarking.exceptions import (
     ContextOverflowError,
@@ -255,6 +258,41 @@ def _anthropic_request() -> ModelRequest:
 
 
 @pytest.mark.unit
+def test_runtime_import_does_not_require_private_google_interactions_module(
+    tmp_path,
+):
+    google_package = tmp_path / "google"
+    genai_package = google_package / "genai"
+    genai_package.mkdir(parents=True)
+    (google_package / "__init__.py").write_text(
+        "from . import genai\n",
+        encoding="utf-8",
+    )
+    (genai_package / "__init__.py").write_text(
+        "from . import types\n\nclass Client:\n    pass\n",
+        encoding="utf-8",
+    )
+    (genai_package / "types.py").write_text(
+        "class GenerateContentConfig:\n    pass\n",
+        encoding="utf-8",
+    )
+
+    repo_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join((str(tmp_path), str(repo_root)))
+    result = subprocess.run(
+        [sys.executable, "-c", "import benchmarking.runtime_adapters"],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.unit
 @pytest.mark.filterwarnings("ignore:Interactions usage is experimental")
 class TestGoogleGenAIInteractionsAdapter:
     @staticmethod
@@ -333,10 +371,13 @@ class TestGoogleGenAIInteractionsAdapter:
         try:
             adapter = GoogleGenAIInteractionsAdapter(client)
 
-            with pytest.raises(google_genai_interactions.BadRequestError):
+            with pytest.raises(Exception) as exc_info:
                 adapter.invoke(self._request())
         finally:
             client.close()
+
+        assert type(exc_info.value).__name__ == "BadRequestError"
+        assert type(exc_info.value).__module__.startswith("google.genai")
 
     @pytest.mark.parametrize(
         ("status_code", "status"),

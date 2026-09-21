@@ -311,6 +311,18 @@ domain-neutral.
 
 ## Recording and provenance
 
+### xAI Responses
+
+The explicit `xai.responses.v1` adapter uses the OpenAI SDK's Responses surface
+with xAI-specific request validation, exact encrypted replay, and a separate
+native `/responses/compact` call. It does not use OpenAI's inline compaction
+settings or Gemini's harness summaries. Compaction excludes fresh and buffered
+unanswered observations, replaces only the accepted prefix, and commits only
+with an accepted action. See [xAI Provider Adapter](xai-provider-adapter.md) for
+configuration, accounting, limitations, and verification details.
+
+### Common artifacts
+
 Opaque provider state is never written to ordinary step records, logs, action
 metadata, or public artifacts. Step records retain the readable model
 output and reasoning summary, sanitized input item types and IDs, and counts

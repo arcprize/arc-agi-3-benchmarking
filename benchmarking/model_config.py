@@ -104,11 +104,11 @@ def _validate_continuous_conversation_config(
         from .anthropic_runtime import (
             COMPACTION_BETA,
             AnthropicCompactionPolicy,
-            validate_continuous_conversation_request,
+            validate_continuous_conversation_request as validate_anthropic_request,
         )
 
         try:
-            validate_continuous_conversation_request(request)
+            validate_anthropic_request(request)
             if "compaction" in runtime:
                 native_policy = AnthropicCompactionPolicy.model_validate(
                     runtime["compaction"]
@@ -177,6 +177,32 @@ def _validate_continuous_conversation_config(
                 f"Model config '{config_id}' uses continuous_conversation and "
                 "must set request.reasoning.summary='auto'."
             )
+    elif adapter_id == "xai.responses.v1":
+        from .xai_runtime import (
+            XAICompactionPolicy,
+            validate_continuous_conversation_request as validate_xai_request,
+        )
+
+        validate_xai_request(request)
+        compaction = runtime.get("compaction")
+        if compaction is not None:
+            xai_policy = XAICompactionPolicy.model_validate(compaction)
+            context_limit = entry.get("agent", {}).get("MAX_CONTEXT_LENGTH")
+            output_limit = request.get("max_output_tokens")
+            if (
+                isinstance(context_limit, bool)
+                or not isinstance(context_limit, int)
+                or isinstance(output_limit, bool)
+                or not isinstance(output_limit, int)
+                or output_limit <= 0
+                or xai_policy.trigger_tokens + output_limit >= context_limit
+            ):
+                raise ValueError(
+                    "xAI native compaction requires positive agent.MAX_CONTEXT_LENGTH "
+                    "and request.max_output_tokens, with trigger plus output tokens "
+                    "below the context limit."
+                )
+        return
     elif adapter_id == "google.interactions.v1":
         if "previous_interaction_id" in request:
             raise ValueError(

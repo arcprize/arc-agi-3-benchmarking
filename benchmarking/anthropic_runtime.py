@@ -329,7 +329,7 @@ class AnthropicContinuousConversationRuntimeAdapter:
     ) -> None:
         self._model_adapter = model_adapter
         self.descriptor = descriptor
-        self._compaction = (
+        self.compaction_policy = (
             AnthropicCompactionPolicy.model_validate(compaction)
             if compaction is not None
             else None
@@ -406,7 +406,7 @@ class AnthropicContinuousConversationRuntimeAdapter:
             for message in history
         )
         if (
-            self._compaction is not None or has_summary
+            self.compaction_policy is not None or has_summary
         ) and COMPACTION_BETA not in request.request_config.get("betas", []):
             raise ValueError(
                 f"Anthropic native compaction requires beta {COMPACTION_BETA}."
@@ -425,13 +425,15 @@ class AnthropicContinuousConversationRuntimeAdapter:
         trigger_tokens = state.payload.get("context_tokens", 0)
         try:
             if (
-                self._compaction is not None
+                self.compaction_policy is not None
                 and completed_end
-                and trigger_tokens >= self._compaction.trigger_tokens
+                and trigger_tokens >= self.compaction_policy.trigger_tokens
             ):
                 config = deepcopy(request.request_config)
                 config["compaction"] = {"type": "summarize"}
-                config["max_tokens"] = self._compaction.summary_max_output_tokens
+                config["max_tokens"] = (
+                    self.compaction_policy.summary_max_output_tokens
+                )
                 config.pop("stop_sequences", None)
                 config.get("output_config", {}).pop("format", None)
                 compacted = self._invoke(

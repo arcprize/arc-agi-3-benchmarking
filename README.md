@@ -109,6 +109,10 @@ reasoning state. It uses native compaction when the provider supplies it and a
 domain-neutral harness summary otherwise. These configurations use
 `continuous_conversation`; `openai-gpt-5-6-sol-max-provider-adapter` and
 `google-gemini-3-8-flash-low-provider-adapter` are examples.
+The `xai-grok-4-6-low-provider-adapter` profile adds xAI-native encrypted
+reasoning replay and separate Responses compaction using `XAI_API_KEY`.
+See the [xAI Provider Adapter](docs/xai-provider-adapter.md) for its request
+contract, compaction boundaries, and opt-in live tests.
 
 The Anthropic Provider Adapter profile is `anthropic-opus-5-low-provider-adapter`.
 It uses Opus 5 at low reasoning effort, preserves native thinking blocks between
