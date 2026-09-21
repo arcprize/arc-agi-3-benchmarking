@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .anthropic_runtime import AnthropicContinuousConversationRuntimeAdapter
 from .google_runtime import GoogleContinuousConversationRuntimeAdapter
 from .openai_runtime import OpenAIContinuousConversationRuntimeAdapter
 from .runtime_state import (
@@ -14,6 +15,7 @@ from .runtime_state import (
 from .xai_runtime import XAIContinuousConversationRuntimeAdapter
 
 OPENAI_RESPONSES_ADAPTER_ID = "openai.responses.v1"
+ANTHROPIC_MESSAGES_ADAPTER_ID = "anthropic.messages.v1"
 GOOGLE_INTERACTIONS_ADAPTER_ID = "google.interactions.v1"
 XAI_RESPONSES_ADAPTER_ID = "xai.responses.v1"
 
@@ -54,7 +56,7 @@ ADAPTER_DESCRIPTORS = {
         adapter_id="anthropic.messages.v1",
         provider="anthropic",
         api_surface="messages",
-        implementation_path="benchmarking/runtime_adapters.py",
+        implementation_path="benchmarking/anthropic_runtime.py",
         version="1",
         approval_status="unreviewed",
     ),
@@ -122,6 +124,12 @@ def build_stateful_runtime_adapter(
     descriptor = ADAPTER_DESCRIPTORS[adapter_id]
     strategy = runtime_config.get("state")
     if strategy == CONTINUOUS_CONVERSATION_RUNTIME_STATE:
+        if adapter_id == ANTHROPIC_MESSAGES_ADAPTER_ID:
+            return AnthropicContinuousConversationRuntimeAdapter(
+                model_adapter=model_adapter,
+                descriptor=descriptor,
+                compaction=runtime_config.get("compaction"),
+            )
         if adapter_id == XAI_RESPONSES_ADAPTER_ID:
             return XAIContinuousConversationRuntimeAdapter(
                 model_adapter=model_adapter,

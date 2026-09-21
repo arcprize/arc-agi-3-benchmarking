@@ -107,7 +107,7 @@ class BenchmarkingAgent(Agent):
         if (
             self._continuous_conversation
             and isinstance(compaction_cfg, dict)
-            and runtime_cfg.get("adapter_id") != "xai.responses.v1"
+            and compaction_cfg.get("strategy") == HARNESS_SUMMARY_COMPACTION
         ):
             self._summary_compactor = SummaryCompactor(
                 SummaryCompactionPolicy.model_validate(compaction_cfg)
@@ -1002,7 +1002,7 @@ class BenchmarkingAgent(Agent):
                 if e.response is not None:
                     self._save_diagnostic(e.response)
                 logger.warning(
-                    f"Empty API response "
+                    f"Unusable API response "
                     f"(attempt {attempt + 1}/{max_attempts})."
                 )
                 attempt += 1

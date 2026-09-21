@@ -26,6 +26,7 @@ from .runtime_state import (
     ModelTurnRequest,
     RuntimeState,
     StatefulRuntimeAdapter,
+    SummaryCompactionRuntimeAdapter,
     sanitize_settings,
 )
 
@@ -137,6 +138,10 @@ class SummaryCompactor:
     ) -> SummaryCompactionResult:
         if estimated_chars_per_token <= 0:
             raise ValueError("estimated_chars_per_token must be greater than zero.")
+        if not isinstance(adapter, SummaryCompactionRuntimeAdapter):
+            raise ValueError(
+                "Selected adapter does not support harness summary compaction."
+            )
         history_items_to_compact = runtime_state_item_count(state)
         summary_request_config = request_config_with_output_limit(
             request_config,
