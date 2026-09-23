@@ -284,6 +284,10 @@ def main() -> None:
         cleanup(swarm, None, None)
 
 
-if __name__ == "__main__":
+def cli() -> None:
     os.environ["TESTING"] = "False"
     main()
+
+
+if __name__ == "__main__":
+    cli()
