@@ -223,6 +223,14 @@ def _stream(parts, *, include_usage=True, done=True):
     )
 
 
+def _stream_error(error):
+    return httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        content=f"data: {json.dumps({'error': error})}\n\ndata: [DONE]\n\n",
+    )
+
+
 def test_replays_exact_reasoning_and_closes_tool_call():
     reasoning = "  Move down, then inspect.  "
     adapter, calls = _adapter(
@@ -405,6 +413,61 @@ def test_interrupted_stream_preserves_usage_and_closes():
         DeepSeekChatCompletionsAdapter._consume_stream(stream)
     assert captured.value.usage.total_tokens == 120
     assert stream.closed
+
+
+def test_streamed_context_error_allows_summary_compaction_to_unwind():
+    summary_stream = _stream(
+        [
+            (
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_summary",
+                            "type": "function",
+                            "function": {
+                                "name": SUMMARY_TOOL_NAME,
+                                "arguments": '{"summary":"Keep moving east."}',
+                            },
+                        }
+                    ]
+                },
+                "tool_calls",
+            )
+        ]
+    )
+    adapter, calls = _adapter(
+        [
+            _tool_raw({"action_type": "ACTION1"}),
+            _stream_error(
+                {
+                    "code": "context_length_exceeded",
+                    "message": "maximum context length exceeded",
+                }
+            ),
+            summary_stream,
+        ]
+    )
+    accepted = _turn(adapter).state
+    result = _compact(
+        adapter,
+        accepted,
+        request_config={**_config()["request"], "stream": True},
+    )
+
+    assert result.summary == "Keep moving east."
+    assert result.excluded_turns == 1
+    assert len(calls[2]["messages"]) < len(calls[1]["messages"])
+
+
+def test_streaming_rejects_disabled_usage():
+    request = {
+        **_config()["request"],
+        "stream": True,
+        "stream_options": {"include_usage": False},
+    }
+    with pytest.raises(ValueError, match="include_usage=true"):
+        validate_deepseek_request(request)
 
 
 @pytest.mark.parametrize(

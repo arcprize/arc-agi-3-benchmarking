@@ -6,7 +6,7 @@ import json
 from copy import deepcopy
 from typing import Any
 
-from openai import APIConnectionError, APIStatusError
+from openai import APIConnectionError, APIError
 
 from .compaction import SUMMARY_SYSTEM_PROMPT
 from .exceptions import (
@@ -134,8 +134,18 @@ def validate_deepseek_request(request: dict[str, Any]) -> None:
         raise ValueError("DeepSeek continuous conversation requires n=1.")
     if "stream" in request and not isinstance(request["stream"], bool):
         raise ValueError("request.stream must be a boolean.")
-    if "stream_options" in request and not isinstance(request["stream_options"], dict):
+    stream_options = request.get("stream_options")
+    if "stream_options" in request and not isinstance(stream_options, dict):
         raise ValueError("request.stream_options must be a mapping.")
+    if (
+        request.get("stream")
+        and isinstance(stream_options, dict)
+        and "include_usage" in stream_options
+        and stream_options["include_usage"] is not True
+    ):
+        raise ValueError(
+            "DeepSeek streaming requests require stream_options.include_usage=true."
+        )
     if request.get("store") not in (None, False) or extra_body.get("store") not in (
         None,
         False,
@@ -202,6 +212,22 @@ def _invalid(message: str, response: dict[str, Any]) -> InvalidProviderResponseE
         response=sanitize_settings(diagnostic),
         usage=_usage(response.get("usage")),
     )
+
+
+def _classified_provider_error(exc: APIError) -> Exception | None:
+    if isinstance(exc, APIConnectionError):
+        return TransientProviderError("Chat Completions connection failed.")
+    details = f"{exc.message} {exc.body}".lower()
+    status_code = getattr(exc, "status_code", None)
+    if status_code in (None, 400, 413, 422) and any(
+        marker in details for marker in _CONTEXT_MARKERS
+    ):
+        return ContextOverflowError("Chat Completions context capacity exceeded.")
+    if status_code in {408, 409, 429} or (
+        isinstance(status_code, int) and status_code >= 500
+    ):
+        return TransientProviderError(f"Chat Completions HTTP {status_code}.")
+    return None
 
 
 def _tool_call_output(message: dict[str, Any], *, expected_tool_name: str) -> str:
@@ -329,8 +355,8 @@ class DeepSeekChatCompletionsAdapter:
         expected_tool_name = tool["function"]["name"]
         if kwargs.get("stream"):
             kwargs["stream_options"] = {
-                "include_usage": True,
                 **(kwargs.get("stream_options") or {}),
+                "include_usage": True,
             }
         try:
             raw = self._client.chat.completions.create(**kwargs)
@@ -343,20 +369,10 @@ class DeepSeekChatCompletionsAdapter:
                 _mapping(raw),
                 expected_tool_name=expected_tool_name,
             )
-        except APIConnectionError as exc:
-            raise TransientProviderError("Chat Completions connection failed.") from exc
-        except APIStatusError as exc:
-            details = f"{exc.message} {exc.body}".lower()
-            if exc.status_code in {400, 413, 422} and any(
-                marker in details for marker in _CONTEXT_MARKERS
-            ):
-                raise ContextOverflowError(
-                    "Chat Completions context capacity exceeded."
-                ) from exc
-            if exc.status_code in {408, 409, 429} or exc.status_code >= 500:
-                raise TransientProviderError(
-                    f"Chat Completions HTTP {exc.status_code}."
-                ) from exc
+        except APIError as exc:
+            classified = _classified_provider_error(exc)
+            if classified is not None:
+                raise classified from exc
             raise
 
     @staticmethod
@@ -451,6 +467,13 @@ class DeepSeekChatCompletionsAdapter:
                         choice["finish_reason"] = part["finish_reason"]
         except InvalidProviderResponseError:
             raise
+        except APIError as exc:
+            classified = _classified_provider_error(exc)
+            if classified is not None:
+                raise classified from exc
+            raise _invalid(
+                "Chat Completions stream returned a provider error.", response
+            ) from exc
         except Exception as exc:
             raise _invalid(
                 "Chat Completions stream interrupted before completion.", response
