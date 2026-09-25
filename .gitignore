@@ -113,4 +113,5 @@ recordings
 
 # Claude Code
 .claude/
-docs/
+docs/*
+!docs/deepseek-provider-adapter.md

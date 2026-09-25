@@ -30,6 +30,7 @@ CONTINUOUS_CONVERSATION_RUNTIME_PAIRS = frozenset(
     {
         ("anthropic-python", "messages"),
         ("google-genai", "interactions"),
+        ("openai-python", "chat_completions"),
         ("openai-python", "responses"),
     }
 )
@@ -130,7 +131,22 @@ def _validate_continuous_conversation_config(
         except ValueError as exc:
             raise ValueError(f"Model config '{config_id}': {exc}") from exc
         return
-    if request.get("store") is not False:
+    if adapter_id == "deepseek.chat_completions.v1":
+        from .deepseek_runtime import validate_deepseek_request
+
+        try:
+            unsupported_runtime_fields = sorted(
+                {"reasoning_replay", "tool_calling"}.intersection(runtime)
+            )
+            if unsupported_runtime_fields:
+                raise ValueError(
+                    "DeepSeek tool behavior is fixed; remove runtime field(s): "
+                    f"{', '.join(unsupported_runtime_fields)}."
+                )
+            validate_deepseek_request(request)
+        except ValueError as exc:
+            raise ValueError(f"Model config '{config_id}': {exc}") from exc
+    elif request.get("store") is not False:
         raise ValueError(
             f"Model config '{config_id}' uses runtime.state="
             f"{CONTINUOUS_CONVERSATION_RUNTIME_STATE!r} and must set request.store=false."
