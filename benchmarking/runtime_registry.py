@@ -5,6 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from .anthropic_runtime import AnthropicContinuousConversationRuntimeAdapter
+from .deepseek_runtime import (
+    DEEPSEEK_ADAPTER_ID,
+    DeepSeekContinuousConversationRuntimeAdapter,
+)
 from .google_runtime import GoogleContinuousConversationRuntimeAdapter
 from .openai_runtime import OpenAIContinuousConversationRuntimeAdapter
 from .runtime_state import (
@@ -28,6 +32,14 @@ _LEGACY_RUNTIME_ADAPTER_IDS = {
 }
 
 ADAPTER_DESCRIPTORS = {
+    DEEPSEEK_ADAPTER_ID: AdapterDescriptor(
+        adapter_id=DEEPSEEK_ADAPTER_ID,
+        provider="deepseek",
+        api_surface="chat_completions",
+        implementation_path="benchmarking/deepseek_runtime.py",
+        version="1",
+        approval_status="unreviewed",
+    ),
     XAI_RESPONSES_ADAPTER_ID: AdapterDescriptor(
         adapter_id=XAI_RESPONSES_ADAPTER_ID,
         provider="xai",
@@ -88,6 +100,11 @@ def resolve_adapter_id(runtime_config: dict[str, Any], config_id: str) -> str:
         if runtime_pair is not None
         else None
     )
+    if (
+        runtime_pair == ("openai-python", "chat_completions")
+        and runtime_config.get("state") == CONTINUOUS_CONVERSATION_RUNTIME_STATE
+    ):
+        derived = DEEPSEEK_ADAPTER_ID
     explicit = runtime_config.get("adapter_id")
     if explicit is None:
         if derived is None:
@@ -124,6 +141,11 @@ def build_stateful_runtime_adapter(
     descriptor = ADAPTER_DESCRIPTORS[adapter_id]
     strategy = runtime_config.get("state")
     if strategy == CONTINUOUS_CONVERSATION_RUNTIME_STATE:
+        if adapter_id == DEEPSEEK_ADAPTER_ID:
+            return DeepSeekContinuousConversationRuntimeAdapter(
+                model_adapter=model_adapter,
+                descriptor=descriptor,
+            )
         if adapter_id == ANTHROPIC_MESSAGES_ADAPTER_ID:
             return AnthropicContinuousConversationRuntimeAdapter(
                 model_adapter=model_adapter,

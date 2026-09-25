@@ -240,6 +240,17 @@ requirement. See Google's documentation for
 [stateless interactions](https://ai.google.dev/gemini-api/docs/thought-signatures#stateless-mode)
 and [Zero Data Retention](https://ai.google.dev/gemini-api/docs/zdr).
 
+### DeepSeek Chat Completions
+
+`deepseek.chat_completions.v1` implements opt-in `continuous_conversation` for
+DeepSeek thinking mode. It sends one adapter-owned tool on every request,
+requires one matching tool call, and replays exact `reasoning_content` with the
+assistant tool call and matching tool result. Pending observations are kept
+outside harness summaries and restored unchanged.
+
+See the [DeepSeek Provider Adapter guide](deepseek-provider-adapter.md) for the
+request protocol, configuration, and tests.
+
 ## Harness summary compaction
 
 Harness-managed reconstruction is an optional adapter capability, represented

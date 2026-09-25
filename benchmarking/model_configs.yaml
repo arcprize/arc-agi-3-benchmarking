@@ -25,6 +25,35 @@
     input: 2.00
     output: 6.00
 
+- id: "deepseek-v4-1-flash-low-provider-adapter"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5
+    MAX_CONTEXT_LENGTH: 1_000_000
+  runtime:
+    sdk: "openai-python"
+    api: "chat_completions"
+    adapter_id: "deepseek.chat_completions.v1"
+    state: "continuous_conversation"
+    compaction:
+      strategy: "harness_summary"
+      trigger_tokens: 175_000
+      summary_max_output_tokens: 8_192
+      summary_input_headroom_tokens: 8_192
+  client:
+    base_url: "https://inference.baseten.co/v1"
+    api_key_env: "BASETEN_API_KEY"
+  request:
+    model: "deepseek-ai/DeepSeek-V4.1-Flash"
+    max_tokens: 262_144
+    stream: true
+    extra_body:
+      chat_template_kwargs:
+        thinking: true
+        reasoning_effort: "low"
+  pricing:
+    input: 0.30
+    output: 1.20
+
 - id: "openai-gpt-5.4-openrouter"
   agent:
     MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
