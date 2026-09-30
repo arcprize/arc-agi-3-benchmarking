@@ -11,6 +11,10 @@ from .deepseek_runtime import (
 )
 from .google_content_runtime import GoogleContentConversationRuntimeAdapter
 from .google_runtime import GoogleContinuousConversationRuntimeAdapter
+from .open_source_runtime import (
+    OPEN_SOURCE_ADAPTER_ID,
+    OpenSourceContinuousConversationRuntimeAdapter,
+)
 from .openai_runtime import OpenAIContinuousConversationRuntimeAdapter
 from .runtime_state import (
     CONTINUOUS_CONVERSATION_RUNTIME_STATE,
@@ -38,6 +42,14 @@ ADAPTER_DESCRIPTORS = {
         provider="deepseek",
         api_surface="chat_completions",
         implementation_path="benchmarking/deepseek_runtime.py",
+        version="1",
+        approval_status="unreviewed",
+    ),
+    OPEN_SOURCE_ADAPTER_ID: AdapterDescriptor(
+        adapter_id=OPEN_SOURCE_ADAPTER_ID,
+        provider="openai-compatible",
+        api_surface="chat_completions",
+        implementation_path="benchmarking/open_source_runtime.py",
         version="1",
         approval_status="unreviewed",
     ),
@@ -101,12 +113,18 @@ def resolve_adapter_id(runtime_config: dict[str, Any], config_id: str) -> str:
         if runtime_pair is not None
         else None
     )
+    explicit = runtime_config.get("adapter_id")
     if (
         runtime_pair == ("openai-python", "chat_completions")
         and runtime_config.get("state") == CONTINUOUS_CONVERSATION_RUNTIME_STATE
     ):
-        derived = DEEPSEEK_ADAPTER_ID
-    explicit = runtime_config.get("adapter_id")
+        if explicit not in {DEEPSEEK_ADAPTER_ID, OPEN_SOURCE_ADAPTER_ID}:
+            raise ValueError(
+                f"Model config '{config_id}' continuous Chat Completions requires "
+                "runtime.adapter_id='deepseek.chat_completions.v1' or "
+                "'open_source.chat_completions.v1'."
+            )
+        return explicit
     if explicit is None:
         if derived is None:
             raise ValueError(f"Model config '{config_id}' has no registered adapter.")
@@ -146,6 +164,14 @@ def build_stateful_runtime_adapter(
             return DeepSeekContinuousConversationRuntimeAdapter(
                 model_adapter=model_adapter,
                 descriptor=descriptor,
+            )
+        if adapter_id == OPEN_SOURCE_ADAPTER_ID:
+            return OpenSourceContinuousConversationRuntimeAdapter(
+                model_adapter=model_adapter,
+                descriptor=descriptor,
+                reasoning_replay=runtime_config.get(
+                    "reasoning_replay", "reasoning_content"
+                ),
             )
         if adapter_id == ANTHROPIC_MESSAGES_ADAPTER_ID:
             return AnthropicContinuousConversationRuntimeAdapter(

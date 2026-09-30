@@ -559,13 +559,11 @@ def test_registry_and_config_preserve_standard_chat_completions(tmp_path, monkey
     assert model_config.load_model_configs()[0] == config
     runtime = config["runtime"]
     assert resolve_adapter_id(runtime, "test") == DEEPSEEK_ADAPTER_ID
-    assert (
+    with pytest.raises(ValueError, match="requires runtime.adapter_id"):
         resolve_adapter_id(
             {key: value for key, value in runtime.items() if key != "adapter_id"},
             "test",
         )
-        == DEEPSEEK_ADAPTER_ID
-    )
     assert isinstance(
         build_model_runtime_adapter(
             client=None,
@@ -591,14 +589,22 @@ def test_registry_and_config_preserve_standard_chat_completions(tmp_path, monkey
     )
 
 
-@pytest.mark.parametrize("field", ["reasoning_replay", "tool_calling"])
-def test_config_rejects_removed_generic_runtime_modes(tmp_path, monkeypatch, field):
+@pytest.mark.parametrize(
+    "field,error",
+    [
+        ("reasoning_replay", "requires the open-source"),
+        ("tool_calling", "DeepSeek tool behavior is fixed"),
+    ],
+)
+def test_config_rejects_removed_generic_runtime_modes(
+    tmp_path, monkeypatch, field, error
+):
     config = _config()
     config["runtime"][field] = True
     path = tmp_path / "model_configs.yaml"
     path.write_text(yaml.safe_dump([config]))
     monkeypatch.setattr(model_config, "MODEL_CONFIG_PATH", path)
-    with pytest.raises(ValueError, match="DeepSeek tool behavior is fixed"):
+    with pytest.raises(ValueError, match=error):
         model_config.load_model_configs()
 
 

@@ -53,7 +53,8 @@ encrypted replay and synchronous compaction; see
 
 `continuous_conversation` carries provider-native conversation and reasoning
 state from one accepted turn to the next. It is implemented by
-`openai.responses.v1`, `google.interactions.v1`, and `anthropic.messages.v1`.
+`openai.responses.v1`, `google.interactions.v1`, `anthropic.messages.v1`,
+`deepseek.chat_completions.v1`, and `open_source.chat_completions.v1`.
 
 ### OpenAI Responses
 
@@ -259,11 +260,28 @@ outside harness summaries and restored unchanged.
 See the [DeepSeek Provider Adapter guide](deepseek-provider-adapter.md) for the
 request protocol, configuration, and tests.
 
+### Generic open-source Chat Completions
+
+`open_source.chat_completions.v1` implements opt-in continuous conversation for
+OpenAI-compatible open-weight endpoints. It accepts plain-text actions and
+replays each accepted assistant answer with the exact native reasoning string.
+Configurations explicitly select `reasoning_content`, `reasoning`, or both
+aliases according to the model server's documented chat template. It does not
+convert reasoning to visible text or add tool calls.
+
+The initial supported profiles are GLM-5.3-Flash and Qwen3.8-27B. Both reuse
+the shared harness summary compactor, keep pending observations out of summary
+requests, and require streaming usage data for accurate accounting and
+usage-triggered compaction. See the
+[open-source Provider Adapter guide](open-source-provider-adapter.md) for the
+request contract, model-specific settings, examples, and tests.
+
 ## Harness summary compaction
 
 Harness-managed reconstruction is an optional adapter capability, represented
-by `SummaryCompactionRuntimeAdapter`. OpenAI and Google implement it; Anthropic
-implements only the common stateful turn contract and uses native compaction.
+by `SummaryCompactionRuntimeAdapter`. OpenAI, Google, DeepSeek, and the generic
+open-source adapter implement it; Anthropic implements only the common stateful
+turn contract and uses native compaction.
 Both configuration validation and the summary compactor reject harness-summary
 requests for Anthropic before making a provider call.
 
