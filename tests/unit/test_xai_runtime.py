@@ -107,6 +107,12 @@ def _adapter(responses, *, compact=False):
         response = responses.pop(0)
         if isinstance(response, Exception):
             raise response
+        if isinstance(response, list):
+            events = "".join(f"data: {json.dumps(event)}\n\n" for event in response)
+            return httpx.Response(
+                200, content=events + "data: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
         if isinstance(response, tuple):
             return httpx.Response(response[0], json=response[1])
         return httpx.Response(200, json=response)
@@ -129,15 +135,133 @@ def _adapter(responses, *, compact=False):
     return adapter, calls
 
 
-def _turn(adapter, state=None, content="frame"):
+def _turn(adapter, state=None, content="frame", *, stream=False):
     return adapter.invoke_turn(
         ModelTurnRequest(
             system_prompt="system",
             new_messages=[Message(role="user", content=content)],
-            request_config=REQUEST,
+            request_config={**REQUEST, **({"stream": True} if stream else {})},
             previous_state=state or adapter.initial_state(),
         )
     )
+
+
+def _stream_events(raw):
+    return [
+        {"type": "response.created", "response": {**raw, "status": "in_progress", "output": [], "usage": None}},
+        {"type": "response.output_text.delta", "delta": "provisional text"},
+        {"type": "response.completed", "response": raw},
+    ]
+
+
+@pytest.mark.unit
+class TestXAIStreaming:
+    def test_sdk_stream_replays_terminal_items_and_preserves_billing(self):
+        raw = _response()
+        raw["usage"]["cost_in_usd_ticks"] = 200_000_000
+        raw["output"][0]["provider_metadata"] = {"opaque_version": 2}
+        adapter, calls = _adapter([_stream_events(raw), _stream_events(_response(2))])
+        first = _turn(adapter, stream=True)
+        before = first.state.model_dump()
+        second = _turn(adapter, first.state, "next", stream=True)
+        assert calls[0][1]["stream"] is True
+        assert "stream_options" not in calls[0][1]
+        assert first.response.output_text == "ACTION1"
+        assert first.response.usage.cost == 0.02
+        assert first.response.usage.reasoning_tokens == 6
+        assert first.response.usage.cached_tokens == 5
+        assert first.response.raw_response == raw
+        assert calls[1][1]["input"] == [
+            *calls[0][1]["input"], *raw["output"],
+            {"role": "user", "content": "next"},
+        ]
+        assert first.state.model_dump() == before
+        assert second.response.output_text == "ACTION1"
+
+    @pytest.mark.parametrize("event_type", ["response.failed", "response.incomplete", "error", "eof"])
+    def test_failed_stream_keeps_usage_without_committing_state(self, event_type):
+        partial = _response(2)
+        partial["status"] = "in_progress"
+        partial["usage"]["cost_in_usd_ticks"] = 300_000_000
+        events = [{"type": "response.in_progress", "response": partial}]
+        events.append({"type": "response.output_text.delta", "delta": "ACTION1"})
+        if event_type != "eof":
+            events.append({"type": event_type, "response": partial})
+        adapter, _ = _adapter([_stream_events(_response()), events])
+        first = _turn(adapter, stream=True)
+        before = first.state.model_dump()
+        with pytest.raises(EmptyResponseError) as exc:
+            _turn(adapter, first.state, "next", stream=True)
+        assert exc.value.usage.total_tokens == 100
+        assert exc.value.usage.cost == 0.03
+        assert first.state.model_dump() == before
+        assert "opaque-reasoning" not in str(exc.value.response)
+
+    @pytest.mark.parametrize("update", [
+        {"usage": None},
+        {"usage": {"input_tokens": 1}},
+        {"usage": {"input_tokens": -1, "output_tokens": 2, "total_tokens": 1}},
+        {"status": "incomplete"},
+        {"output": []},
+        {"error": {"message": "private provider error"}},
+    ])
+    def test_rejects_invalid_terminal_response(self, update):
+        adapter, _ = _adapter([_stream_events({**_response(), **update})])
+        with pytest.raises(EmptyResponseError):
+            _turn(adapter, stream=True)
+
+    def test_rejects_missing_encrypted_reasoning(self):
+        raw = _response()
+        del raw["output"][0]["encrypted_content"]
+        adapter, _ = _adapter([_stream_events(raw)])
+        with pytest.raises(EmptyResponseError):
+            _turn(adapter, stream=True)
+
+    def test_stream_closes_on_success_and_interruption(self):
+        class Stream:
+            closed = False
+
+            def __init__(self, interrupted):
+                self.interrupted = interrupted
+
+            def __iter__(self):
+                yield {"type": "response.in_progress", "response": _response()}
+                if self.interrupted:
+                    raise httpx.ReadError("private transport detail")
+                yield {"type": "response.completed", "response": _response()}
+
+            def close(self):
+                self.closed = True
+
+        for interrupted in (False, True):
+            stream = Stream(interrupted)
+            if interrupted:
+                with pytest.raises(EmptyResponseError) as exc:
+                    XAIResponsesAdapter._consume_stream(stream)
+                assert exc.value.usage.total_tokens == 100
+                assert "private transport detail" not in str(exc.value)
+            else:
+                assert XAIResponsesAdapter._consume_stream(stream).output_text == "ACTION1"
+            assert stream.closed
+
+    def test_stream_failure_after_compaction_retains_billing_and_old_history(self):
+        failure = [{"type": "response.incomplete", "response": {**_response(2), "status": "incomplete"}}]
+        adapter, calls = _adapter([
+            _stream_events(_response()), _compaction(), failure,
+            _compaction(2), _stream_events(_response(3)),
+        ], compact=True)
+        first = _turn(adapter, stream=True)
+        before = first.state.model_dump()
+        with pytest.raises(EmptyResponseError) as exc:
+            _turn(adapter, first.state, "next", stream=True)
+        assert exc.value.usage.total_tokens == 140
+        assert exc.value.native_compaction_usage.total_tokens == 40
+        assert first.state.model_dump() == before
+        result = _turn(adapter, first.state, "next", stream=True)
+        assert calls[1][0] == calls[3][0] == "/v1/responses/compact"
+        assert calls[1][1] == calls[3][1]
+        assert "stream" not in calls[1][1]
+        assert result.response.output_text == "ACTION1"
 
 
 @pytest.mark.unit
@@ -475,7 +599,9 @@ class TestXAIConfiguration:
         [
             {"store": True},
             {"store": None},
-            {"stream": True},
+            {"stream": "true"},
+            {"stream": None},
+            {"stream": 1},
             {"background": True},
             {"previous_response_id": None},
             {"conversation": "id"},

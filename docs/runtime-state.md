@@ -43,6 +43,14 @@ server response handle and any inputs waiting for the next API turn.
 
 ## Continuous conversation
 
+Streaming is a request transport setting, separate from conversation state.
+Standard OpenAI-compatible Chat Completions profiles (including Grok) can use
+`request.stream: true` without changing `manual_rolling`. The adapter waits for
+a completed text response and usage before returning an action. The xAI
+Responses Provider Adapter also supports streaming while retaining native
+encrypted replay and synchronous compaction; see
+[xAI Provider Adapter](xai-provider-adapter.md#streaming).
+
 `continuous_conversation` carries provider-native conversation and reasoning
 state from one accepted turn to the next. It is implemented by
 `openai.responses.v1`, `google.interactions.v1`, and `anthropic.messages.v1`.
