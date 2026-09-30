@@ -30,7 +30,7 @@ from benchmarking.xai_runtime import (
     validate_continuous_conversation_request,
 )
 
-CONFIG_ID = "xai-grok-4-6-low-provider-adapter"
+CONFIG_ID = "xai-grok-4-7-low-provider-adapter"
 RUNTIME = {
     "sdk": "openai-python",
     "api": "responses",
@@ -642,7 +642,8 @@ class TestXAIConfiguration:
 
     def test_checked_in_profile_and_native_policy(self):
         config = model_config.get_model_config(CONFIG_ID)
-        assert config["request"]["model"] == "grok-4.6"
+        assert config["request"]["model"] == "grok-4.7"
+        assert config["request"]["stream"] is True
         assert config["request"]["reasoning"] == {"effort": "low"}
         assert config["runtime"]["compaction"] == {
             "strategy": "native",

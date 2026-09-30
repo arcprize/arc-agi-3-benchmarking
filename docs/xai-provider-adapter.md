@@ -3,15 +3,15 @@
 `xai.responses.v1` adds opt-in client-managed native Responses state to the
 Provider Adapter harness. It uses `openai-python` against xAI, not the xAI SDK
 and not the OpenAI-specific continuous-conversation adapter. The checked-in
-profile is `xai-grok-4-6-low-provider-adapter`; set `XAI_API_KEY` to use it.
-Existing profiles remain non-streaming unless explicitly enabled.
+profile is `xai-grok-4-7-low-provider-adapter`; set `XAI_API_KEY` to use it.
+The checked-in xAI profile enables streaming; other profiles are unchanged.
 
 ## Example configuration
 
 This complete example matches the profile in `benchmarking/model_configs.yaml`:
 
 ```yaml
-- id: "xai-grok-4-6-low-provider-adapter"
+- id: "xai-grok-4-7-low-provider-adapter"
   agent:
     MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
     MAX_CONTEXT_LENGTH: 500_000
@@ -27,9 +27,10 @@ This complete example matches the profile in `benchmarking/model_configs.yaml`:
     base_url: "https://api.x.ai/v1"
     api_key_env: "XAI_API_KEY"
   request:
-    model: "grok-4.6"
+    model: "grok-4.7"
     max_output_tokens: 128_000
     store: false
+    stream: true
     reasoning:
       effort: "low"
     include:
@@ -66,11 +67,11 @@ This complete example matches the profile in `benchmarking/model_configs.yaml`:
 
 ## Streaming
 
-Add `stream: true` inside `request` to enable streaming for this adapter:
+The checked-in profile enables streaming with `stream: true` inside `request`:
 
 ```yaml
   request:
-    model: "grok-4.6"
+    model: "grok-4.7"
     max_output_tokens: 128_000
     store: false
     stream: true
@@ -80,7 +81,7 @@ Add `stream: true` inside `request` to enable streaming for this adapter:
       - "reasoning.encrypted_content"
 ```
 
-The default remains synchronous. Streaming changes transport only: the adapter
+Omitting `stream` keeps requests synchronous. Streaming changes transport only: the adapter
 waits for `response.completed` and normalizes its full response, including exact
 encrypted reasoning items, final action text, and usage. It does not execute
 partial text deltas or reconstruct replay state from them. The completed event
