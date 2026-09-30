@@ -3,15 +3,15 @@
 `xai.responses.v1` adds opt-in client-managed native Responses state to the
 Provider Adapter harness. It uses `openai-python` against xAI, not the xAI SDK
 and not the OpenAI-specific continuous-conversation adapter. The checked-in
-profile is `xai-grok-4-6-low-provider-adapter`; set `XAI_API_KEY` to use it.
-Existing xAI Chat Completions profiles and other providers are unchanged.
+profile is `xai-grok-4-7-low-provider-adapter`; set `XAI_API_KEY` to use it.
+The checked-in xAI profile enables streaming; other profiles are unchanged.
 
 ## Example configuration
 
 This complete example matches the profile in `benchmarking/model_configs.yaml`:
 
 ```yaml
-- id: "xai-grok-4-6-low-provider-adapter"
+- id: "xai-grok-4-7-low-provider-adapter"
   agent:
     MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
     MAX_CONTEXT_LENGTH: 500_000
@@ -27,9 +27,10 @@ This complete example matches the profile in `benchmarking/model_configs.yaml`:
     base_url: "https://api.x.ai/v1"
     api_key_env: "XAI_API_KEY"
   request:
-    model: "grok-4.6"
+    model: "grok-4.7"
     max_output_tokens: 128_000
     store: false
+    stream: true
     reasoning:
       effort: "low"
     include:
@@ -58,11 +59,58 @@ This complete example matches the profile in `benchmarking/model_configs.yaml`:
   candidate state. The agent accepts that state only after parsing a valid game
   action. Rejected, empty, incomplete, refused, or tool-bearing responses do not
   enter subsequent history. Returned reasoning items must have encrypted state.
-- This adapter supports non-streaming text action requests. Streaming, tools,
+- This adapter supports synchronous and streaming text action requests. Tools,
   background execution, automatic truncation, server conversation IDs,
   request-supplied input/instructions, and extra-body/query overrides are
   rejected rather than silently changing state ownership. Custom endpoints can
   be explicitly configured; defaults are `https://api.x.ai/v1` and `XAI_API_KEY`.
+
+## Streaming
+
+The checked-in profile enables streaming with `stream: true` inside `request`:
+
+```yaml
+  request:
+    model: "grok-4.7"
+    max_output_tokens: 128_000
+    store: false
+    stream: true
+    reasoning:
+      effort: "low"
+    include:
+      - "reasoning.encrypted_content"
+```
+
+Omitting `stream` keeps requests synchronous. Streaming changes transport only: the adapter
+waits for `response.completed` and normalizes its full response, including exact
+encrypted reasoning items, final action text, and usage. It does not execute
+partial text deltas or reconstruct replay state from them. The completed event
+must contain valid input, output, and total token counts; missing usage is an
+error rather than a zero-cost success. Responses streaming does not need the
+Chat Completions `stream_options` field.
+
+Failed or incomplete terminal events, premature end of stream, and transport
+interruptions fail the attempt without committing conversation state. Any usage
+already observed in response snapshots is retained for failure accounting.
+Provider error text is not copied into diagnostics, and the stream is closed on
+success and failure. Native compaction remains a separate synchronous request;
+its returned usage is retained even if the following streamed action fails.
+
+### Standard Grok Chat Completions
+
+The standard harness also supports `request.stream: true` through its shared
+OpenAI-compatible Chat Completions adapter. Keep the existing model, client,
+reasoning settings, and `manual_rolling` state; no Provider Adapter migration is
+needed. The adapter assembles final text and optional `reasoning` or
+`reasoning_content` deltas, and automatically requests
+`stream_options.include_usage: true`. Explicitly disabling usage or requesting
+multiple choices is rejected before sending the request.
+
+This path requires a `stop` finish reason, visible answer text, and a usage
+chunk. Truncated, refused, tool-bearing, and interrupted streams fail without
+executing partial actions. Usage received before a failure is retained. This
+shared opt-in transport is also available to other compatible Chat Completions
+providers, but has not been live-validated against them.
 
 ## Native compaction
 
@@ -150,6 +198,9 @@ retry-wide compaction usage, configuration, and artifact redaction. Accounting
 tests also verify configured-price output costs, persisted step and run totals,
 and usage retained after retries are exhausted.
 Mocked acceptance is not live provider verification or a benchmark result.
+Streaming tests feed SSE through the pinned SDK and cover exact replay, final
+usage and billed cost, interrupted and failed streams, missing usage, and
+compaction followed by a failed streamed action.
 
 Two paid tests are skipped unless explicitly enabled:
 
@@ -174,3 +225,4 @@ parameter. They do not launch ARC games.
 - [Grok 4.6 and reasoning effort](https://docs.x.ai/developers/grok-4-6)
 - [Pricing](https://docs.x.ai/developers/pricing)
 - [Actual per-request cost](https://docs.x.ai/developers/cost-tracking)
+- [Streaming and synchronous Responses requests](https://docs.x.ai/developers/tools/streaming-and-sync)

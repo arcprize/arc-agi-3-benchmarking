@@ -43,8 +43,8 @@ class XAICompactionPolicy(BaseModel):
 def validate_continuous_conversation_request(config: dict[str, Any]) -> None:
     if config.get("store") is not False:
         raise ValueError("xAI continuous conversation requires store=false.")
-    if config.get("stream", False) is not False:
-        raise ValueError("xAI continuous conversation does not support streaming.")
+    if not isinstance(config.get("stream", False), bool):
+        raise ValueError("xAI request.stream must be a boolean.")
     if config.get("background", False) is not False:
         raise ValueError(
             "xAI continuous conversation does not support background mode."
@@ -218,7 +218,59 @@ class XAIResponsesAdapter:
         raw = self._client.responses.create(
             input=deepcopy(items), **deepcopy(request.request_config)
         )
+        if request.request_config.get("stream", False):
+            return self._consume_stream(raw)
         return normalize_xai_response(raw)
+
+    @staticmethod
+    def _consume_stream(stream: Any) -> ModelResponse:
+        # Only the terminal response owns replay state. Text deltas may look like
+        # an action even when the request later fails or loses its connection.
+        observed: dict[str, Any] = {}
+        try:
+            for event in stream:
+                chunk = native_mapping(event)
+                event_type = chunk.get("type")
+                snapshot = chunk.get("response")
+                if isinstance(snapshot, dict):
+                    observed = {
+                        **observed,
+                        **snapshot,
+                        "usage": snapshot.get("usage") or observed.get("usage"),
+                    }
+                if event_type == "response.completed":
+                    if not isinstance(snapshot, dict):
+                        raise _invalid_response(
+                            "xAI stream completed without a response.", observed
+                        )
+                    usage = snapshot.get("usage")
+                    if not isinstance(usage, dict) or any(
+                        not isinstance(usage.get(key), int)
+                        or isinstance(usage[key], bool)
+                        or usage[key] < 0
+                        for key in ("input_tokens", "output_tokens", "total_tokens")
+                    ):
+                        raise _invalid_response(
+                            "xAI stream completed without valid token usage.", observed
+                        )
+                    return normalize_xai_response(snapshot)
+                if event_type in {"response.failed", "response.incomplete", "error"}:
+                    raise _invalid_response(
+                        f"xAI stream ended with {event_type}.", observed
+                    )
+            raise _invalid_response(
+                "xAI stream ended before response.completed.", observed
+            )
+        except EmptyResponseError:
+            raise
+        except Exception as exc:
+            # Keep any observed billing, but never expose provider error text or
+            # promote provisional output into accepted conversation history.
+            raise _invalid_response(
+                f"xAI stream failed ({type(exc).__name__}).", observed
+            ) from None
+        finally:
+            stream.close()
 
     def compact(
         self, *, model: str, input_items: list[dict[str, Any]]

@@ -12,6 +12,7 @@ from .anthropic_runtime import (
     safe_provider_error_metadata,
     validate_continuous_conversation_request,
 )
+from .chat_streaming import consume_chat_stream
 from .exceptions import (
     ContextOverflowError,
     InvalidProviderResponseError,
@@ -93,10 +94,23 @@ class OpenAIChatCompletionsAdapter:
         self._client = client
 
     def invoke(self, request: ModelRequest) -> ModelResponse:
+        kwargs = deepcopy(request.request_config)
+        streaming = kwargs.get("stream", False)
+        if not isinstance(streaming, bool):
+            raise ValueError("Chat Completions request.stream must be a boolean.")
+        if streaming:
+            if kwargs.get("n", 1) != 1:
+                raise ValueError("Streaming supports one Chat Completions choice.")
+            options = kwargs.get("stream_options", {})
+            if not isinstance(options, dict) or options.get("include_usage", True) is not True:
+                raise ValueError("Streaming requires stream_options.include_usage=true.")
+            kwargs["stream_options"] = {**options, "include_usage": True}
         raw_response = self._client.chat.completions.create(
             messages=[message.model_dump() for message in request.messages],
-            **request.request_config,
+            **kwargs,
         )
+        if streaming:
+            return consume_chat_stream(raw_response)
         return normalize_chat_completion_response(raw_response)
 
 
