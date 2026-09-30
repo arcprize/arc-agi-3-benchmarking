@@ -105,6 +105,8 @@ def _validate_continuous_conversation_config(
         from .anthropic_runtime import (
             COMPACTION_BETA,
             AnthropicCompactionPolicy,
+        )
+        from .anthropic_runtime import (
             validate_continuous_conversation_request as validate_anthropic_request,
         )
 
@@ -196,6 +198,8 @@ def _validate_continuous_conversation_config(
     elif adapter_id == "xai.responses.v1":
         from .xai_runtime import (
             XAICompactionPolicy,
+        )
+        from .xai_runtime import (
             validate_continuous_conversation_request as validate_xai_request,
         )
 
