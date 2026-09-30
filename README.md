@@ -131,6 +131,11 @@ uv run main.py --game=ls20 --config=anthropic-opus-5-low-provider-adapter
 See [runtime state adapters](docs/runtime-state.md) for replay, compaction,
 recording, and data-handling details.
 
+DeepSeek thinking mode can opt into `deepseek.chat_completions.v1`. The adapter
+uses DeepSeek's documented tools protocol, replays exact `reasoning_content`, and
+uses harness summary compaction. See the
+[DeepSeek Provider Adapter guide](docs/deepseek-provider-adapter.md).
+
 Both harnesses use the same games, actions, limits, and scoring. The Standard
 harness supports controlled comparisons across providers, while the Provider
 Adapter harness measures performance using provider-native context management.

@@ -24,6 +24,7 @@ from .runtime_models import Message, NormalizedUsage
 from .runtime_state import (
     CompactionUnwindResult,
     ModelTurnRequest,
+    PendingCompactionInputs,
     RuntimeState,
     StatefulRuntimeAdapter,
     SummaryCompactionRuntimeAdapter,
@@ -142,6 +143,9 @@ class SummaryCompactor:
             raise ValueError(
                 "Selected adapter does not support harness summary compaction."
             )
+        pending_inputs: list[Message] = []
+        if isinstance(adapter, PendingCompactionInputs):
+            state, pending_inputs = adapter.split_pending_inputs(state)
         history_items_to_compact = runtime_state_item_count(state)
         summary_request_config = request_config_with_output_limit(
             request_config,
@@ -220,6 +224,8 @@ class SummaryCompactor:
                     Message(role="user", content=bridge),
                     excluded_turns,
                 )
+                if pending_inputs:
+                    next_state = adapter.buffer_inputs(next_state, pending_inputs)
                 estimated_state_tokens = estimate_runtime_state_tokens(
                     next_state,
                     estimated_chars_per_token=estimated_chars_per_token,

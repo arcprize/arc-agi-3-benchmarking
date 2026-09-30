@@ -72,6 +72,19 @@ RUN_GOOGLE_COMPACTION_LIVE_TESTS=1 uv run pytest -q \
   tests/integration/test_google_continuous_conversation_live.py::test_google_harness_summary_compaction_live
 ```
 
+DeepSeek Provider Adapter tests use the real OpenAI SDK with mocked HTTP and make no
+paid calls:
+
+```bash
+uv run pytest -q tests/unit/test_deepseek_runtime.py
+```
+
+The optional replay/compaction smoke test requires
+`RUN_DEEPSEEK_LIVE_TESTS=1`. It uses the checked-in DeepSeek Provider Adapter
+profile and makes synthetic requests, not an ARC benchmark. See the
+[DeepSeek guide](../docs/deepseek-provider-adapter.md) for setup and protocol
+details.
+
 Paid xAI tests are skipped by default and require `XAI_API_KEY`. These exercise
 synthetic native replay and recall through two separate native compactions,
 respectively; they do not launch ARC benchmarks:

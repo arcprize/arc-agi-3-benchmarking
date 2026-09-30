@@ -13,6 +13,7 @@ from .anthropic_runtime import (
     validate_continuous_conversation_request,
 )
 from .chat_streaming import consume_chat_stream
+from .deepseek_runtime import DeepSeekChatCompletionsAdapter
 from .exceptions import (
     ContextOverflowError,
     InvalidProviderResponseError,
@@ -42,6 +43,7 @@ CONTINUOUS_CONVERSATION_RUNTIME_KEYS = frozenset(
     {
         ("anthropic-python", "messages"),
         ("google-genai", "interactions"),
+        ("openai-python", "chat_completions"),
         ("openai-python", "responses"),
     }
 )
@@ -537,6 +539,8 @@ def build_model_runtime_adapter(
             return AnthropicMessagesAdapter(client)
         if runtime_key == ("openai-python", "responses"):
             return OpenAIResponsesAdapter(client)
+        if runtime_key == ("openai-python", "chat_completions"):
+            return DeepSeekChatCompletionsAdapter(client)
         return GoogleGenAIInteractionsAdapter(client)
 
     if runtime_key == ("openai-python", "chat_completions"):

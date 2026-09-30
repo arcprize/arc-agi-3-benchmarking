@@ -178,6 +178,15 @@ class SummaryCompactionRuntimeAdapter(StatefulRuntimeAdapter, Protocol):
     ) -> RuntimeState: ...
 
 
+@runtime_checkable
+class PendingCompactionInputs(Protocol):
+    """Optional boundary keeping unpresented observations out of summaries."""
+
+    def split_pending_inputs(
+        self, state: RuntimeState
+    ) -> tuple[RuntimeState, list[Message]]: ...
+
+
 def replace_runtime_payload(
     state: RuntimeState,
     payload: dict[str, Any],
