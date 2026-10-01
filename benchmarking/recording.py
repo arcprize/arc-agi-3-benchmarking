@@ -134,6 +134,8 @@ class RunRecord(BaseModel):
 
     run_id: str
     game_id: str
+    guid: Optional[str] = None
+    card_id: Optional[str] = None
     agent_name: str
     model: str
     started_at: datetime

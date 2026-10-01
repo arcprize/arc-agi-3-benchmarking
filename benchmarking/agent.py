@@ -214,9 +214,20 @@ class BenchmarkingAgent(Agent):
             self._pending_turn_messages: list[Message] = []
         # Per-step recording
         self.step_counter: int = 0
-        run_id = uuid.uuid4()
+        # Name the run after the game session (set by make()'s reset) so its
+        # files can be found from the session guid alone.
+        try:
+            session_guid = self.arc_env.observation_space.guid
+            if not session_guid:
+                raise ValueError("observation has no guid")
+        except (AttributeError, ValueError) as exc:
+            logger.warning(
+                f"{self.game_id} - No session guid ({exc}); using a random run id."
+            )
+            session_guid = None
+        run_id = session_guid or str(uuid.uuid4())
         self.run_dir = os.path.join("recordings", f"{self.name}.{run_id}")
-        os.makedirs(self.run_dir, exist_ok=True)
+        os.makedirs(self.run_dir)
         runtime_metadata = None
         if self._continuous_conversation:
             commit_sha = harness_commit_sha()
@@ -253,8 +264,10 @@ class BenchmarkingAgent(Agent):
                     "context_limit_tokens": self.MAX_CONTEXT_LENGTH,
                 }
         self.run_record = RunRecord(
-            run_id=str(run_id),
+            run_id=run_id,
             game_id=self.game_id,
+            guid=session_guid,
+            card_id=self.card_id,
             agent_name=self.name,
             model=self.MODEL,
             started_at=datetime.now(timezone.utc),

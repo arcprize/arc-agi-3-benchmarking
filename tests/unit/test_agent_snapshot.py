@@ -822,3 +822,47 @@ class TestRehydrationRunMeta:
             "current": resumed._pricing,
         }
         assert "Pricing changed since the snapshot" in caplog.text
+
+
+@pytest.mark.unit
+class TestRunIdentity:
+    def test_run_is_named_after_session_guid(self, monkeypatch, tmp_path):
+        agent = _build_agent(
+            monkeypatch, tmp_path, MANUAL_CONFIG, env=_ScriptedEnv(guid="session-1")
+        )
+        assert agent.run_record.run_id == "session-1"
+        assert agent.run_dir == f"recordings/{agent.name}.session-1"
+        meta = _run_meta(agent)
+        assert (meta["run_id"], meta["guid"], meta["card_id"]) == (
+            "session-1",
+            "session-1",
+            "card-1",
+        )
+
+    def test_falls_back_to_random_id_without_session_guid(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        with caplog.at_level(logging.WARNING):
+            agent = _build_agent(monkeypatch, tmp_path, MANUAL_CONFIG)
+        assert len(agent.run_record.run_id) == 36  # uuid4
+        assert _run_meta(agent)["guid"] is None
+        assert "No session guid" in caplog.text
+
+    def test_reused_session_guid_fails_instead_of_merging_runs(
+        self, monkeypatch, tmp_path
+    ):
+        _build_agent(monkeypatch, tmp_path, MANUAL_CONFIG, env=_ScriptedEnv(guid="dup"))
+        with pytest.raises(FileExistsError):
+            _build_agent(
+                monkeypatch, tmp_path, MANUAL_CONFIG, env=_ScriptedEnv(guid="dup")
+            )
+
+    def test_rehydrated_run_uses_new_session_guid(self, monkeypatch, tmp_path):
+        original = _run_manual(monkeypatch, tmp_path, actions=5)
+        resumed = _rehydrated_manual(
+            monkeypatch, tmp_path, _prepare(original, tmp_path, step=3), total_actions=5
+        )
+        resumed.main()
+        assert original.run_record.run_id == "guid-1"
+        assert resumed.run_record.run_id == "guid-2"
+        assert _run_meta(resumed)["rehydration"]["source_run_id"] == "guid-1"
