@@ -144,3 +144,4 @@ class RunRecord(BaseModel):
     outcome: Optional[str] = None
     run_dir: str
     runtime: dict[str, Any] | None = None
+    rehydration: dict[str, Any] | None = None

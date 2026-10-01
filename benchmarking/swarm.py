@@ -13,6 +13,7 @@ from requests import HTTPError
 
 from .agent import BenchmarkingAgent
 from .base import ExitReason
+from .rehydration import PreparedRehydration
 
 if TYPE_CHECKING:
     from .base import Agent
@@ -43,8 +44,10 @@ class Swarm:
         games: list[str],
         tags: Optional[list[str]] = None,
         config: Optional[str] = None,
+        rehydration: Optional[PreparedRehydration] = None,
     ) -> None:
         self.GAMES = games
+        self.rehydration = rehydration
         self.ROOT_URL = ROOT_URL
         self.agent_name = DEFAULT_AGENT_NAME
         self.agent_class = BenchmarkingAgent
@@ -69,6 +72,7 @@ class Swarm:
 
         print(f"***** MAKING ALL AGENTS with card id: {self.card_id}")
         # create all the agents
+        extra_kwargs = {"rehydration": self.rehydration} if self.rehydration else {}
         for i in range(len(self.GAMES)):
             g = self.GAMES[i % len(self.GAMES)]
             a = self.agent_class(
@@ -79,6 +83,7 @@ class Swarm:
                 record=True,
                 arc_env=self._arc.make(g, scorecard_id=self.card_id),
                 config=self.config,
+                **extra_kwargs,
             )
             self.agents.append(a)
 

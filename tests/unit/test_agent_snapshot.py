@@ -753,3 +753,55 @@ class TestRehydratedAttributeGuard:
         )
         resumed.main()
         _assert_classified(resumed)
+
+
+def _run_meta(agent: BenchmarkingAgent) -> dict:
+    return json.loads((Path(agent.run_dir) / "run_meta.json").read_text())
+
+
+@pytest.mark.unit
+class TestRehydrationRunMeta:
+    def test_normal_run_meta_has_no_rehydration_key(self, monkeypatch, tmp_path):
+        agent = _run_manual(monkeypatch, tmp_path)
+        assert "rehydration" not in _run_meta(agent)
+
+    def test_rehydrated_run_meta_records_provenance(self, monkeypatch, tmp_path):
+        original = _run_manual(monkeypatch, tmp_path, actions=5)
+        prepared = _prepare(original, tmp_path, step=3)
+        resumed = _rehydrated_manual(monkeypatch, tmp_path, prepared, total_actions=5)
+
+        resumed.main()
+
+        meta = _run_meta(resumed)
+        assert meta["rehydration"] == {
+            "source_run_id": original.run_record.run_id,
+            "source_guid": "guid-1",
+            "source_card_id": "card-1",
+            "replayed_steps": 3,
+            "prior_elapsed_seconds": prepared.snapshot.agent.elapsed_seconds,
+            "lineage": [
+                {
+                    "run_id": original.run_record.run_id,
+                    "guid": "guid-1",
+                    "rehydrated_at_step": 3,
+                }
+            ],
+        }
+        assert meta["total_steps"] == 5
+
+    def test_pricing_change_is_recorded_not_blocking(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        original = _run_manual(monkeypatch, tmp_path, actions=5)
+        prepared = _prepare(original, tmp_path, step=3, pricing={"input": 0.1})
+        resumed = _rehydrated_manual(monkeypatch, tmp_path, prepared, total_actions=5)
+
+        with caplog.at_level(logging.WARNING):
+            resumed.main()
+
+        assert resumed.step_counter == 5
+        assert _run_meta(resumed)["rehydration"]["pricing_changed"] == {
+            "previous": {"input": 0.1},
+            "current": resumed._pricing,
+        }
+        assert "Pricing changed since the snapshot" in caplog.text

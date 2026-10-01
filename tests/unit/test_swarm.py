@@ -187,3 +187,44 @@ class TestSwarmCloseScorecard:
 
         exists.assert_not_called()
         assert api_agent.exit_reason is ExitReason.API_ERROR
+
+
+class DummyRehydratingAgent(DummyAgent):
+    def __init__(self, *args, rehydration=None, **kwargs) -> None:  # noqa: ANN001, ANN002, ANN003
+        super().__init__(*args, **kwargs)
+        self.rehydration = rehydration
+
+
+@pytest.mark.unit
+class TestSwarmRehydration:
+    def setup_method(self) -> None:
+        DummyAgent.instances.clear()
+        FakeThread.instances.clear()
+
+    def test_forwards_rehydration_to_agent(self):
+        prepared = object()
+        with (
+            patch("benchmarking.swarm.BenchmarkingAgent", DummyRehydratingAgent),
+            patch("benchmarking.swarm.Arcade", FakeArcade),
+            patch("benchmarking.swarm.Thread", FakeThread),
+        ):
+            swarm = Swarm(
+                ROOT_URL="https://example.com",
+                games=["ls20-abc"],
+                tags=["rehydrated"],
+                rehydration=prepared,
+            )
+            swarm.main()
+
+        assert [agent.rehydration for agent in DummyAgent.instances] == [prepared]
+        assert swarm._arc.opened_tags == ["rehydrated", "agent", "benchmarkingagent"]
+
+    def test_omits_rehydration_kwarg_when_unset(self):
+        # DummyAgent has no rehydration parameter; passing one would raise.
+        with (
+            patch("benchmarking.swarm.BenchmarkingAgent", DummyAgent),
+            patch("benchmarking.swarm.Arcade", FakeArcade),
+            patch("benchmarking.swarm.Thread", FakeThread),
+        ):
+            Swarm(ROOT_URL="https://example.com", games=["g"]).main()
+        assert len(DummyAgent.instances) == 1

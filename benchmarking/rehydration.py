@@ -19,8 +19,10 @@ from typing import Any
 from arcengine import GameAction, GameState
 from pydantic import BaseModel, ConfigDict, Field, FilePath, model_validator
 
+from .base import Agent
+from .model_config import get_model_config
 from .recording import StepUsage
-from .runtime_state import RuntimeState
+from .runtime_state import SERVER_RUNTIME_STATE, RuntimeState, harness_commit_sha
 
 SNAPSHOT_SCHEMA_VERSION = 1
 SNAPSHOT_DIR = "state"
@@ -338,3 +340,131 @@ def parse_toolkit_recording(path: str | os.PathLike[str]) -> list[RecordedStep]:
                 continue
             steps.append(_parse_action_event(data, len(steps), where))
     return steps
+
+
+# ── Offline validation (before any scorecard or network call) ───────────
+
+
+def parse_rehydrate_args(pairs: list[str]) -> RehydrationArgs:
+    """Build RehydrationArgs from repeated ``--rehydrate KEY=PATH`` values."""
+    values: dict[str, str] = {}
+    for pair in pairs:
+        key, separator, value = pair.partition("=")
+        if not separator or not key or not value:
+            raise RehydrationError(
+                f"Invalid --rehydrate value {pair!r}; expected KEY=PATH."
+            )
+        if key in values:
+            raise RehydrationError(f"Duplicate --rehydrate key {key!r}.")
+        values[key] = value
+    return RehydrationArgs.model_validate(values)
+
+
+def _validate_snapshot(
+    snapshot: AgentSnapshot, *, config_id: str, game_ids: list[str]
+) -> None:
+    current_sha = harness_commit_sha()
+    if not current_sha or not snapshot.harness_commit_sha:
+        raise RehydrationError(
+            "Harness commit SHA must be known for both the snapshot and this "
+            "runtime (set ARC_HARNESS_COMMIT_SHA)."
+        )
+    if snapshot.harness_commit_sha != current_sha:
+        raise RehydrationError(
+            f"Harness commit mismatch: snapshot={snapshot.harness_commit_sha}, "
+            f"runtime={current_sha}."
+        )
+    if snapshot.model_config_id != config_id:
+        raise RehydrationError(
+            f"Model config mismatch: snapshot={snapshot.model_config_id!r}, "
+            f"selected={config_id!r}."
+        )
+    entry = get_model_config(config_id)
+    if config_sha256(entry) != snapshot.model_config_sha256:
+        raise RehydrationError(
+            f"Model config {config_id!r} changed since the snapshot was taken "
+            "(only pricing may differ)."
+        )
+    if entry.get("runtime", {}).get("state") == SERVER_RUNTIME_STATE:
+        raise RehydrationError(
+            f"Rehydration does not support runtime.state={SERVER_RUNTIME_STATE!r}."
+        )
+    if game_ids != [snapshot.source.game_id]:
+        raise RehydrationError(
+            f"Rehydration requires exactly game {snapshot.source.game_id!r}; "
+            f"resolved {game_ids}. Pass -g {snapshot.source.game_id}."
+        )
+    if snapshot.last_frame.state == GameState.WIN.name:
+        raise RehydrationError("Snapshot is at a WIN frame; nothing to resume.")
+    max_runtime = entry.get("agent", {}).get(
+        "MAX_RUNTIME_SECONDS", Agent.MAX_RUNTIME_SECONDS
+    )
+    if snapshot.agent.elapsed_seconds >= max_runtime:
+        raise RehydrationError(
+            f"Snapshot has no time budget left: elapsed="
+            f"{snapshot.agent.elapsed_seconds}s, limit={max_runtime}s."
+        )
+
+
+def _replay_key(steps: list[RecordedStep]) -> list[tuple[Any, ...]]:
+    return [
+        (step.action, step.data, step.reasoning, step.fingerprint()) for step in steps
+    ]
+
+
+def _align_recording(
+    events: list[RecordedStep], snapshot: AgentSnapshot
+) -> list[RecordedStep]:
+    """Select the recorded events for agent steps ``1..snapshot.step``.
+
+    The toolkit server may or may not record the implicit reset from
+    ``Arcade.make()`` before the agent's first action (plan F3), so both
+    alignments are tried. The step-N frame must match the snapshot. If both
+    match, they must replay identically.
+    """
+    candidates: list[list[RecordedStep]] = []
+    for offset in (0, 1):
+        if offset and events[0].action != GameAction.RESET.name:
+            continue
+        steps = events[offset : offset + snapshot.step]
+        if len(steps) < snapshot.step:
+            continue
+        if fingerprints_match(snapshot.last_frame, steps[-1].fingerprint()):
+            candidates.append(steps)
+    if not candidates:
+        raise RehydrationError(
+            f"Recording ({len(events)} action events) has no step "
+            f"{snapshot.step} matching the snapshot's last frame."
+        )
+    if len(candidates) == 2 and _replay_key(candidates[0]) != _replay_key(
+        candidates[1]
+    ):
+        raise RehydrationError(
+            "Recording alignment is ambiguous: steps match the snapshot with and "
+            "without a leading implicit reset."
+        )
+    return candidates[0]
+
+
+def prepare_rehydration(
+    args: RehydrationArgs, *, config_id: str, game_ids: list[str]
+) -> PreparedRehydration:
+    """Load and cross-check rehydration inputs without touching the network."""
+    snapshot = load_snapshot(args.state)
+    _validate_snapshot(snapshot, config_id=config_id, game_ids=game_ids)
+
+    events = parse_toolkit_recording(args.recording)
+    if not events:
+        raise RehydrationError("Recording contains no action events.")
+    for event in events:
+        if event.game_id != snapshot.source.game_id:
+            raise RehydrationError(
+                f"Recording event {event.index} is for game {event.game_id!r}, "
+                f"not {snapshot.source.game_id!r}."
+            )
+        if event.guid != snapshot.source.guid:
+            raise RehydrationError(
+                f"Recording event {event.index} has guid {event.guid!r}; the "
+                f"snapshot came from session {snapshot.source.guid!r}."
+            )
+    return PreparedRehydration(snapshot=snapshot, steps=_align_recording(events, snapshot))

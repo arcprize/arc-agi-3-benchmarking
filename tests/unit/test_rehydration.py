@@ -8,6 +8,7 @@ from arcengine import GameAction, GameState
 from pydantic import ValidationError
 
 from benchmarking import rehydration
+from benchmarking.model_config import get_model_config
 from benchmarking.rehydration import (
     AgentFields,
     AgentSnapshot,
@@ -20,7 +21,9 @@ from benchmarking.rehydration import (
     fingerprints_match,
     frame_fingerprint,
     load_snapshot,
+    parse_rehydrate_args,
     parse_toolkit_recording,
+    prepare_rehydration,
     write_snapshot_atomic,
 )
 from benchmarking.runtime_state import RuntimeState
@@ -35,14 +38,16 @@ def _event(
     reasoning: object = None,
     state: str = "NOT_FINISHED",
     frame: list | None = FRAME,
+    guid: str = "guid-1",
+    game_id: str = "ls20-abc123",
 ) -> dict:
     event_data = {
-        "game_id": "ls20-abc123",
+        "game_id": game_id,
         "state": state,
         "levels_completed": 0,
         "win_levels": 3,
         "action_input": {"id": action_id, "data": data or {}, "reasoning": reasoning},
-        "guid": "guid-1",
+        "guid": guid,
         "full_reset": False,
         "available_actions": [1, 2, 6],
     }
@@ -433,3 +438,226 @@ class TestWriteSnapshotAtomic:
         )
         write_snapshot_atomic(tmp_path, _snapshot())
         assert calls == ["fsync", "replace"]
+
+
+@pytest.mark.unit
+class TestParseRehydrateArgs:
+    def test_builds_args_from_pairs(self, tmp_path):
+        recording = _write_jsonl(tmp_path / "r.jsonl", [])
+        state = _write_jsonl(tmp_path / "s.json", [])
+        args = parse_rehydrate_args([f"recording={recording}", f"state={state}"])
+        assert (args.recording, args.state) == (recording, state)
+
+    def test_path_may_contain_equals(self, tmp_path):
+        recording = _write_jsonl(tmp_path / "a=b.jsonl", [])
+        args = parse_rehydrate_args([f"recording={recording}", f"state={recording}"])
+        assert args.recording == recording
+
+    @pytest.mark.parametrize("pair", ["recording", "=path", "recording="])
+    def test_rejects_malformed_pairs(self, pair):
+        with pytest.raises(RehydrationError, match="expected KEY=PATH"):
+            parse_rehydrate_args([pair])
+
+    def test_rejects_duplicate_keys(self, tmp_path):
+        recording = _write_jsonl(tmp_path / "r.jsonl", [])
+        with pytest.raises(RehydrationError, match="Duplicate"):
+            parse_rehydrate_args([f"state={recording}", f"state={recording}"])
+
+    @pytest.mark.parametrize("extra", [[], ["bogus=x"]])
+    def test_rejects_missing_or_unknown_keys(self, tmp_path, extra):
+        recording = _write_jsonl(tmp_path / "r.jsonl", [])
+        with pytest.raises(ValidationError):
+            parse_rehydrate_args([f"recording={recording}", *extra])
+
+
+CONFIG_ID = "openai-gpt-5-4-2026-03-05"
+GAME_ID = "ls20-abc123"
+
+
+def _step_event(value: int, action_id: str = "ACTION1", **kwargs) -> dict:
+    return _event(action_id, frame=[[[value]]], **kwargs)
+
+
+def _valid_snapshot(step: int = 3, **updates) -> AgentSnapshot:
+    snapshot = _snapshot(step=step)
+    return snapshot.model_copy(
+        update={
+            "model_config_id": CONFIG_ID,
+            "model_config_sha256": config_sha256(get_model_config(CONFIG_ID)),
+            "level_action_budgets": [],
+            "last_frame": frame_fingerprint(
+                state="NOT_FINISHED",
+                levels_completed=0,
+                available_actions=[1, 2, 6],
+                frame=[[[step]]],
+            ),
+            **updates,
+        }
+    )
+
+
+@pytest.mark.unit
+class TestPrepareRehydration:
+    @pytest.fixture(autouse=True)
+    def _commit_sha(self, monkeypatch):
+        monkeypatch.setenv("ARC_HARNESS_COMMIT_SHA", "abc123")
+
+    def _prepare(
+        self,
+        tmp_path,
+        snapshot: AgentSnapshot,
+        events: list,
+        game_ids: list[str] | None = None,
+        config_id: str = CONFIG_ID,
+    ):
+        state = tmp_path / "state.json"
+        state.write_text(snapshot.model_dump_json())
+        recording = _write_jsonl(tmp_path / "r.jsonl", events)
+        return prepare_rehydration(
+            RehydrationArgs(recording=recording, state=state),
+            config_id=config_id,
+            game_ids=[GAME_ID] if game_ids is None else game_ids,
+        )
+
+    def test_aligns_without_leading_reset_and_truncates_extra_steps(self, tmp_path):
+        events = [_step_event(value) for value in range(1, 6)]
+        prepared = self._prepare(tmp_path, _valid_snapshot(step=3), events)
+        assert [step.index for step in prepared.steps] == [0, 1, 2]
+        assert prepared.steps[-1].frame == [[[3]]]
+
+    def test_aligns_after_leading_implicit_reset(self, tmp_path):
+        events = [_step_event(0, "RESET")] + [_step_event(v) for v in range(1, 6)]
+        prepared = self._prepare(tmp_path, _valid_snapshot(step=3), events)
+        assert [step.index for step in prepared.steps] == [1, 2, 3]
+
+    def test_identical_candidate_alignments_are_accepted(self, tmp_path):
+        # make() reset and the agent's own RESET look the same; either works.
+        events = [_step_event(1, "RESET"), _step_event(1, "RESET")]
+        prepared = self._prepare(tmp_path, _valid_snapshot(step=1), events)
+        assert [step.index for step in prepared.steps] == [0]
+
+    def test_differing_candidate_alignments_are_rejected(self, tmp_path):
+        events = [_step_event(0, "RESET"), _step_event(2), _step_event(2, "ACTION2")]
+        with pytest.raises(RehydrationError, match="ambiguous"):
+            self._prepare(tmp_path, _valid_snapshot(step=2), events)
+
+    def test_recording_without_frames_aligns_by_state(self, tmp_path):
+        events = [_event("ACTION1", frame=None) for _ in range(4)]
+        prepared = self._prepare(tmp_path, _valid_snapshot(step=3), events)
+        assert len(prepared.steps) == 3
+
+    def test_rejects_recording_without_matching_step(self, tmp_path):
+        events = [_step_event(value) for value in (1, 2, 9)]
+        with pytest.raises(RehydrationError, match="no step 3 matching"):
+            self._prepare(tmp_path, _valid_snapshot(step=3), events)
+
+    def test_rejects_recording_shorter_than_snapshot(self, tmp_path):
+        events = [_step_event(value) for value in (1, 2)]
+        with pytest.raises(RehydrationError, match="no step 3 matching"):
+            self._prepare(tmp_path, _valid_snapshot(step=3), events)
+
+    def test_rejects_empty_recording(self, tmp_path):
+        with pytest.raises(RehydrationError, match="no action events"):
+            self._prepare(tmp_path, _valid_snapshot(), [])
+
+    @pytest.mark.parametrize(
+        ("event_kwargs", "message"),
+        [({"guid": "other"}, "guid 'other'"), ({"game_id": "ls20-zzz"}, "for game")],
+    )
+    def test_rejects_events_from_another_session_or_game(
+        self, tmp_path, event_kwargs, message
+    ):
+        events = [_step_event(1), _step_event(2, **event_kwargs), _step_event(3)]
+        with pytest.raises(RehydrationError, match=message):
+            self._prepare(tmp_path, _valid_snapshot(step=3), events)
+
+    def test_requires_runtime_commit_sha(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("ARC_HARNESS_COMMIT_SHA")
+        with pytest.raises(RehydrationError, match="commit SHA must be known"):
+            self._prepare(tmp_path, _valid_snapshot(), [_step_event(3)])
+
+    def test_requires_snapshot_commit_sha(self, tmp_path):
+        snapshot = _valid_snapshot(harness_commit_sha=None)
+        with pytest.raises(RehydrationError, match="commit SHA must be known"):
+            self._prepare(tmp_path, snapshot, [_step_event(3)])
+
+    def test_rejects_commit_mismatch(self, tmp_path):
+        snapshot = _valid_snapshot(harness_commit_sha="other")
+        with pytest.raises(RehydrationError, match="commit mismatch"):
+            self._prepare(tmp_path, snapshot, [_step_event(3)])
+
+    def test_rejects_different_config_id(self, tmp_path):
+        with pytest.raises(RehydrationError, match="Model config mismatch"):
+            self._prepare(
+                tmp_path,
+                _valid_snapshot(),
+                [_step_event(3)],
+                config_id="openai-gpt-5.4-openrouter",
+            )
+
+    def test_allows_pricing_only_config_change(self, tmp_path, monkeypatch):
+        entry = get_model_config(CONFIG_ID)
+        monkeypatch.setattr(
+            "benchmarking.rehydration.get_model_config",
+            lambda _id: {**entry, "pricing": {"input": 99.0, "output": 99.0}},
+        )
+        events = [_step_event(value) for value in (1, 2, 3)]
+        assert self._prepare(tmp_path, _valid_snapshot(), events).snapshot.step == 3
+
+    def test_rejects_behavioral_config_change(self, tmp_path, monkeypatch):
+        entry = get_model_config(CONFIG_ID)
+        changed = {**entry, "request": {**entry["request"], "max_completion_tokens": 1}}
+        monkeypatch.setattr(
+            "benchmarking.rehydration.get_model_config", lambda _id: changed
+        )
+        with pytest.raises(RehydrationError, match="changed since the snapshot"):
+            self._prepare(tmp_path, _valid_snapshot(), [_step_event(3)])
+
+    def test_rejects_server_state_configs(self, tmp_path, monkeypatch):
+        entry = get_model_config(CONFIG_ID)
+        server = {**entry, "runtime": {**entry["runtime"], "state": "previous_response_id"}}
+        monkeypatch.setattr(
+            "benchmarking.rehydration.get_model_config", lambda _id: server
+        )
+        snapshot = _valid_snapshot(model_config_sha256=config_sha256(server))
+        with pytest.raises(RehydrationError, match="previous_response_id"):
+            self._prepare(tmp_path, snapshot, [_step_event(3)])
+
+    @pytest.mark.parametrize(
+        "game_ids", [[], [GAME_ID, "ft09-xyz"], ["ls20-other"]]
+    )
+    def test_requires_exactly_the_snapshot_game(self, tmp_path, game_ids):
+        with pytest.raises(RehydrationError, match=f"Pass -g {GAME_ID}"):
+            self._prepare(
+                tmp_path, _valid_snapshot(), [_step_event(3)], game_ids=game_ids
+            )
+
+    def test_rejects_win_snapshot(self, tmp_path):
+        snapshot = _valid_snapshot()
+        snapshot = snapshot.model_copy(
+            update={"last_frame": snapshot.last_frame.model_copy(update={"state": "WIN"})}
+        )
+        with pytest.raises(RehydrationError, match="WIN"):
+            self._prepare(tmp_path, snapshot, [_step_event(3)])
+
+    def test_rejects_snapshot_without_time_budget(self, tmp_path, monkeypatch):
+        entry = get_model_config(CONFIG_ID)
+        limited = {**entry, "agent": {**entry["agent"], "MAX_RUNTIME_SECONDS": 10}}
+        monkeypatch.setattr(
+            "benchmarking.rehydration.get_model_config", lambda _id: limited
+        )
+        snapshot = _valid_snapshot(model_config_sha256=config_sha256(limited))
+        assert snapshot.agent.elapsed_seconds >= 10
+        with pytest.raises(RehydrationError, match="no time budget left"):
+            self._prepare(tmp_path, snapshot, [_step_event(3)])
+
+    def test_rejects_invalid_snapshot_file(self, tmp_path):
+        state = tmp_path / "state.json"
+        state.write_text('{"step": 1}')
+        recording = _write_jsonl(tmp_path / "r.jsonl", [_step_event(1)])
+        with pytest.raises(ValidationError):
+            prepare_rehydration(
+                RehydrationArgs(recording=recording, state=state),
+                config_id=CONFIG_ID,
+                game_ids=[GAME_ID],
+            )

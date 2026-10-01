@@ -112,3 +112,73 @@ class TestMainCliHelpers:
             "https://example.com/api/games",
             timeout=10,
         )
+
+
+def _args(*argv: str):
+    return cli_main.build_parser().parse_args(list(argv))
+
+
+@pytest.mark.unit
+class TestRehydrationCli:
+    def test_parser_collects_repeated_rehydrate_pairs(self):
+        args = _args("--rehydrate", "recording=r.jsonl", "--rehydrate", "state=s.json")
+        assert args.rehydrate == ["recording=r.jsonl", "state=s.json"]
+        assert _args().rehydrate is None
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [(None, False), ("", False), ("false", False), ("0", False),
+         ("FALSE", False), ("true", True), ("TRUE", True), ("1", True), (" true ", True)],
+    )
+    def test_tag_env_var_parsing(self, monkeypatch, value, expected):
+        if value is None:
+            monkeypatch.delenv(cli_main.REHYDRATION_TAG_ENV, raising=False)
+        else:
+            monkeypatch.setenv(cli_main.REHYDRATION_TAG_ENV, value)
+        assert cli_main.rehydration_tag_enabled() is expected
+
+    @pytest.mark.parametrize("value", ["yes", "ture", "2"])
+    def test_tag_env_var_rejects_unexpected_values(self, monkeypatch, value):
+        monkeypatch.setenv(cli_main.REHYDRATION_TAG_ENV, value)
+        with pytest.raises(ValueError, match=cli_main.REHYDRATION_TAG_ENV):
+            cli_main.rehydration_tag_enabled()
+
+    def test_no_rehydrate_returns_nothing(self, monkeypatch):
+        monkeypatch.delenv(cli_main.REHYDRATION_TAG_ENV, raising=False)
+        assert cli_main.resolve_rehydration(_args(), ["g"]) == (None, [])
+
+    def test_tag_without_rehydrate_warns_and_adds_no_tag(self, monkeypatch, caplog):
+        monkeypatch.setenv(cli_main.REHYDRATION_TAG_ENV, "true")
+        assert cli_main.resolve_rehydration(_args(), ["g"]) == (None, [])
+        assert "--rehydrate is not" in caplog.text
+
+    def test_invalid_tag_value_fails_even_without_rehydrate(self, monkeypatch):
+        monkeypatch.setenv(cli_main.REHYDRATION_TAG_ENV, "yes")
+        with pytest.raises(ValueError):
+            cli_main.resolve_rehydration(_args(), ["g"])
+
+    def test_rehydrate_requires_config(self, monkeypatch):
+        monkeypatch.delenv(cli_main.REHYDRATION_TAG_ENV, raising=False)
+        with pytest.raises(ValueError, match="requires --config"):
+            cli_main.resolve_rehydration(_args("--rehydrate", "state=s"), ["g"])
+
+    @pytest.mark.parametrize(("tag_value", "tags"), [("false", []), ("true", ["rehydrated"])])
+    def test_rehydrate_prepares_inputs_and_tags(self, monkeypatch, tag_value, tags):
+        monkeypatch.setenv(cli_main.REHYDRATION_TAG_ENV, tag_value)
+        prepared = MagicMock()
+        calls = {}
+        monkeypatch.setattr(cli_main, "parse_rehydrate_args", lambda pairs: ("args", pairs))
+
+        def fake_prepare(args, *, config_id, game_ids):
+            calls.update(args=args, config_id=config_id, game_ids=game_ids)
+            return prepared
+
+        monkeypatch.setattr(cli_main, "prepare_rehydration", fake_prepare)
+        args = _args("-c", "cfg", "--rehydrate", "recording=r", "--rehydrate", "state=s")
+
+        assert cli_main.resolve_rehydration(args, ["ls20-abc"]) == (prepared, tags)
+        assert calls == {
+            "args": ("args", ["recording=r", "state=s"]),
+            "config_id": "cfg",
+            "game_ids": ["ls20-abc"],
+        }

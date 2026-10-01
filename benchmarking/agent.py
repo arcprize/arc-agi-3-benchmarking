@@ -518,7 +518,11 @@ class BenchmarkingAgent(Agent):
     def _write_run_meta(self) -> None:
         path = os.path.join(self.run_dir, "run_meta.json")
         with open(path, "w") as f:
-            exclude = {"runtime"} if self.run_record.runtime is None else None
+            exclude = {
+                field
+                for field in ("runtime", "rehydration")
+                if getattr(self.run_record, field) is None
+            }
             f.write(self.run_record.model_dump_json(indent=2, exclude=exclude))
 
     def _save_diagnostic(self, response: Any) -> None:
@@ -710,6 +714,26 @@ class BenchmarkingAgent(Agent):
         self.run_record.total_steps = snapshot.step
         if self.run_record.runtime and "compaction_count" in self.run_record.runtime:
             self.run_record.runtime["compaction_count"] = fields.compaction_counter
+        provenance: dict[str, Any] = {
+            "source_run_id": snapshot.source.run_id,
+            "source_guid": snapshot.source.guid,
+            "source_card_id": snapshot.source.card_id,
+            "replayed_steps": snapshot.step,
+            "prior_elapsed_seconds": fields.elapsed_seconds,
+            "lineage": [entry.model_dump() for entry in self._lineage],
+        }
+        if snapshot.pricing != self._pricing:
+            logger.warning(
+                "Pricing changed since the snapshot (%s -> %s); carried costs "
+                "use the previous pricing.",
+                snapshot.pricing,
+                self._pricing,
+            )
+            provenance["pricing_changed"] = {
+                "previous": snapshot.pricing,
+                "current": self._pricing,
+            }
+        self.run_record.rehydration = provenance
         self._write_run_meta()
 
     def _rehydrate(self, prepared: PreparedRehydration) -> None:

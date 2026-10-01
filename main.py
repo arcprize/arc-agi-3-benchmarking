@@ -25,6 +25,12 @@ from benchmarking.model_config import (
 from benchmarking.model_config import (
     list_model_config_ids as _list_model_config_ids,
 )
+from benchmarking.rehydration import (
+    PreparedRehydration,
+    RehydrationError,
+    parse_rehydrate_args,
+    prepare_rehydration,
+)
 
 logger = logging.getLogger()
 
@@ -157,7 +163,57 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List available model config IDs and exit.",
     )
+    parser.add_argument(
+        "--rehydrate",
+        action="append",
+        metavar="KEY=PATH",
+        help=(
+            "Resume a previous session. Repeat for each input: "
+            "recording=<toolkit .jsonl> and state=<state_step_NNNN.json>. "
+            "Requires --config and a single -g game."
+        ),
+    )
     return parser
+
+
+REHYDRATION_TAG_ENV = "ARC_REHYDRATION_TAG_SCORECARD"
+REHYDRATED_TAG = "rehydrated"
+
+
+def rehydration_tag_enabled() -> bool:
+    """Strictly parse ARC_REHYDRATION_TAG_SCORECARD; unset means false."""
+    value = os.environ.get(REHYDRATION_TAG_ENV, "").strip().lower()
+    if value in ("", "false", "0"):
+        return False
+    if value in ("true", "1"):
+        return True
+    raise ValueError(
+        f"Invalid {REHYDRATION_TAG_ENV}={os.environ[REHYDRATION_TAG_ENV]!r}; "
+        "use true, false, 1, or 0."
+    )
+
+
+def resolve_rehydration(
+    args: argparse.Namespace, games: list[str]
+) -> tuple[Optional[PreparedRehydration], list[str]]:
+    """Validate rehydration inputs offline; return them and extra scorecard tags."""
+    tag = rehydration_tag_enabled()
+    if not args.rehydrate:
+        if tag:
+            logger.warning(f"{REHYDRATION_TAG_ENV} is set but --rehydrate is not.")
+        return None, []
+    if not args.config:
+        raise RehydrationError("--rehydrate requires --config.")
+    prepared = prepare_rehydration(
+        parse_rehydrate_args(args.rehydrate),
+        config_id=args.config,
+        game_ids=games,
+    )
+    logger.info(
+        f"Rehydrating {prepared.snapshot.source.game_id} at step "
+        f"{prepared.snapshot.step} from run {prepared.snapshot.source.run_id}."
+    )
+    return prepared, [REHYDRATED_TAG] if tag else []
 
 
 def run_agent(swarm: Swarm) -> None:
@@ -252,6 +308,13 @@ def main() -> None:
             )
         return
 
+    # Validate rehydration inputs before opening a scorecard.
+    try:
+        rehydration, rehydration_tags = resolve_rehydration(args, games)
+    except ValueError as e:
+        logger.error(f"Cannot rehydrate: {e}")
+        return
+
     # Start with Empty tags, "agent" and agent name will be added by the Swarm later
     tags: list[str] = []
 
@@ -259,12 +322,14 @@ def main() -> None:
     if args.tags:
         user_tags = [tag.strip() for tag in args.tags.split(",")]
         tags.extend(user_tags)
+    tags.extend(rehydration_tags)
 
     swarm = Swarm(
         ROOT_URL,
         games,
         tags=tags,
         config=args.config,
+        rehydration=rehydration,
     )
     agent_thread = threading.Thread(target=partial(run_agent, swarm))
     agent_thread.daemon = True  # die when the main thread dies
