@@ -1,3 +1,4 @@
+import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,12 +8,17 @@ import pytest
 from arcengine import ActionInput, FrameData, FrameDataRaw, GameAction, GameState
 
 from benchmarking.agent import BenchmarkingAgent
+from benchmarking.base import ExitReason
 from benchmarking.model_config import get_model_config, list_model_config_ids
 from benchmarking.rehydration import (
     AgentSnapshot,
+    PreparedRehydration,
+    PreviousAction,
+    RehydrationError,
     config_sha256,
     frame_fingerprint,
     load_snapshot,
+    parse_toolkit_recording,
 )
 from benchmarking.runtime_models import (
     Message,
@@ -51,6 +57,8 @@ SNAPSHOTTED = {
     "run_record",  # total_usage; identity fields are per-session
     "frames",  # rebuilt by replay; last frame is fingerprinted
     "guid",  # source guid; the new session gets its own
+    "_lineage",
+    "_elapsed_offset_seconds",  # from elapsed_seconds
 }
 # Must be empty at a loop boundary; _snapshot() refuses otherwise.
 IN_FLIGHT = {
@@ -96,6 +104,7 @@ SESSION = {
     "run_dir",
     "_last_turn_result",
     "_timed_out",
+    "_rehydration",  # this session's inputs
 }
 CLASSIFIED = SNAPSHOTTED | IN_FLIGHT | FROM_CONFIG | SESSION
 
@@ -110,7 +119,9 @@ class _FakeModelAdapter:
         return self._responses.pop(0)
 
 
-def _raw_frame(state: GameState, value: int, action: GameAction) -> FrameDataRaw:
+def _raw_frame(
+    state: GameState, value: int, action: GameAction, guid: str = "guid-1"
+) -> FrameDataRaw:
     raw = FrameDataRaw()
     raw.game_id = "game-id"
     raw.frame = [np.array([[value]], dtype=np.int8)]
@@ -118,31 +129,85 @@ def _raw_frame(state: GameState, value: int, action: GameAction) -> FrameDataRaw
     raw.levels_completed = 0
     raw.win_levels = 1
     raw.action_input = ActionInput(id=action, data={}, reasoning=None)
-    raw.guid = "guid-1"
+    raw.guid = guid
     raw.full_reset = False
     raw.available_actions = [GameAction.ACTION1.value, GameAction.ACTION6.value]
     return raw
 
 
 class _ScriptedEnv:
-    """Starts NOT_PLAYED (forcing RESET), then returns a distinct frame per step."""
+    """Deterministic fake game session.
 
-    def __init__(self) -> None:
+    Starts NOT_PLAYED (forcing RESET). Each frame depends on the full action
+    history, so a fresh session replaying the same actions sees the same frames
+    and a different action diverges. Steps are also kept as toolkit-format
+    recording events, with reasoning stored as the JSON string the remote
+    client sends.
+    """
+
+    def __init__(
+        self,
+        guid: str = "guid-1",
+        diverge_at: int | None = None,
+        fail_at: int | None = None,
+    ) -> None:
         self.info = SimpleNamespace(baseline_actions=[])
-        self.observation_space = _raw_frame(GameState.NOT_PLAYED, 0, GameAction.RESET)
-        self.steps = 0
+        self.guid = guid
+        self.diverge_at = diverge_at
+        self.fail_at = fail_at
+        self.observation_space = _raw_frame(
+            GameState.NOT_PLAYED, 0, GameAction.RESET, guid
+        )
+        self.history: list[int] = []
+        self.calls: list[tuple[str, dict, dict]] = []
+        self.events: list[dict] = []
 
-    def step(self, action: GameAction, *, data: dict, reasoning: dict) -> FrameDataRaw:
-        self.steps += 1
-        self.observation_space = _raw_frame(GameState.NOT_FINISHED, self.steps, action)
-        return self.observation_space
+    def step(
+        self, action: GameAction, *, data: dict, reasoning: dict
+    ) -> FrameDataRaw | None:
+        self.calls.append((action.name, dict(data), reasoning))
+        if len(self.calls) == self.fail_at:
+            return None
+        self.history.append(action.value + data.get("x", 0))
+        value = len(self.history) * 10 + sum(self.history)
+        if len(self.history) == self.diverge_at:
+            value += 1
+        raw = _raw_frame(GameState.NOT_FINISHED, value, action, self.guid)
+        self.events.append(
+            {
+                "timestamp": "2026-10-01T00:00:00+00:00",
+                "data": {
+                    "game_id": raw.game_id,
+                    "state": raw.state.name,
+                    "levels_completed": raw.levels_completed,
+                    "win_levels": raw.win_levels,
+                    "action_input": {
+                        "id": action.name,
+                        "data": dict(data),
+                        "reasoning": json.dumps(reasoning) if reasoning else None,
+                    },
+                    "guid": raw.guid,
+                    "full_reset": raw.full_reset,
+                    "available_actions": raw.available_actions,
+                    "frame": [layer.tolist() for layer in raw.frame],
+                },
+            }
+        )
+        self.observation_space = raw
+        return raw
+
+    def write_recording(self, path: Path) -> Path:
+        path.write_text("".join(json.dumps(event) + "\n" for event in self.events))
+        return path
 
 
 def _usage() -> NormalizedUsage:
     return NormalizedUsage(input_tokens=10, output_tokens=5, total_tokens=15)
 
 
-def _build_agent(monkeypatch, tmp_path, config_id: str, env=None) -> BenchmarkingAgent:
+def _build_agent(
+    monkeypatch, tmp_path, config_id: str, env=None, rehydration=None
+) -> BenchmarkingAgent:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ARC_HARNESS_COMMIT_SHA", "commit-abc")
     monkeypatch.setattr(
@@ -156,16 +221,22 @@ def _build_agent(monkeypatch, tmp_path, config_id: str, env=None) -> Benchmarkin
         record=False,
         arc_env=env or SimpleNamespace(info=SimpleNamespace(baseline_actions=[])),
         config=config_id,
+        rehydration=rehydration,
     )
+
+
+def _manual_texts(actions: int) -> list[str]:
+    # Step 1 is a forced RESET; the model chooses the rest, ending on ACTION6.
+    return ["ACTION1"] * (actions - 2) + ["ACTION6 3 4"]
+
+
+def _manual_responses(texts: list[str]) -> list[ModelResponse]:
+    return [ModelResponse(output_text=text, usage=_usage()) for text in texts]
 
 
 def _run_manual(monkeypatch, tmp_path, actions: int = 4) -> BenchmarkingAgent:
     agent = _build_agent(monkeypatch, tmp_path, MANUAL_CONFIG, env=_ScriptedEnv())
-    # Step 1 is a forced RESET; the model chooses the rest, ending on ACTION6.
-    texts = ["ACTION1"] * (actions - 2) + ["ACTION6 3 4"]
-    agent._adapter = _FakeModelAdapter(
-        [ModelResponse(output_text=text, usage=_usage()) for text in texts]
-    )
+    agent._adapter = _FakeModelAdapter(_manual_responses(_manual_texts(actions)))
     agent.MAX_ACTIONS = actions - 1  # main() runs while action_counter <= MAX_ACTIONS
     agent.main()
     return agent
@@ -385,17 +456,18 @@ class TestSnapshotRules:
         )
 
 
+def _assert_classified(agent: BenchmarkingAgent) -> None:
+    unclassified = set(vars(agent)) - CLASSIFIED
+    assert not unclassified, (
+        f"Unclassified BenchmarkingAgent attributes {sorted(unclassified)}: "
+        "add them to the rehydration snapshot (SNAPSHOTTED) or to the "
+        "IN_FLIGHT, FROM_CONFIG, or SESSION sets in this test."
+    )
+
+
 @pytest.mark.unit
 class TestAttributeGuard:
     """Fails when a new agent attribute is not classified (plan F2)."""
-
-    def _assert_classified(self, agent: BenchmarkingAgent) -> None:
-        unclassified = set(vars(agent)) - CLASSIFIED
-        assert not unclassified, (
-            f"Unclassified BenchmarkingAgent attributes {sorted(unclassified)}: "
-            "add them to the rehydration snapshot (SNAPSHOTTED) or to the "
-            "IN_FLIGHT, FROM_CONFIG, or SESSION sets in this test."
-        )
 
     def test_classification_sets_are_disjoint(self):
         sets = [SNAPSHOTTED, IN_FLIGHT, FROM_CONFIG, SESSION]
@@ -405,10 +477,279 @@ class TestAttributeGuard:
     def test_constructed_agent_attributes_are_classified(
         self, monkeypatch, tmp_path, config_id
     ):
-        self._assert_classified(_build_agent(monkeypatch, tmp_path, config_id))
+        _assert_classified(_build_agent(monkeypatch, tmp_path, config_id))
 
     def test_manual_run_attributes_are_classified(self, monkeypatch, tmp_path):
-        self._assert_classified(_run_manual(monkeypatch, tmp_path))
+        _assert_classified(_run_manual(monkeypatch, tmp_path))
 
     def test_continuous_run_attributes_are_classified(self, monkeypatch, tmp_path):
-        self._assert_classified(_run_openai_continuous(monkeypatch, tmp_path))
+        _assert_classified(_run_openai_continuous(monkeypatch, tmp_path))
+
+
+def _prepare(
+    source: BenchmarkingAgent, tmp_path: Path, step: int, **snapshot_updates
+) -> PreparedRehydration:
+    recording = source.arc_env.write_recording(tmp_path / f"{source.guid}.jsonl")
+    snapshot = load_snapshot(
+        Path(source.run_dir) / "state" / f"state_step_{step:04d}.json"
+    )
+    if snapshot_updates:
+        snapshot = snapshot.model_copy(update=snapshot_updates)
+    return PreparedRehydration(
+        snapshot=snapshot, steps=parse_toolkit_recording(recording)[:step]
+    )
+
+
+def _rehydrated_manual(
+    monkeypatch, tmp_path, prepared: PreparedRehydration, total_actions: int, **env_kwargs
+) -> BenchmarkingAgent:
+    agent = _build_agent(
+        monkeypatch,
+        tmp_path,
+        MANUAL_CONFIG,
+        env=_ScriptedEnv(guid="guid-2", **env_kwargs),
+        rehydration=prepared,
+    )
+    remaining = _manual_texts(total_actions)[prepared.snapshot.step - 1 :]
+    agent._adapter = _FakeModelAdapter(_manual_responses(remaining))
+    agent.MAX_ACTIONS = total_actions - 1
+    return agent
+
+
+def _comparable(snapshot: AgentSnapshot) -> dict:
+    """Snapshot content that must match an uninterrupted run."""
+    data = snapshot.model_dump(
+        mode="json", exclude={"created_at", "source", "lineage"}
+    )
+    data["agent"].pop("elapsed_seconds")
+    return data
+
+
+@pytest.mark.unit
+class TestRehydrationReplay:
+    def test_resumed_manual_run_matches_uninterrupted_run(self, monkeypatch, tmp_path):
+        original = _run_manual(monkeypatch, tmp_path, actions=5)
+        prepared = _prepare(original, tmp_path, step=3)
+        resumed = _rehydrated_manual(monkeypatch, tmp_path, prepared, total_actions=5)
+
+        resumed.main()
+
+        # Same actions and reasoning metadata reach the game, replayed or not.
+        assert resumed.arc_env.calls == original.arc_env.calls
+        assert [e["data"]["action_input"] for e in resumed.arc_env.events] == [
+            e["data"]["action_input"] for e in original.arc_env.events
+        ]
+        # The model sees exactly what the uninterrupted run sent at steps 4-5.
+        assert resumed._adapter.requests == original._adapter.requests[2:]
+        assert resumed.step_counter == resumed.action_counter == 5
+        assert resumed.run_record.total_usage == original.run_record.total_usage
+        assert resumed.run_record.total_steps == 5
+        # Replayed steps write no step files.
+        assert sorted(p.name for p in Path(resumed.run_dir).glob("step_*.json")) == [
+            "step_004.json",
+            "step_005.json",
+        ]
+        assert _comparable(_latest_snapshot(resumed)) == _comparable(
+            _latest_snapshot(original)
+        )
+
+    def test_snapshots_carry_lineage_and_new_session_identity(
+        self, monkeypatch, tmp_path
+    ):
+        original = _run_manual(monkeypatch, tmp_path, actions=5)
+        prepared = _prepare(original, tmp_path, step=3)
+        resumed = _rehydrated_manual(monkeypatch, tmp_path, prepared, total_actions=5)
+
+        resumed.main()
+
+        # Step 3 is snapshotted at the resume point, before any new step.
+        assert _snapshot_names(resumed) == [
+            "state_step_0003.json",
+            "state_step_0004.json",
+            "state_step_0005.json",
+        ]
+        latest = _latest_snapshot(resumed)
+        assert latest.source.run_id == resumed.run_record.run_id
+        assert latest.source.guid == "guid-2"
+        assert [entry.model_dump() for entry in latest.lineage] == [
+            {
+                "run_id": original.run_record.run_id,
+                "guid": "guid-1",
+                "rehydrated_at_step": 3,
+            }
+        ]
+
+    def test_elapsed_time_carries_forward(self, monkeypatch, tmp_path):
+        original = _run_manual(monkeypatch, tmp_path, actions=5)
+        prepared = _prepare(original, tmp_path, step=3)
+        prepared.snapshot.agent.elapsed_seconds = 1_000.0
+        resumed = _rehydrated_manual(monkeypatch, tmp_path, prepared, total_actions=5)
+
+        resumed.main()
+
+        assert resumed._elapsed_offset_seconds == 1_000.0
+        resume_point = load_snapshot(
+            Path(resumed.run_dir) / "state" / "state_step_0003.json"
+        )
+        assert 1_000.0 <= resume_point.agent.elapsed_seconds < 1_060.0
+        assert 1_000.0 <= _latest_snapshot(resumed).agent.elapsed_seconds < 1_060.0
+
+    def test_chained_rehydration(self, monkeypatch, tmp_path):
+        original = _run_manual(monkeypatch, tmp_path, actions=5)
+        first = _rehydrated_manual(
+            monkeypatch, tmp_path, _prepare(original, tmp_path, step=3), total_actions=5
+        )
+        first.main()
+        second = _build_agent(
+            monkeypatch,
+            tmp_path,
+            MANUAL_CONFIG,
+            env=_ScriptedEnv(guid="guid-3"),
+            rehydration=_prepare(first, tmp_path, step=4),
+        )
+        second._adapter = _FakeModelAdapter(_manual_responses(_manual_texts(5)[3:]))
+        second.MAX_ACTIONS = 4
+
+        second.main()
+
+        assert second.arc_env.calls == original.arc_env.calls
+        assert _comparable(_latest_snapshot(second)) == _comparable(
+            _latest_snapshot(original)
+        )
+        assert [
+            (entry.guid, entry.rehydrated_at_step)
+            for entry in _latest_snapshot(second).lineage
+        ] == [("guid-1", 3), ("guid-2", 4)]
+
+    def test_resumed_continuous_run_sends_identical_native_request(
+        self, monkeypatch, tmp_path
+    ):
+        original = _run_openai_continuous(monkeypatch, tmp_path, actions=4)
+        resumed = _build_agent(
+            monkeypatch,
+            tmp_path,
+            OPENAI_CONTINUOUS_CONFIG,
+            env=_ScriptedEnv(guid="guid-2"),
+            rehydration=_prepare(original, tmp_path, step=3),
+        )
+        resumed._stateful_adapter._model_adapter = _FakeModelAdapter(
+            [_openai_response(4)]
+        )
+        resumed.MAX_ACTIONS = 3
+
+        resumed.main()
+
+        original_requests = original._stateful_adapter._model_adapter.requests
+        resumed_requests = resumed._stateful_adapter._model_adapter.requests
+        assert resumed_requests == original_requests[-1:]
+        assert "opaque-3" in json.dumps(resumed_requests[0].native_input)
+        assert resumed._runtime_state == original._runtime_state
+        assert resumed.arc_env.calls == original.arc_env.calls
+
+    def test_recording_without_frames_still_replays(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        original = _run_manual(monkeypatch, tmp_path, actions=5)
+        prepared = _prepare(original, tmp_path, step=3)
+        prepared = PreparedRehydration(
+            snapshot=prepared.snapshot,
+            steps=[step.model_copy(update={"frame": None}) for step in prepared.steps],
+        )
+        resumed = _rehydrated_manual(monkeypatch, tmp_path, prepared, total_actions=5)
+
+        with caplog.at_level(logging.WARNING):
+            resumed.main()
+
+        assert resumed.step_counter == 5
+        assert "lacks frame data" in caplog.text
+
+
+@pytest.mark.unit
+class TestRehydrationFailures:
+    def _assert_failed_before_model(self, agent: BenchmarkingAgent) -> None:
+        assert agent.exit_reason == ExitReason.REHYDRATION_ERROR
+        assert agent._adapter.requests == []
+        assert not (Path(agent.run_dir) / "state").exists()
+        assert list(Path(agent.run_dir).glob("step_*.json")) == []
+
+    def test_divergent_frame_aborts_replay(self, monkeypatch, tmp_path):
+        original = _run_manual(monkeypatch, tmp_path, actions=5)
+        resumed = _rehydrated_manual(
+            monkeypatch,
+            tmp_path,
+            _prepare(original, tmp_path, step=3),
+            total_actions=5,
+            diverge_at=2,
+        )
+        with pytest.raises(RehydrationError, match="diverged at step 2"):
+            resumed.main()
+        assert len(resumed.arc_env.calls) == 2
+        self._assert_failed_before_model(resumed)
+
+    def test_failed_step_aborts_without_retry(self, monkeypatch, tmp_path):
+        original = _run_manual(monkeypatch, tmp_path, actions=5)
+        resumed = _rehydrated_manual(
+            monkeypatch,
+            tmp_path,
+            _prepare(original, tmp_path, step=3),
+            total_actions=5,
+            fail_at=2,
+        )
+        with pytest.raises(ValueError, match="None frame data"):
+            resumed.main()
+        assert len(resumed.arc_env.calls) == 2
+        self._assert_failed_before_model(resumed)
+
+    def test_changed_level_budgets_abort_before_any_step(self, monkeypatch, tmp_path):
+        original = _run_manual(monkeypatch, tmp_path, actions=5)
+        prepared = _prepare(original, tmp_path, step=3, level_action_budgets=[99])
+        resumed = _rehydrated_manual(monkeypatch, tmp_path, prepared, total_actions=5)
+        with pytest.raises(RehydrationError, match="Level action budgets changed"):
+            resumed.main()
+        assert resumed.arc_env.calls == []
+        self._assert_failed_before_model(resumed)
+
+    def test_previous_action_mismatch_aborts(self, monkeypatch, tmp_path):
+        original = _run_manual(monkeypatch, tmp_path, actions=5)
+        prepared = _prepare(original, tmp_path, step=3)
+        prepared.snapshot.agent.previous_action = PreviousAction(
+            name="ACTION6", data={"x": 1, "y": 1}
+        )
+        resumed = _rehydrated_manual(monkeypatch, tmp_path, prepared, total_actions=5)
+        with pytest.raises(RehydrationError, match="previous action"):
+            resumed.main()
+        self._assert_failed_before_model(resumed)
+
+    def test_final_frame_mismatch_aborts(self, monkeypatch, tmp_path):
+        original = _run_manual(monkeypatch, tmp_path, actions=5)
+        prepared = _prepare(original, tmp_path, step=3)
+        prepared.snapshot.last_frame.frame_sha256 = "0" * 64
+        resumed = _rehydrated_manual(monkeypatch, tmp_path, prepared, total_actions=5)
+        with pytest.raises(RehydrationError, match="final frame"):
+            resumed.main()
+        self._assert_failed_before_model(resumed)
+
+    def test_runtime_state_mode_mismatch_aborts(self, monkeypatch, tmp_path):
+        original = _run_manual(monkeypatch, tmp_path, actions=5)
+        resumed = _build_agent(
+            monkeypatch,
+            tmp_path,
+            OPENAI_CONTINUOUS_CONFIG,
+            env=_ScriptedEnv(guid="guid-2"),
+            rehydration=_prepare(original, tmp_path, step=3),
+        )
+        resumed._adapter = _FakeModelAdapter([])
+        with pytest.raises(RehydrationError, match="no runtime_state"):
+            resumed.main()
+        self._assert_failed_before_model(resumed)
+
+
+@pytest.mark.unit
+class TestRehydratedAttributeGuard:
+    def test_rehydrated_run_attributes_are_classified(self, monkeypatch, tmp_path):
+        original = _run_manual(monkeypatch, tmp_path, actions=5)
+        resumed = _rehydrated_manual(
+            monkeypatch, tmp_path, _prepare(original, tmp_path, step=3), total_actions=5
+        )
+        resumed.main()
+        _assert_classified(resumed)

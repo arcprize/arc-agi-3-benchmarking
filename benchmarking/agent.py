@@ -6,6 +6,7 @@ import re
 import textwrap
 import time
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -36,9 +37,14 @@ from .recording import (
 from .rehydration import (
     AgentFields,
     AgentSnapshot,
+    FrameFingerprint,
+    LineageEntry,
+    PreparedRehydration,
     PreviousAction,
+    RehydrationError,
     SnapshotSource,
     config_sha256,
+    fingerprints_match,
     frame_fingerprint,
     write_snapshot_atomic,
 )
@@ -85,8 +91,15 @@ class BenchmarkingAgent(Agent):
     # Using 1.0 is intentionally conservative relative to observed runs.
     ESTIMATED_CHARS_PER_TOKEN: float = 1.0
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        rehydration: PreparedRehydration | None = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
+        self._rehydration = rehydration
+        self._lineage: list[LineageEntry] = []
         if not self.config:
             raise ValueError(
                 "No model config specified. Pass --config=<config_id> when running main.py. "
@@ -597,16 +610,6 @@ class BenchmarkingAgent(Agent):
                 f"action_counter={self.action_counter}."
             )
 
-        previous_action = None
-        if self._previous_action is not None:
-            data: dict[str, Any] = {}
-            if self._previous_action.is_complex():
-                action_data = self._previous_action.action_data.model_dump()
-                data = {"x": action_data["x"], "y": action_data["y"]}
-            previous_action = PreviousAction(
-                name=self._previous_action.name, data=data
-            )
-        latest_frame = self.frames[-1]
         return AgentSnapshot(
             harness_commit_sha=harness_commit_sha(),
             created_at=datetime.now(timezone.utc),
@@ -616,17 +619,13 @@ class BenchmarkingAgent(Agent):
                 game_id=self.game_id,
                 card_id=self.card_id,
             ),
+            lineage=self._lineage,
             model_config_id=self.MODEL_CONFIG_ID,
             model_config_sha256=self._model_config_sha256,
             pricing=self._pricing,
             level_action_budgets=self._level_action_budgets,
             step=self.step_counter,
-            last_frame=frame_fingerprint(
-                state=latest_frame.state,
-                levels_completed=latest_frame.levels_completed,
-                available_actions=latest_frame.available_actions,
-                frame=latest_frame.frame,
-            ),
+            last_frame=self._frame_fingerprint(self.frames[-1]),
             agent=AgentFields(
                 conversation=self.conversation,
                 token_counter=self.token_counter,
@@ -637,7 +636,7 @@ class BenchmarkingAgent(Agent):
                 pending_compaction_trigger_tokens=(
                     self._pending_compaction_trigger_tokens
                 ),
-                previous_action=previous_action,
+                previous_action=self._previous_action_record(),
                 previous_response_id=self._previous_response_id,
                 pending_user_messages=self._pending_user_messages,
                 elapsed_seconds=time.time() - self.timer,
@@ -647,6 +646,132 @@ class BenchmarkingAgent(Agent):
                 self._runtime_state if self._continuous_conversation else None
             ),
         )
+
+    @staticmethod
+    def _frame_fingerprint(frame: FrameData) -> FrameFingerprint:
+        return frame_fingerprint(
+            state=frame.state,
+            levels_completed=frame.levels_completed,
+            available_actions=frame.available_actions,
+            frame=frame.frame,
+        )
+
+    def _previous_action_record(self) -> PreviousAction | None:
+        if self._previous_action is None:
+            return None
+        data: dict[str, Any] = {}
+        if self._previous_action.is_complex():
+            action_data = self._previous_action.action_data.model_dump()
+            data = {"x": action_data["x"], "y": action_data["y"]}
+        return PreviousAction(name=self._previous_action.name, data=data)
+
+    def _restore(self, snapshot: AgentSnapshot) -> None:
+        """Load snapshot state after replay has rebuilt the game to its step."""
+        if self._continuous_conversation:
+            if snapshot.runtime_state is None:
+                raise RehydrationError("Snapshot has no runtime_state.")
+            snapshot.runtime_state.validate_for(
+                adapter_id=self._stateful_adapter.descriptor.adapter_id,
+                strategy=self._stateful_adapter.strategy,
+            )
+            self._runtime_state = snapshot.runtime_state
+        elif snapshot.runtime_state is not None:
+            raise RehydrationError(
+                "Snapshot has runtime_state but the selected config does not "
+                "use continuous_conversation."
+            )
+
+        fields = snapshot.agent
+        self.conversation = deepcopy(fields.conversation)
+        self.token_counter = fields.token_counter
+        self.step_counter = snapshot.step
+        self._level_action_counter = fields.level_action_counter
+        self._last_levels_completed = fields.last_levels_completed
+        self._level_just_advanced = fields.level_just_advanced
+        self._compaction_counter = fields.compaction_counter
+        self._pending_compaction_trigger_tokens = (
+            fields.pending_compaction_trigger_tokens
+        )
+        self._previous_response_id = fields.previous_response_id
+        self._pending_user_messages = deepcopy(fields.pending_user_messages)
+        # base.main() applies the offset when it starts the timer; setting the
+        # timer here too keeps snapshots taken before then consistent.
+        self._elapsed_offset_seconds = fields.elapsed_seconds
+        self.timer = time.time() - fields.elapsed_seconds
+        self._lineage = [
+            *snapshot.lineage,
+            LineageEntry(
+                run_id=snapshot.source.run_id,
+                guid=snapshot.source.guid,
+                rehydrated_at_step=snapshot.step,
+            ),
+        ]
+        self.run_record.total_usage = fields.total_usage
+        self.run_record.total_steps = snapshot.step
+        if self.run_record.runtime and "compaction_count" in self.run_record.runtime:
+            self.run_record.runtime["compaction_count"] = fields.compaction_counter
+        self._write_run_meta()
+
+    def _rehydrate(self, prepared: PreparedRehydration) -> None:
+        """Replay recorded actions, verify every frame, then restore state.
+
+        Replayed steps re-submit their original reasoning metadata but write no
+        step files and add no usage; totals come from the snapshot.
+        """
+        snapshot = prepared.snapshot
+        if self._level_action_budgets != snapshot.level_action_budgets:
+            raise RehydrationError(
+                f"Level action budgets changed: snapshot="
+                f"{snapshot.level_action_budgets}, current="
+                f"{self._level_action_budgets}."
+            )
+        if any(step.frame is None for step in prepared.steps):
+            logger.warning(
+                "Recording lacks frame data for some steps; replay verification "
+                "compares state, levels, and available actions only."
+            )
+
+        logger.info(f"{self.game_id} - Replaying {snapshot.step} recorded steps.")
+        frame: FrameData | None = None
+        for number, recorded in enumerate(prepared.steps, start=1):
+            self._pending_action_reasoning = dict(recorded.reasoning)
+            frame = self.take_action(recorded.game_action())
+            if frame is None:
+                raise RehydrationError(f"Replay step {number}: invalid frame.")
+            self.append_frame(frame)
+            self.action_counter += 1
+            live = self._frame_fingerprint(frame)
+            if not fingerprints_match(live, recorded.fingerprint()):
+                raise RehydrationError(
+                    f"Replay diverged at step {number}: live={live.model_dump()}, "
+                    f"recorded={recorded.fingerprint().model_dump()}."
+                )
+
+        if self._previous_action_record() != snapshot.agent.previous_action:
+            raise RehydrationError(
+                "Replayed previous action does not match the snapshot."
+            )
+        assert frame is not None  # PreparedRehydration guarantees >= 1 step
+        if not fingerprints_match(self._frame_fingerprint(frame), snapshot.last_frame):
+            raise RehydrationError("Replayed final frame does not match the snapshot.")
+
+        self._restore(snapshot)
+        # Snapshot the resume point under this session's guid, so this run can
+        # itself be rehydrated even if it stops before its first new step.
+        self._after_action(frame)
+        logger.info(
+            f"{self.game_id} - Rehydrated at step {snapshot.step}; "
+            "resuming normal play."
+        )
+
+    def main(self) -> None:
+        if self._rehydration is not None:
+            try:
+                self._rehydrate(self._rehydration)
+            except Exception:
+                self.exit_reason = ExitReason.REHYDRATION_ERROR
+                raise
+        super().main()
 
     def _after_action(self, frame: Optional[FrameData]) -> None:
         """Write a rolling state snapshot. Never interrupts the run."""

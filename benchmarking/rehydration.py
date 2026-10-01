@@ -122,6 +122,13 @@ class AgentSnapshot(_Strict):
         return self
 
 
+def fingerprints_match(live: FrameFingerprint, recorded: FrameFingerprint) -> bool:
+    """Compare frames; ignore the grid hash when the recording has no frame data."""
+    if recorded.frame_sha256 is None:
+        live = live.model_copy(update={"frame_sha256": None})
+    return live == recorded
+
+
 def config_sha256(entry: dict[str, Any]) -> str:
     """Hash a raw model config entry. Pricing is excluded by design."""
     hashed = {key: value for key, value in entry.items() if key != "pricing"}
@@ -228,6 +235,23 @@ class RecordedStep(BaseModel):
             available_actions=self.available_actions,
             frame=self.frame,
         )
+
+
+class PreparedRehydration(BaseModel):
+    """Inputs ready for replay: ``steps[i]`` is agent step ``i + 1``."""
+
+    snapshot: AgentSnapshot
+    steps: list[RecordedStep]
+
+    @model_validator(mode="after")
+    def validate_alignment(self) -> PreparedRehydration:
+        if self.snapshot.step < 1:
+            raise ValueError("Cannot rehydrate from a snapshot before step 1.")
+        if len(self.steps) != self.snapshot.step:
+            raise ValueError(
+                f"Expected {self.snapshot.step} recorded steps, got {len(self.steps)}."
+            )
+        return self
 
 
 def _normalize_reasoning(value: Any, where: str) -> dict[str, Any]:

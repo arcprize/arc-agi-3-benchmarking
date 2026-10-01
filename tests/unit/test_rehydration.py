@@ -12,10 +12,12 @@ from benchmarking.rehydration import (
     AgentFields,
     AgentSnapshot,
     FrameFingerprint,
+    PreparedRehydration,
     RehydrationArgs,
     RehydrationError,
     SnapshotSource,
     config_sha256,
+    fingerprints_match,
     frame_fingerprint,
     load_snapshot,
     parse_toolkit_recording,
@@ -164,6 +166,24 @@ class TestFrameFingerprint:
             state="NOT_FINISHED", levels_completed=0, available_actions=[], frame=None
         )
         assert fingerprint.frame_sha256 is None
+
+    def test_match_compares_grid_when_recorded(self):
+        kwargs = {"state": "NOT_FINISHED", "levels_completed": 0, "available_actions": [1]}
+        live = frame_fingerprint(frame=FRAME, **kwargs)
+        assert fingerprints_match(live, frame_fingerprint(frame=FRAME, **kwargs))
+        assert not fingerprints_match(
+            live, frame_fingerprint(frame=[[[9]]], **kwargs)
+        )
+
+    def test_match_falls_back_without_recorded_grid(self):
+        kwargs = {"levels_completed": 0, "available_actions": [1]}
+        live = frame_fingerprint(state="NOT_FINISHED", frame=FRAME, **kwargs)
+        assert fingerprints_match(
+            live, frame_fingerprint(state="NOT_FINISHED", frame=None, **kwargs)
+        )
+        assert not fingerprints_match(
+            live, frame_fingerprint(state="GAME_OVER", frame=None, **kwargs)
+        )
 
 
 @pytest.mark.unit
@@ -317,6 +337,30 @@ class TestAgentSnapshot:
 
     def test_last_frame_is_a_fingerprint(self):
         assert isinstance(_snapshot().last_frame, FrameFingerprint)
+
+
+@pytest.mark.unit
+class TestPreparedRehydration:
+    def _steps(self, tmp_path: Path, count: int):
+        path = _write_jsonl(tmp_path / "r.jsonl", [_event() for _ in range(count)])
+        return parse_toolkit_recording(path)
+
+    def test_accepts_one_recorded_step_per_snapshot_step(self, tmp_path):
+        prepared = PreparedRehydration(
+            snapshot=_snapshot(step=3), steps=self._steps(tmp_path, 3)
+        )
+        assert len(prepared.steps) == 3
+
+    @pytest.mark.parametrize("count", [2, 4])
+    def test_rejects_misaligned_step_count(self, tmp_path, count):
+        with pytest.raises(ValidationError, match="Expected 3 recorded steps"):
+            PreparedRehydration(
+                snapshot=_snapshot(step=3), steps=self._steps(tmp_path, count)
+            )
+
+    def test_rejects_step_zero(self):
+        with pytest.raises(ValidationError, match="before step 1"):
+            PreparedRehydration(snapshot=_snapshot(step=0), steps=[])
 
 
 @pytest.mark.unit
