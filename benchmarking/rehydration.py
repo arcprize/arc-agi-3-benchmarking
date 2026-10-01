@@ -208,9 +208,8 @@ def write_snapshot_atomic(
 class RecordedStep(BaseModel):
     """One action event from a toolkit recording, ready to replay.
 
-    ``index`` is the 0-based position among action events in the file. Mapping
-    events to agent steps (e.g. skipping an implicit ``make()`` reset) is left
-    to the caller until verified against a real server recording (plan F3).
+    ``index`` is the 0-based position among action events in the file, not the
+    agent step number; ``_align_recording`` maps events to agent steps.
     """
 
     index: int
