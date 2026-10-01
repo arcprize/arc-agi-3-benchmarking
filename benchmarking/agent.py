@@ -33,6 +33,15 @@ from .recording import (
     StepRecord,
     StepUsage,
 )
+from .rehydration import (
+    AgentFields,
+    AgentSnapshot,
+    PreviousAction,
+    SnapshotSource,
+    config_sha256,
+    frame_fingerprint,
+    write_snapshot_atomic,
+)
 from .runtime_adapters import build_model_runtime_adapter
 from .runtime_clients import build_model_runtime_client
 from .runtime_models import (
@@ -91,6 +100,9 @@ class BenchmarkingAgent(Agent):
             self._load_model_config()
         )
         self._pricing: dict[str, float] = pricing_cfg
+        self._model_config_sha256 = config_sha256(
+            get_model_config(self.MODEL_CONFIG_ID)
+        )
 
         # Server-managed conversation state (OpenAI Responses previous_response_id
         # + compaction). When enabled, we send only the new message(s) each turn
@@ -565,6 +577,93 @@ class BenchmarkingAgent(Agent):
             self._compaction_counter,
             compaction.before_step,
         )
+
+    def _snapshot(self) -> AgentSnapshot:
+        """Serialize agent state at a clean loop boundary (REHYDRATION_PLAN.md §3)."""
+        in_flight = {
+            "_pending_turn_messages": getattr(self, "_pending_turn_messages", []),
+            "_pending_action_reasoning": self._pending_action_reasoning,
+            "_pending_compaction_usage": self._pending_compaction_usage,
+            "_pending_compaction_continuation": self._pending_compaction_continuation,
+        }
+        busy = [name for name, value in in_flight.items() if value]
+        if busy:
+            raise RuntimeError(
+                f"Cannot snapshot with in-flight state: {', '.join(busy)}."
+            )
+        if self.step_counter != self.action_counter:
+            raise RuntimeError(
+                f"Cannot snapshot: step_counter={self.step_counter} != "
+                f"action_counter={self.action_counter}."
+            )
+
+        previous_action = None
+        if self._previous_action is not None:
+            data: dict[str, Any] = {}
+            if self._previous_action.is_complex():
+                action_data = self._previous_action.action_data.model_dump()
+                data = {"x": action_data["x"], "y": action_data["y"]}
+            previous_action = PreviousAction(
+                name=self._previous_action.name, data=data
+            )
+        latest_frame = self.frames[-1]
+        return AgentSnapshot(
+            harness_commit_sha=harness_commit_sha(),
+            created_at=datetime.now(timezone.utc),
+            source=SnapshotSource(
+                run_id=self.run_record.run_id,
+                guid=self.guid,
+                game_id=self.game_id,
+                card_id=self.card_id,
+            ),
+            model_config_id=self.MODEL_CONFIG_ID,
+            model_config_sha256=self._model_config_sha256,
+            pricing=self._pricing,
+            level_action_budgets=self._level_action_budgets,
+            step=self.step_counter,
+            last_frame=frame_fingerprint(
+                state=latest_frame.state,
+                levels_completed=latest_frame.levels_completed,
+                available_actions=latest_frame.available_actions,
+                frame=latest_frame.frame,
+            ),
+            agent=AgentFields(
+                conversation=self.conversation,
+                token_counter=self.token_counter,
+                level_action_counter=self._level_action_counter,
+                last_levels_completed=self._last_levels_completed,
+                level_just_advanced=self._level_just_advanced,
+                compaction_counter=self._compaction_counter,
+                pending_compaction_trigger_tokens=(
+                    self._pending_compaction_trigger_tokens
+                ),
+                previous_action=previous_action,
+                previous_response_id=self._previous_response_id,
+                pending_user_messages=self._pending_user_messages,
+                elapsed_seconds=time.time() - self.timer,
+                total_usage=self.run_record.total_usage,
+            ),
+            runtime_state=(
+                self._runtime_state if self._continuous_conversation else None
+            ),
+        )
+
+    def _after_action(self, frame: Optional[FrameData]) -> None:
+        """Write a rolling state snapshot. Never interrupts the run."""
+        if frame is None:
+            logger.warning(
+                "Skipping state snapshot after step %s: action produced no frame.",
+                self.step_counter,
+            )
+            return
+        try:
+            path = write_snapshot_atomic(self.run_dir, self._snapshot())
+        except Exception:
+            logger.exception(
+                "Failed to write state snapshot after step %s.", self.step_counter
+            )
+            return
+        logger.info(f"Saved state snapshot {self.step_counter} to {path}")
 
     def _run_pending_compaction(self) -> None:
         trigger_tokens = getattr(self, "_pending_compaction_trigger_tokens", None)

@@ -108,6 +108,7 @@ class Agent(ABC):
                     )
                 taking_action = False
                 self.action_counter += 1
+                self._after_action(frame)
 
         except Exception:
             self.exit_reason = ExitReason.API_ERROR if taking_action else ExitReason.AGENT_ERROR
@@ -181,6 +182,13 @@ class Agent(ABC):
         latest_frame: FrameData,
         forced_action: GameAction,
     ) -> None:
+        return None
+
+    def _after_action(self, frame: Optional[FrameData]) -> None:
+        """Called once per loop iteration after the action is counted.
+
+        ``frame`` is None when the action produced no valid frame.
+        """
         return None
 
     def do_action_request(self, action: GameAction) -> FrameData:
