@@ -120,14 +120,18 @@ class _FakeModelAdapter:
 
 
 def _raw_frame(
-    state: GameState, value: int, action: GameAction, guid: str = "guid-1"
+    state: GameState,
+    value: int,
+    action: GameAction,
+    guid: str = "guid-1",
+    levels_completed: int = 0,
 ) -> FrameDataRaw:
     raw = FrameDataRaw()
     raw.game_id = "game-id"
     raw.frame = [np.array([[value]], dtype=np.int8)]
     raw.state = state
-    raw.levels_completed = 0
-    raw.win_levels = 1
+    raw.levels_completed = levels_completed
+    raw.win_levels = 2
     raw.action_input = ActionInput(id=action, data={}, reasoning=None)
     raw.guid = guid
     raw.full_reset = False
@@ -138,11 +142,12 @@ def _raw_frame(
 class _ScriptedEnv:
     """Deterministic fake game session.
 
-    Starts NOT_PLAYED (forcing RESET). Each frame depends on the full action
-    history, so a fresh session replaying the same actions sees the same frames
-    and a different action diverges. Steps are also kept as toolkit-format
-    recording events, with reasoning stored as the JSON string the remote
-    client sends.
+    Starts NOT_PLAYED by default (forcing RESET). Each frame depends on the
+    full action history, so a fresh session replaying the same actions sees the
+    same frames and a different action diverges. ``game_over_at`` makes that
+    step's frame GAME_OVER; ``level_up_at`` completes level 1 from that step on.
+    Steps are also kept as toolkit-format recording events, with reasoning
+    stored as the JSON string the remote client sends.
     """
 
     def __init__(
@@ -150,14 +155,18 @@ class _ScriptedEnv:
         guid: str = "guid-1",
         diverge_at: int | None = None,
         fail_at: int | None = None,
+        initial_state: GameState = GameState.NOT_PLAYED,
+        game_over_at: int | None = None,
+        level_up_at: int | None = None,
+        baseline_actions: list[int] | None = None,
     ) -> None:
-        self.info = SimpleNamespace(baseline_actions=[])
+        self.info = SimpleNamespace(baseline_actions=baseline_actions or [])
         self.guid = guid
         self.diverge_at = diverge_at
         self.fail_at = fail_at
-        self.observation_space = _raw_frame(
-            GameState.NOT_PLAYED, 0, GameAction.RESET, guid
-        )
+        self.game_over_at = game_over_at
+        self.level_up_at = level_up_at
+        self.observation_space = _raw_frame(initial_state, 0, GameAction.RESET, guid)
         self.history: list[int] = []
         self.calls: list[tuple[str, dict, dict]] = []
         self.events: list[dict] = []
@@ -172,7 +181,15 @@ class _ScriptedEnv:
         value = len(self.history) * 10 + sum(self.history)
         if len(self.history) == self.diverge_at:
             value += 1
-        raw = _raw_frame(GameState.NOT_FINISHED, value, action, self.guid)
+        state = (
+            GameState.GAME_OVER
+            if len(self.history) == self.game_over_at
+            else GameState.NOT_FINISHED
+        )
+        levels = int(
+            self.level_up_at is not None and len(self.history) >= self.level_up_at
+        )
+        raw = _raw_frame(state, value, action, self.guid, levels)
         self.events.append(
             {
                 "timestamp": "2026-10-01T00:00:00+00:00",
