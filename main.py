@@ -176,32 +176,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-REHYDRATION_TAG_ENV = "ARC_REHYDRATION_TAG_SCORECARD"
-REHYDRATED_TAG = "rehydrated"
-
-
-def rehydration_tag_enabled() -> bool:
-    """Strictly parse ARC_REHYDRATION_TAG_SCORECARD; unset means false."""
-    value = os.environ.get(REHYDRATION_TAG_ENV, "").strip().lower()
-    if value in ("", "false", "0"):
-        return False
-    if value in ("true", "1"):
-        return True
-    raise ValueError(
-        f"Invalid {REHYDRATION_TAG_ENV}={os.environ[REHYDRATION_TAG_ENV]!r}; "
-        "use true, false, 1, or 0."
-    )
-
-
 def resolve_rehydration(
     args: argparse.Namespace, games: list[str]
-) -> tuple[Optional[PreparedRehydration], list[str]]:
-    """Validate rehydration inputs offline; return them and extra scorecard tags."""
-    tag = rehydration_tag_enabled()
+) -> Optional[PreparedRehydration]:
+    """Validate rehydration inputs offline, before any scorecard is opened."""
     if not args.rehydrate:
-        if tag:
-            logger.warning(f"{REHYDRATION_TAG_ENV} is set but --rehydrate is not.")
-        return None, []
+        return None
     if not args.config:
         raise RehydrationError("--rehydrate requires --config.")
     prepared = prepare_rehydration(
@@ -213,7 +193,7 @@ def resolve_rehydration(
         f"Rehydrating {prepared.snapshot.source.game_id} at step "
         f"{prepared.snapshot.step} from run {prepared.snapshot.source.run_id}."
     )
-    return prepared, [REHYDRATED_TAG] if tag else []
+    return prepared
 
 
 def run_agent(swarm: Swarm) -> None:
@@ -308,9 +288,8 @@ def main() -> None:
             )
         return
 
-    # Validate rehydration inputs before opening a scorecard.
     try:
-        rehydration, rehydration_tags = resolve_rehydration(args, games)
+        rehydration = resolve_rehydration(args, games)
     except ValueError as e:
         logger.error(f"Cannot rehydrate: {e}")
         return
@@ -322,7 +301,6 @@ def main() -> None:
     if args.tags:
         user_tags = [tag.strip() for tag in args.tags.split(",")]
         tags.extend(user_tags)
-    tags.extend(rehydration_tags)
 
     swarm = Swarm(
         ROOT_URL,
