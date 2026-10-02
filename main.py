@@ -176,6 +176,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Process exit code when rehydration inputs fail offline validation
+# (2 is taken by argparse usage errors).
+REHYDRATION_EXIT_CODE = 3
+
+
 def resolve_rehydration(
     args: argparse.Namespace, games: list[str]
 ) -> Optional[PreparedRehydration]:
@@ -292,7 +297,7 @@ def main() -> None:
         rehydration = resolve_rehydration(args, games)
     except ValueError as e:
         logger.error(f"Cannot rehydrate: {e}")
-        return
+        sys.exit(REHYDRATION_EXIT_CODE)
 
     # Start with Empty tags, "agent" and agent name will be added by the Swarm later
     tags: list[str] = []
