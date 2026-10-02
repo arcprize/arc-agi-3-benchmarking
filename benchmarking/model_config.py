@@ -28,6 +28,7 @@ SUPPORTED_RUNTIME_STATE = DEFAULT_RUNTIME_STATE
 SERVER_STATE_RUNTIME_PAIRS = frozenset({("openai-python", "responses")})
 CONTINUOUS_CONVERSATION_RUNTIME_PAIRS = frozenset(
     {
+        ("google-genai", "generate_content"),
         ("anthropic-python", "messages"),
         ("google-genai", "interactions"),
         ("openai-python", "chat_completions"),
@@ -148,6 +149,10 @@ def _validate_continuous_conversation_config(
             validate_deepseek_request(request)
         except ValueError as exc:
             raise ValueError(f"Model config '{config_id}': {exc}") from exc
+    elif adapter_id == "google.generate_content.v1":
+        from .google_content_runtime import validate_content_request
+
+        validate_content_request(request)
     elif request.get("store") is not False:
         raise ValueError(
             f"Model config '{config_id}' uses runtime.state="

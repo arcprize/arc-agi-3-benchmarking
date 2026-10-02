@@ -20,7 +20,10 @@ logger = logging.getLogger(__name__)
 
 
 def generate_with_continuation(
-    client: Any, call_kwargs: dict[str, Any]
+    client: Any,
+    call_kwargs: dict[str, Any],
+    *,
+    native_contents: list[Any] | None = None,
 ) -> ModelResponse:
     """Keep slices in one turn and preserve raw parts, signatures, and usage."""
     config = call_kwargs["config"].model_copy(deep=True)
@@ -43,6 +46,9 @@ def generate_with_continuation(
         content.model_dump(mode="json", by_alias=True, exclude_none=True)
         for content in call_kwargs["contents"]
     ]
+    if native_contents is not None:
+        base_contents = deepcopy(native_contents)
+        options.extra_body = {**extra, "contents": base_contents}
     parts: list[dict[str, Any]] = []
     slices: list[dict[str, Any]] = []
     seen_tokens: set[str] = set()

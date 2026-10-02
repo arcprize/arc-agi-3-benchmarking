@@ -20,6 +20,7 @@ from .exceptions import (
     TransientProviderError,
 )
 from .google_continuation import generate_with_continuation
+from .google_interactions_continuation import create_with_continuation
 from .runtime_models import (
     ModelRequest,
     ModelResponse,
@@ -427,7 +428,16 @@ class GoogleGenAIGenerateContentAdapter:
 
     def invoke(self, request: ModelRequest) -> ModelResponse:
         call_kwargs = self._build_call_kwargs(request)
-        return generate_with_continuation(self._client, call_kwargs)
+        try:
+            return generate_with_continuation(
+                self._client, call_kwargs, native_contents=request.native_input
+            )
+        except Exception as exc:
+            if _is_google_context_overflow(exc):
+                raise ContextOverflowError(str(exc)) from exc
+            if _is_google_transient_error(exc):
+                raise TransientProviderError(str(exc)) from exc
+            raise
 
 
 class GoogleGenAIInteractionsAdapter:
@@ -478,9 +488,7 @@ class GoogleGenAIInteractionsAdapter:
     def invoke(self, request: ModelRequest) -> ModelResponse:
         call_kwargs = self._build_call_kwargs(request)
         try:
-            raw_response = self._client.interactions.create(
-                **call_kwargs,
-            )
+            raw_response = create_with_continuation(self._client, call_kwargs)
         # Interactions exceptions live in a private SDK module whose package
         # layout is not stable across google-genai releases. Inspect the
         # provider error at this boundary and immediately re-raise anything
