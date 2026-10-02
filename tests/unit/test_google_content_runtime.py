@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from benchmarking.runtime_adapters import build_model_runtime_adapter
 from benchmarking.runtime_models import Message
 from benchmarking.runtime_registry import build_stateful_runtime_adapter
 from benchmarking.runtime_state import ModelTurnRequest
@@ -23,7 +24,15 @@ def turn(state):
 
 def runtime(model):
     return build_stateful_runtime_adapter(
-        model_adapter=model,
+        model_adapter=build_model_runtime_adapter(
+            client=model._client,
+            config_id="test",
+            runtime_config={
+                "sdk": "google-genai",
+                "api": "generate_content",
+                "state": "continuous_conversation",
+            },
+        ),
         config_id="test",
         runtime_config={
             "sdk": "google-genai",

@@ -42,6 +42,7 @@ SUPPORTED_RUNTIME_STATE = DEFAULT_RUNTIME_STATE
 SERVER_STATE_RUNTIME_KEYS = frozenset({("openai-python", "responses")})
 CONTINUOUS_CONVERSATION_RUNTIME_KEYS = frozenset(
     {
+        ("google-genai", "generate_content"),
         ("anthropic-python", "messages"),
         ("google-genai", "interactions"),
         ("openai-python", "chat_completions"),
@@ -547,6 +548,8 @@ def build_model_runtime_adapter(
             return OpenAIResponsesAdapter(client)
         if runtime_key == ("openai-python", "chat_completions"):
             return DeepSeekChatCompletionsAdapter(client)
+        if runtime_key == ("google-genai", "generate_content"):
+            return GoogleGenAIGenerateContentAdapter(client)
         return GoogleGenAIInteractionsAdapter(client)
 
     if runtime_key == ("openai-python", "chat_completions"):
