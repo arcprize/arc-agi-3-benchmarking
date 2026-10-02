@@ -19,12 +19,12 @@ from .exceptions import (
     InvalidProviderResponseError,
     TransientProviderError,
 )
+from .google_continuation import generate_with_continuation
 from .runtime_models import (
     ModelRequest,
     ModelResponse,
     normalize_anthropic_messages_response,
     normalize_chat_completion_response,
-    normalize_google_genai_response,
     normalize_google_interaction_response,
     normalize_responses_response,
 )
@@ -426,10 +426,8 @@ class GoogleGenAIGenerateContentAdapter:
         }
 
     def invoke(self, request: ModelRequest) -> ModelResponse:
-        raw_response = self._client.models.generate_content(
-            **self._build_call_kwargs(request),
-        )
-        return normalize_google_genai_response(raw_response)
+        call_kwargs = self._build_call_kwargs(request)
+        return generate_with_continuation(self._client, call_kwargs)
 
 
 class GoogleGenAIInteractionsAdapter:
