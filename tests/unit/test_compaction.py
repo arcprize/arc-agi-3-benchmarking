@@ -1002,3 +1002,79 @@ def test_agent_persists_billed_usage_when_compaction_fails(
     assert agent.token_counter == expected_tokens
     assert agent._runtime_state == original_state
     assert not list(tmp_path.glob("compaction_*.json"))
+
+
+def test_compaction_diagnostics_preserve_each_failure_and_successful_retry(monkeypatch):
+    from benchmarking.exceptions import InvalidProviderResponseError
+
+    invalid = InvalidProviderResponseError(
+        "tool response truncated",
+        response={
+            "choices": [{"finish_reason": "length"}],
+            "encrypted_content": "secret",
+        },
+        usage=NormalizedUsage(input_tokens=10, output_tokens=8, total_tokens=18),
+    )
+    adapter, low_level = _google_adapter(
+        [
+            invalid,
+            TransientProviderError("unavailable"),
+            _summary_response("summary"),
+        ]
+    )
+    monkeypatch.setattr("benchmarking.compaction.time.sleep", lambda _: None)
+    events = []
+    state = adapter.initial_state()
+    original = state.model_copy(deep=True)
+    result = SummaryCompactor(_policy()).compact(
+        adapter=adapter,
+        state=state,
+        request_config=_request_config(),
+        trigger_tokens=175_000,
+        max_context_length=1_048_576,
+        max_retries=3,
+        on_failed_attempt=events.append,
+    )
+    assert result.attempts == 3
+    assert result.usage.total_tokens == 48
+    assert state == original
+    assert low_level.requests[0].native_input == low_level.requests[2].native_input
+    assert [event["reason"] for event in events] == [
+        "unusable_response",
+        "transient_provider_error",
+    ]
+    assert [event["attempt"] for event in events] == [1, 2]
+    assert events[0]["response"]["choices"][0]["finish_reason"] == "length"
+    assert "secret" not in json.dumps(events)
+    assert events[0]["usage"]["output_tokens"] == 8
+
+
+def test_compaction_diagnostic_sink_failure_does_not_replace_provider_failure():
+    adapter, _ = _google_adapter([_summary_response("")])
+
+    def broken_sink(event):
+        raise OSError("disk unavailable")
+
+    with pytest.raises(CompactionFailureError) as error:
+        SummaryCompactor(_policy()).compact(
+            adapter=adapter,
+            state=adapter.initial_state(),
+            request_config=_request_config(),
+            trigger_tokens=175_000,
+            max_context_length=1_048_576,
+            max_retries=0,
+            on_failed_attempt=broken_sink,
+        )
+    assert error.value.usage.total_tokens == 30
+
+
+def test_compaction_diagnostics_have_unique_names_and_redact_opaque_data(tmp_path):
+    agent = object.__new__(BenchmarkingAgent)
+    agent.run_dir = str(tmp_path)
+    agent.step_counter = 7
+    event = {"attempt": 1, "response": {"encrypted_content": "secret"}}
+    agent._save_compaction_diagnostic(event)
+    agent._save_compaction_diagnostic(event)
+    files = list(tmp_path.glob("diagnostic_compaction_before_step_8_attempt_1_*.json"))
+    assert len(files) == 2
+    assert all("secret" not in file.read_text() for file in files)

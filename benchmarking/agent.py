@@ -566,6 +566,16 @@ class BenchmarkingAgent(Agent):
             compaction.before_step,
         )
 
+    def _save_compaction_diagnostic(self, event: dict[str, Any]) -> None:
+        filename = os.path.join(
+            self.run_dir,
+            f"diagnostic_compaction_before_step_{self.step_counter + 1}_"
+            f"attempt_{event['attempt']}_{uuid.uuid4().hex}.json",
+        )
+        with open(filename, "w") as f:
+            json.dump(sanitize_settings(event), f, indent=2, default=str)
+        logger.warning("Saved harness summary diagnostic to %s", filename)
+
     def _run_pending_compaction(self) -> None:
         trigger_tokens = getattr(self, "_pending_compaction_trigger_tokens", None)
         summary_compactor = getattr(self, "_summary_compactor", None)
@@ -582,6 +592,7 @@ class BenchmarkingAgent(Agent):
                 max_context_length=self.MAX_CONTEXT_LENGTH,
                 max_retries=self.MAX_RETRIES,
                 estimated_chars_per_token=self.ESTIMATED_CHARS_PER_TOKEN,
+                on_failed_attempt=self._save_compaction_diagnostic,
             )
         except (CompactionFailureError, CompactionContextOverflowError) as exc:
             if isinstance(exc.usage, NormalizedUsage):

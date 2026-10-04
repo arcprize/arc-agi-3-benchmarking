@@ -7,7 +7,9 @@ summarization design, adapted to the runtime state contract in this repository.
 from __future__ import annotations
 
 import json
+import logging
 import time
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any, Literal
 
@@ -32,6 +34,7 @@ from .runtime_state import (
 )
 
 HARNESS_SUMMARY_COMPACTION = "harness_summary"
+logger = logging.getLogger(__name__)
 
 SUMMARY_SYSTEM_PROMPT = (
     "You create concise conversation summaries for reliable continuation. "
@@ -136,6 +139,7 @@ class SummaryCompactor:
         max_context_length: int,
         max_retries: int,
         estimated_chars_per_token: float = 1.0,
+        on_failed_attempt: Callable[[dict[str, Any]], None] | None = None,
     ) -> SummaryCompactionResult:
         if estimated_chars_per_token <= 0:
             raise ValueError("estimated_chars_per_token must be greater than zero.")
@@ -158,6 +162,42 @@ class SummaryCompactor:
         overflow_recoveries = 0
         response_failures = 0
         attempts = 0
+
+        def record_failure(
+            reason: str,
+            *,
+            response: object = None,
+            usage: object = None,
+            error_type: str | None = None,
+            status_code: int | None = None,
+        ) -> None:
+            # Keep content out of logs. The caller can persist the redacted
+            # response in the run's diagnostic artifacts, even if a retry wins.
+            logger.warning("Harness summary attempt %s failed: %s", attempts, reason)
+            if on_failed_attempt is None:
+                return
+            try:
+                if hasattr(response, "model_dump"):
+                    response = response.model_dump()
+                event = {
+                    "attempt": attempts,
+                    "reason": reason,
+                    "error_type": error_type,
+                    "status_code": status_code,
+                    "request_settings": sanitize_settings(summary_request_config),
+                    "usage": usage.model_dump()
+                    if isinstance(usage, NormalizedUsage)
+                    else None,
+                    "response": sanitize_settings(response)
+                    if isinstance(response, dict)
+                    else None,
+                }
+                on_failed_attempt(event)
+            except Exception:
+                # A diagnostic sink must not replace the provider failure or
+                # change retry, usage-accounting, or accepted-state behavior.
+                logger.warning("Could not persist harness summary diagnostic.")
+
         while response_failures <= max_retries:
             attempts += 1
             prompt = build_summary_prompt_record(candidate_state)
@@ -175,6 +215,7 @@ class SummaryCompactor:
                     )
                 )
             except ContextOverflowError as exc:
+                record_failure("context_overflow", error_type=type(exc).__name__)
                 unwind = adapter.unwind_latest_accepted_turn(candidate_state)
                 if unwind is None:
                     raise CompactionContextOverflowError(
@@ -188,11 +229,22 @@ class SummaryCompactor:
                 overflow_recoveries += 1
                 continue
             except EmptyResponseError as exc:
+                record_failure(
+                    "unusable_response",
+                    response=exc.response,
+                    usage=exc.usage,
+                    error_type=type(exc).__name__,
+                )
                 if isinstance(exc.usage, NormalizedUsage):
                     accumulated_usage = accumulated_usage + exc.usage
                 response_failures += 1
                 continue
-            except TransientProviderError:
+            except TransientProviderError as exc:
+                record_failure(
+                    "transient_provider_error",
+                    error_type=type(exc).__name__,
+                    status_code=getattr(exc.__cause__, "status_code", None),
+                )
                 response_failures += 1
                 if response_failures <= max_retries:
                     delay = self.TRANSIENT_RETRY_BASE_SECONDS * (
@@ -201,6 +253,7 @@ class SummaryCompactor:
                     time.sleep(delay)
                 continue
             except Exception as exc:
+                record_failure("unexpected_error", error_type=type(exc).__name__)
                 if accumulated_usage != NormalizedUsage():
                     raise CompactionFailureError(
                         "Harness summary compaction failed after billable attempts.",
@@ -211,10 +264,20 @@ class SummaryCompactor:
             accumulated_usage = accumulated_usage + result.response.usage
             response_status = result.response.response_status
             if response_status is not None and response_status != "completed":
+                record_failure(
+                    "response_not_completed",
+                    response=result.response.raw_response,
+                    usage=result.response.usage,
+                )
                 response_failures += 1
                 continue
             summary = result.response.output_text.strip()
             if not summary:
+                record_failure(
+                    "empty_summary",
+                    response=result.response.raw_response,
+                    usage=result.response.usage,
+                )
                 response_failures += 1
                 continue
 
@@ -232,8 +295,7 @@ class SummaryCompactor:
                 )
             except Exception as exc:
                 raise CompactionFailureError(
-                    "Harness summary compaction could not rebuild continuation "
-                    "state.",
+                    "Harness summary compaction could not rebuild continuation state.",
                     usage=accumulated_usage,
                 ) from exc
             if estimated_state_tokens >= max_context_length:

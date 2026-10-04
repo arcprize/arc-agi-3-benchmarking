@@ -195,9 +195,15 @@ def _usage(value: dict[str, Any] | None) -> NormalizedUsage:
 
 def _invalid(message: str, response: dict[str, Any]) -> InvalidProviderResponseError:
     diagnostic = {key: response[key] for key in ("id", "usage") if key in response}
+    diagnostic["validation_error"] = message
     diagnostic["choices"] = [
         {
             "finish_reason": choice.get("finish_reason"),
+            "tool_call_count": (
+                len((choice.get("message") or {}).get("tool_calls") or [])
+                if isinstance((choice.get("message") or {}).get("tool_calls", []), list)
+                else None
+            ),
             "message": {
                 key: value
                 for key, value in (choice.get("message") or {}).items()
