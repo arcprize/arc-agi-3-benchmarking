@@ -108,7 +108,6 @@ class AgentSnapshot(_Strict):
     model_config_id: str
     model_config_sha256: str
     pricing: dict[str, float] = Field(default_factory=dict)
-    level_action_budgets: list[int]
     step: int = Field(ge=0)
     last_frame: FrameFingerprint
     agent: AgentFields
@@ -132,8 +131,18 @@ def fingerprints_match(live: FrameFingerprint, recorded: FrameFingerprint) -> bo
 
 
 def config_sha256(entry: dict[str, Any]) -> str:
-    """Hash a raw model config entry. Pricing is excluded by design."""
+    """Hash a raw model config entry.
+
+    Pricing and the action-budget multiplier are excluded by design, so either
+    may change between a snapshot and its rehydration.
+    """
     hashed = {key: value for key, value in entry.items() if key != "pricing"}
+    if "agent" in hashed:
+        hashed["agent"] = {
+            key: value
+            for key, value in hashed["agent"].items()
+            if key != "MAX_ACTIONS_BASELINE_MULTIPLIER"
+        }
     canonical = json.dumps(hashed, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -382,7 +391,7 @@ def _validate_snapshot(
     if config_sha256(entry) != snapshot.model_config_sha256:
         raise RehydrationError(
             f"Model config {config_id!r} changed since the snapshot was taken "
-            "(only pricing may differ)."
+            "(only pricing and MAX_ACTIONS_BASELINE_MULTIPLIER may differ)."
         )
     if entry.get("runtime", {}).get("state") == SERVER_RUNTIME_STATE:
         raise RehydrationError(

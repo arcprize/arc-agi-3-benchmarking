@@ -640,7 +640,6 @@ class BenchmarkingAgent(Agent):
             model_config_id=self.MODEL_CONFIG_ID,
             model_config_sha256=self._model_config_sha256,
             pricing=self._pricing,
-            level_action_budgets=self._level_action_budgets,
             step=self.step_counter,
             last_frame=self._frame_fingerprint(self.frames[-1]),
             agent=AgentFields(
@@ -756,12 +755,6 @@ class BenchmarkingAgent(Agent):
         step files and add no usage; totals come from the snapshot.
         """
         snapshot = prepared.snapshot
-        if self._level_action_budgets != snapshot.level_action_budgets:
-            raise RehydrationError(
-                f"Level action budgets changed: snapshot="
-                f"{snapshot.level_action_budgets}, current="
-                f"{self._level_action_budgets}."
-            )
         if any(step.frame is None for step in prepared.steps):
             logger.warning(
                 "Recording lacks frame data for some steps; replay verification "

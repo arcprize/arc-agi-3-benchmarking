@@ -77,7 +77,6 @@ def _snapshot(step: int = 3, runtime_state: RuntimeState | None = None) -> Agent
         model_config_id="cfg",
         model_config_sha256=config_sha256({"request": {"model": "m"}}),
         pricing={"input": 1.0, "output": 2.0},
-        level_action_budgets=[10, 20],
         step=step,
         last_frame=frame_fingerprint(
             state=GameState.NOT_FINISHED,
@@ -137,6 +136,10 @@ class TestConfigHash:
         assert config_sha256({k: v for k, v in self.BASE.items() if k != "pricing"}) == (
             config_sha256(self.BASE)
         )
+
+    def test_budget_multiplier_change_keeps_hash(self):
+        agent = {**self.BASE["agent"], "MAX_ACTIONS_BASELINE_MULTIPLIER": 9.0}
+        assert config_sha256({**self.BASE, "agent": agent}) == config_sha256(self.BASE)
 
     @pytest.mark.parametrize("section", ["agent", "runtime", "client", "request"])
     def test_any_other_section_change_changes_hash(self, section):
@@ -489,7 +492,6 @@ def _valid_snapshot(step: int = 3, **updates) -> AgentSnapshot:
         update={
             "model_config_id": CONFIG_ID,
             "model_config_sha256": config_sha256(get_model_config(CONFIG_ID)),
-            "level_action_budgets": [],
             "last_frame": frame_fingerprint(
                 state="NOT_FINISHED",
                 levels_completed=0,
@@ -597,6 +599,16 @@ class TestPrepareRehydration:
         monkeypatch.setattr(
             "benchmarking.rehydration.get_model_config",
             lambda _id: {**entry, "pricing": {"input": 99.0, "output": 99.0}},
+        )
+        events = _recording(1, 2, 3)
+        assert self._prepare(tmp_path, _valid_snapshot(), events).snapshot.step == 3
+
+    def test_allows_budget_multiplier_change(self, tmp_path, monkeypatch):
+        entry = get_model_config(CONFIG_ID)
+        agent = {**entry["agent"], "MAX_ACTIONS_BASELINE_MULTIPLIER": 9.0}
+        monkeypatch.setattr(
+            "benchmarking.rehydration.get_model_config",
+            lambda _id: {**entry, "agent": agent},
         )
         events = _recording(1, 2, 3)
         assert self._prepare(tmp_path, _valid_snapshot(), events).snapshot.step == 3

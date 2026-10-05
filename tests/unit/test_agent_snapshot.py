@@ -86,7 +86,7 @@ FROM_CONFIG = {
     "_request_kwargs",
     "_pricing",
     "_model_config_sha256",
-    "_level_action_budgets",  # also stored in the snapshot and validated
+    "_level_action_budgets",  # recomputed on resume, so budgets may change
     "analysis_mode",
 }
 # Per-session identity or per-turn scratch that does not carry across steps.
@@ -350,7 +350,6 @@ class TestSnapshotsDuringRun:
             get_model_config(MANUAL_CONFIG)
         )
         assert snapshot.pricing == agent._pricing
-        assert snapshot.level_action_budgets == agent._level_action_budgets
         assert snapshot.last_frame == frame_fingerprint(
             state=latest_frame.state,
             levels_completed=latest_frame.levels_completed,
@@ -730,14 +729,16 @@ class TestRehydrationFailures:
         assert len(resumed.arc_env.calls) == 2
         self._assert_failed_before_model(resumed)
 
-    def test_changed_level_budgets_abort_before_any_step(self, monkeypatch, tmp_path):
+    def test_changed_level_budgets_use_current_budgets(self, monkeypatch, tmp_path):
         original = _run_manual(monkeypatch, tmp_path, actions=5)
-        prepared = _prepare(original, tmp_path, step=3, level_action_budgets=[99])
-        resumed = _rehydrated_manual(monkeypatch, tmp_path, prepared, total_actions=5)
-        with pytest.raises(RehydrationError, match="Level action budgets changed"):
-            resumed.main()
-        assert resumed.arc_env.calls == []
-        self._assert_failed_before_model(resumed)
+        prepared = _prepare(original, tmp_path, step=3)
+        resumed = _rehydrated_manual(
+            monkeypatch, tmp_path, prepared, total_actions=5, baseline_actions=[2]
+        )
+        resumed.main()
+        assert original._level_action_budgets == []
+        assert resumed._level_action_budgets == [10]
+        assert resumed.step_counter == 5
 
     def test_previous_action_mismatch_aborts(self, monkeypatch, tmp_path):
         original = _run_manual(monkeypatch, tmp_path, actions=5)
