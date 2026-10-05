@@ -405,44 +405,28 @@ def _validate_snapshot(
         )
 
 
-def _replay_key(steps: list[RecordedStep]) -> list[tuple[Any, ...]]:
-    return [
-        (step.action, step.data, step.reasoning, step.fingerprint()) for step in steps
-    ]
-
-
 def _align_recording(
     events: list[RecordedStep], snapshot: AgentSnapshot
 ) -> list[RecordedStep]:
     """Select the recorded events for agent steps ``1..snapshot.step``.
 
-    The toolkit server may or may not record the implicit reset from
-    ``Arcade.make()`` before the agent's first action (plan F3), so both
-    alignments are tried. The step-N frame must match the snapshot. If both
-    match, they must replay identically.
+    Event 0 is always the implicit RESET sent by ``Arcade.make()``, so agent
+    step k is event k. The step-N frame must match the snapshot.
     """
-    candidates: list[list[RecordedStep]] = []
-    for offset in (0, 1):
-        if offset and events[0].action != GameAction.RESET.name:
-            continue
-        steps = events[offset : offset + snapshot.step]
-        if len(steps) < snapshot.step:
-            continue
-        if fingerprints_match(snapshot.last_frame, steps[-1].fingerprint()):
-            candidates.append(steps)
-    if not candidates:
+    if events[0].action != GameAction.RESET.name:
+        raise RehydrationError(
+            f"Recording starts with {events[0].action}, not the implicit RESET "
+            "from Arcade.make()."
+        )
+    steps = events[1 : 1 + snapshot.step]
+    if len(steps) < snapshot.step or not fingerprints_match(
+        snapshot.last_frame, steps[-1].fingerprint()
+    ):
         raise RehydrationError(
             f"Recording ({len(events)} action events) has no step "
             f"{snapshot.step} matching the snapshot's last frame."
         )
-    if len(candidates) == 2 and _replay_key(candidates[0]) != _replay_key(
-        candidates[1]
-    ):
-        raise RehydrationError(
-            "Recording alignment is ambiguous: steps match the snapshot with and "
-            "without a leading implicit reset."
-        )
-    return candidates[0]
+    return steps
 
 
 def prepare_rehydration(

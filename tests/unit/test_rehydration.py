@@ -478,6 +478,11 @@ def _step_event(value: int, action_id: str = "ACTION1", **kwargs) -> dict:
     return _event(action_id, frame=[[[value]]], **kwargs)
 
 
+def _recording(*values: int) -> list[dict]:
+    """The implicit make() RESET followed by one agent step per frame value."""
+    return [_step_event(0, "RESET")] + [_step_event(value) for value in values]
+
+
 def _valid_snapshot(step: int = 3, **updates) -> AgentSnapshot:
     snapshot = _snapshot(step=step)
     return snapshot.model_copy(
@@ -519,42 +524,34 @@ class TestPrepareRehydration:
             game_ids=[GAME_ID] if game_ids is None else game_ids,
         )
 
-    def test_aligns_without_leading_reset_and_truncates_extra_steps(self, tmp_path):
-        events = [_step_event(value) for value in range(1, 6)]
-        prepared = self._prepare(tmp_path, _valid_snapshot(step=3), events)
-        assert [step.index for step in prepared.steps] == [0, 1, 2]
+    def test_skips_implicit_reset_and_truncates_extra_steps(self, tmp_path):
+        prepared = self._prepare(tmp_path, _valid_snapshot(step=3), _recording(1, 2, 3, 4, 5))
+        assert [step.index for step in prepared.steps] == [1, 2, 3]
         assert prepared.steps[-1].frame == [[[3]]]
 
-    def test_aligns_after_leading_implicit_reset(self, tmp_path):
-        events = [_step_event(0, "RESET")] + [_step_event(v) for v in range(1, 6)]
-        prepared = self._prepare(tmp_path, _valid_snapshot(step=3), events)
-        assert [step.index for step in prepared.steps] == [1, 2, 3]
+    def test_no_op_step_aligns_after_implicit_reset(self, tmp_path):
+        # Step 2 leaves the frame unchanged, so events 1 and 2 have the same frame.
+        events = _recording(2) + [_step_event(2, "ACTION2")]
+        prepared = self._prepare(tmp_path, _valid_snapshot(step=2), events)
+        assert [step.action for step in prepared.steps] == ["ACTION1", "ACTION2"]
 
-    def test_identical_candidate_alignments_are_accepted(self, tmp_path):
-        # make() reset and the agent's own RESET look the same; either works.
-        events = [_step_event(1, "RESET"), _step_event(1, "RESET")]
-        prepared = self._prepare(tmp_path, _valid_snapshot(step=1), events)
-        assert [step.index for step in prepared.steps] == [0]
-
-    def test_differing_candidate_alignments_are_rejected(self, tmp_path):
-        events = [_step_event(0, "RESET"), _step_event(2), _step_event(2, "ACTION2")]
-        with pytest.raises(RehydrationError, match="ambiguous"):
-            self._prepare(tmp_path, _valid_snapshot(step=2), events)
+    def test_rejects_recording_without_leading_reset(self, tmp_path):
+        events = [_step_event(value) for value in (1, 2, 3)]
+        with pytest.raises(RehydrationError, match="not the implicit RESET"):
+            self._prepare(tmp_path, _valid_snapshot(step=3), events)
 
     def test_recording_without_frames_aligns_by_state(self, tmp_path):
-        events = [_event("ACTION1", frame=None) for _ in range(4)]
+        events = [_event("RESET", frame=None)] + [_event(frame=None) for _ in range(3)]
         prepared = self._prepare(tmp_path, _valid_snapshot(step=3), events)
         assert len(prepared.steps) == 3
 
     def test_rejects_recording_without_matching_step(self, tmp_path):
-        events = [_step_event(value) for value in (1, 2, 9)]
         with pytest.raises(RehydrationError, match="no step 3 matching"):
-            self._prepare(tmp_path, _valid_snapshot(step=3), events)
+            self._prepare(tmp_path, _valid_snapshot(step=3), _recording(1, 2, 9))
 
     def test_rejects_recording_shorter_than_snapshot(self, tmp_path):
-        events = [_step_event(value) for value in (1, 2)]
         with pytest.raises(RehydrationError, match="no step 3 matching"):
-            self._prepare(tmp_path, _valid_snapshot(step=3), events)
+            self._prepare(tmp_path, _valid_snapshot(step=3), _recording(1, 2))
 
     def test_rejects_empty_recording(self, tmp_path):
         with pytest.raises(RehydrationError, match="no action events"):
@@ -601,7 +598,7 @@ class TestPrepareRehydration:
             "benchmarking.rehydration.get_model_config",
             lambda _id: {**entry, "pricing": {"input": 99.0, "output": 99.0}},
         )
-        events = [_step_event(value) for value in (1, 2, 3)]
+        events = _recording(1, 2, 3)
         assert self._prepare(tmp_path, _valid_snapshot(), events).snapshot.step == 3
 
     def test_rejects_behavioral_config_change(self, tmp_path, monkeypatch):

@@ -139,6 +139,33 @@ def _raw_frame(
     return raw
 
 
+def _recording_event(
+    raw: FrameDataRaw,
+    action: GameAction,
+    data: dict,
+    reasoning: dict,
+    full_reset: bool = False,
+) -> dict:
+    return {
+        "timestamp": "2026-10-01T00:00:00+00:00",
+        "data": {
+            "game_id": raw.game_id,
+            "state": raw.state.name,
+            "levels_completed": raw.levels_completed,
+            "win_levels": raw.win_levels,
+            "action_input": {
+                "id": action.name,
+                "data": dict(data),
+                "reasoning": json.dumps(reasoning) if reasoning else None,
+            },
+            "guid": raw.guid,
+            "full_reset": full_reset,
+            "available_actions": raw.available_actions,
+            "frame": [layer.tolist() for layer in raw.frame],
+        },
+    }
+
+
 class _ScriptedEnv:
     """Deterministic fake game session.
 
@@ -167,6 +194,9 @@ class _ScriptedEnv:
         self.game_over_at = game_over_at
         self.level_up_at = level_up_at
         self.observation_space = _raw_frame(initial_state, 0, GameAction.RESET, guid)
+        self._make_event = _recording_event(
+            self.observation_space, GameAction.RESET, {}, {}, full_reset=True
+        )
         self.history: list[int] = []
         self.calls: list[tuple[str, dict, dict]] = []
         self.events: list[dict] = []
@@ -190,31 +220,14 @@ class _ScriptedEnv:
             self.level_up_at is not None and len(self.history) >= self.level_up_at
         )
         raw = _raw_frame(state, value, action, self.guid, levels)
-        self.events.append(
-            {
-                "timestamp": "2026-10-01T00:00:00+00:00",
-                "data": {
-                    "game_id": raw.game_id,
-                    "state": raw.state.name,
-                    "levels_completed": raw.levels_completed,
-                    "win_levels": raw.win_levels,
-                    "action_input": {
-                        "id": action.name,
-                        "data": dict(data),
-                        "reasoning": json.dumps(reasoning) if reasoning else None,
-                    },
-                    "guid": raw.guid,
-                    "full_reset": raw.full_reset,
-                    "available_actions": raw.available_actions,
-                    "frame": [layer.tolist() for layer in raw.frame],
-                },
-            }
-        )
+        self.events.append(_recording_event(raw, action, data, reasoning))
         self.observation_space = raw
         return raw
 
     def write_recording(self, path: Path) -> Path:
-        path.write_text("".join(json.dumps(event) + "\n" for event in self.events))
+        """Write the toolkit recording: the implicit make() RESET, then each step."""
+        events = [self._make_event, *self.events]
+        path.write_text("".join(json.dumps(event) + "\n" for event in events))
         return path
 
 
@@ -513,7 +526,7 @@ def _prepare(
     if snapshot_updates:
         snapshot = snapshot.model_copy(update=snapshot_updates)
     return PreparedRehydration(
-        snapshot=snapshot, steps=parse_toolkit_recording(recording)[:step]
+        snapshot=snapshot, steps=parse_toolkit_recording(recording)[1 : step + 1]
     )
 
 
