@@ -99,7 +99,7 @@ class AgentSnapshot(_Strict):
     lineage: list[LineageEntry] = Field(default_factory=list)
     model_config_id: str
     model_config_sha256: str
-    pricing: dict[str, float] = Field(default_factory=dict)
+    pricing: dict[str, Any] = Field(default_factory=dict)
     step: int = Field(ge=1)
     last_frame: FrameFingerprint
     agent: AgentFields

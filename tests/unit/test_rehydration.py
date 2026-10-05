@@ -78,7 +78,7 @@ def _snapshot(step: int = 3, runtime_state: RuntimeState | None = None) -> Agent
         ),
         model_config_id="cfg",
         model_config_sha256=config_sha256({"request": {"model": "m"}}),
-        pricing={"input": 1.0, "output": 2.0},
+        pricing={"input": 1.0, "output": 2.0, "date": "2026-09-24"},
         step=step,
         last_frame=_fingerprint(
             state=GameState.NOT_FINISHED,
