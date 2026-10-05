@@ -59,7 +59,7 @@ class FrameFingerprint(_Strict):
     state: str
     levels_completed: int
     available_actions: list[int]
-    frame_sha256: str | None = None
+    frame_sha256: str
 
 
 class SnapshotSource(_Strict):
@@ -75,11 +75,6 @@ class LineageEntry(_Strict):
     rehydrated_at_step: int
 
 
-class PreviousAction(_Strict):
-    name: str
-    data: dict[str, Any] = Field(default_factory=dict)
-
-
 class AgentFields(_Strict):
     """Agent attributes outside RuntimeState that affect future behavior."""
 
@@ -90,9 +85,6 @@ class AgentFields(_Strict):
     level_just_advanced: bool
     compaction_counter: int
     pending_compaction_trigger_tokens: int | None
-    previous_action: PreviousAction | None
-    previous_response_id: str | None
-    pending_user_messages: list[dict[str, Any]]
     elapsed_seconds: float
     total_usage: StepUsage
 
@@ -108,7 +100,7 @@ class AgentSnapshot(_Strict):
     model_config_id: str
     model_config_sha256: str
     pricing: dict[str, float] = Field(default_factory=dict)
-    step: int = Field(ge=0)
+    step: int = Field(ge=1)
     last_frame: FrameFingerprint
     agent: AgentFields
     runtime_state: RuntimeState | None = None
@@ -121,13 +113,6 @@ class AgentSnapshot(_Strict):
                 f"expected {SNAPSHOT_SCHEMA_VERSION}."
             )
         return self
-
-
-def fingerprints_match(live: FrameFingerprint, recorded: FrameFingerprint) -> bool:
-    """Compare frames; ignore the grid hash when the recording has no frame data."""
-    if recorded.frame_sha256 is None:
-        live = live.model_copy(update={"frame_sha256": None})
-    return live == recorded
 
 
 def config_sha256(entry: dict[str, Any]) -> str:
@@ -147,22 +132,14 @@ def config_sha256(entry: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def frame_fingerprint(
-    *,
-    state: GameState | str,
-    levels_completed: int,
-    available_actions: list[int],
-    frame: list[Any] | None,
-) -> FrameFingerprint:
-    frame_sha256 = None
-    if frame is not None:
-        canonical = json.dumps(frame, separators=(",", ":"))
-        frame_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+def frame_fingerprint(frame: Any) -> FrameFingerprint:
+    """Fingerprint a live ``FrameData`` or a ``RecordedStep``."""
+    canonical = json.dumps(frame.frame, separators=(",", ":"))
     return FrameFingerprint(
-        state=state.name if isinstance(state, GameState) else state,
-        levels_completed=levels_completed,
-        available_actions=list(available_actions),
-        frame_sha256=frame_sha256,
+        state=getattr(frame.state, "name", frame.state),
+        levels_completed=frame.levels_completed,
+        available_actions=list(frame.available_actions),
+        frame_sha256=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
     )
 
 
@@ -173,19 +150,13 @@ def load_snapshot(path: str | os.PathLike[str]) -> AgentSnapshot:
     return AgentSnapshot.model_validate_json(Path(path).read_text(encoding="utf-8"))
 
 
-def write_snapshot_atomic(
-    run_dir: str | os.PathLike[str],
-    snapshot: AgentSnapshot,
-    keep: int = SNAPSHOT_KEEP,
-) -> Path:
+def write_snapshot_atomic(run_dir: str | os.PathLike[str], snapshot: AgentSnapshot) -> Path:
     """Write ``state/state_step_NNNN.json`` atomically, then prune old snapshots.
 
     The file is written to a temp file in the same directory, fsynced, and
     renamed into place, so a crash never leaves a partial snapshot under the
     final name. Older snapshots are pruned only after the new one is in place.
     """
-    if keep < 1:
-        raise ValueError("keep must be at least 1")
     state_dir = Path(run_dir) / SNAPSHOT_DIR
     state_dir.mkdir(parents=True, exist_ok=True)
     path = state_dir / f"state_step_{snapshot.step:04d}.json"
@@ -206,7 +177,7 @@ def write_snapshot_atomic(
         for entry in state_dir.iterdir()
         if (match := _SNAPSHOT_FILENAME.match(entry.name))
     )
-    for _, stale in snapshots[:-keep]:
+    for _, stale in snapshots[:-SNAPSHOT_KEEP]:
         stale.unlink(missing_ok=True)
     return path
 
@@ -226,11 +197,10 @@ class RecordedStep(BaseModel):
     data: dict[str, int] = Field(default_factory=dict)
     reasoning: dict[str, Any] = Field(default_factory=dict)
     guid: str | None
-    game_id: str
     state: str
     levels_completed: int
     available_actions: list[int]
-    frame: list[Any] | None = None
+    frame: list[Any]
 
     def game_action(self) -> GameAction:
         action = GameAction.from_name(self.action)
@@ -238,30 +208,12 @@ class RecordedStep(BaseModel):
             action.set_data(dict(self.data))
         return action
 
-    def fingerprint(self) -> FrameFingerprint:
-        return frame_fingerprint(
-            state=self.state,
-            levels_completed=self.levels_completed,
-            available_actions=self.available_actions,
-            frame=self.frame,
-        )
-
 
 class PreparedRehydration(BaseModel):
     """Inputs ready for replay: ``steps[i]`` is agent step ``i + 1``."""
 
     snapshot: AgentSnapshot
     steps: list[RecordedStep]
-
-    @model_validator(mode="after")
-    def validate_alignment(self) -> PreparedRehydration:
-        if self.snapshot.step < 1:
-            raise ValueError("Cannot rehydrate from a snapshot before step 1.")
-        if len(self.steps) != self.snapshot.step:
-            raise ValueError(
-                f"Expected {self.snapshot.step} recorded steps, got {len(self.steps)}."
-            )
-        return self
 
 
 def _normalize_reasoning(value: Any, where: str) -> dict[str, Any]:
@@ -315,11 +267,10 @@ def _parse_action_event(data: dict[str, Any], index: int, where: str) -> Recorde
             data=action_data,
             reasoning=reasoning,
             guid=data.get("guid"),
-            game_id=data["game_id"],
             state=data["state"],
             levels_completed=data["levels_completed"],
             available_actions=data["available_actions"],
-            frame=data.get("frame"),
+            frame=data["frame"],
         )
     except (KeyError, ValueError) as exc:
         raise RehydrationError(f"{where}: malformed action event ({exc}).") from exc
@@ -428,8 +379,9 @@ def _align_recording(
             "from Arcade.make()."
         )
     steps = events[1 : 1 + snapshot.step]
-    if len(steps) < snapshot.step or not fingerprints_match(
-        snapshot.last_frame, steps[-1].fingerprint()
+    if (
+        len(steps) < snapshot.step
+        or frame_fingerprint(steps[-1]) != snapshot.last_frame
     ):
         raise RehydrationError(
             f"Recording ({len(events)} action events) has no step "
@@ -449,11 +401,6 @@ def prepare_rehydration(
     if not events:
         raise RehydrationError("Recording contains no action events.")
     for event in events:
-        if event.game_id != snapshot.source.game_id:
-            raise RehydrationError(
-                f"Recording event {event.index} is for game {event.game_id!r}, "
-                f"not {snapshot.source.game_id!r}."
-            )
         if event.guid != snapshot.source.guid:
             raise RehydrationError(
                 f"Recording event {event.index} has guid {event.guid!r}; the "

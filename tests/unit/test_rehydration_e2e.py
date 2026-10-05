@@ -464,7 +464,7 @@ def test_scenarios_exercise_their_boundary_conditions(monkeypatch, tmp_path):
         responses=_script(deepseek, "buffered_reset_at_resume"),
     )
     snapshot = _latest_snapshot(crashed)
-    assert snapshot.agent.previous_action.name == "RESET"
+    assert crashed._previous_action.name == "RESET"
     assert len(snapshot.runtime_state.payload["pending_messages"]) == 1
 
 

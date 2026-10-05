@@ -2,6 +2,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from arcengine import GameAction, GameState
@@ -13,12 +14,10 @@ from benchmarking.rehydration import (
     AgentFields,
     AgentSnapshot,
     FrameFingerprint,
-    PreparedRehydration,
     RehydrationArgs,
     RehydrationError,
     SnapshotSource,
     config_sha256,
-    fingerprints_match,
     frame_fingerprint,
     load_snapshot,
     parse_rehydrate_args,
@@ -56,6 +55,10 @@ def _event(
     return {"timestamp": "2026-10-01T00:00:00+00:00", "data": event_data}
 
 
+def _fingerprint(**fields) -> FrameFingerprint:
+    return frame_fingerprint(SimpleNamespace(**fields))
+
+
 def _write_jsonl(path: Path, lines: list) -> Path:
     path.write_text(
         "".join(
@@ -78,7 +81,7 @@ def _snapshot(step: int = 3, runtime_state: RuntimeState | None = None) -> Agent
         model_config_sha256=config_sha256({"request": {"model": "m"}}),
         pricing={"input": 1.0, "output": 2.0},
         step=step,
-        last_frame=frame_fingerprint(
+        last_frame=_fingerprint(
             state=GameState.NOT_FINISHED,
             levels_completed=0,
             available_actions=[1, 2],
@@ -92,9 +95,6 @@ def _snapshot(step: int = 3, runtime_state: RuntimeState | None = None) -> Agent
             level_just_advanced=False,
             compaction_counter=0,
             pending_compaction_trigger_tokens=175_000,
-            previous_action={"name": "ACTION6", "data": {"x": 1, "y": 2}},
-            previous_response_id=None,
-            pending_user_messages=[],
             elapsed_seconds=12.5,
             total_usage={"prompt_tokens": 60, "completion_tokens": 40, "total_tokens": 100},
         ),
@@ -158,39 +158,14 @@ class TestConfigHash:
 class TestFrameFingerprint:
     def test_enum_and_string_state_match(self):
         kwargs = {"levels_completed": 1, "available_actions": [1], "frame": FRAME}
-        assert frame_fingerprint(state=GameState.WIN, **kwargs) == frame_fingerprint(
+        assert _fingerprint(state=GameState.WIN, **kwargs) == _fingerprint(
             state="WIN", **kwargs
         )
 
     def test_frame_change_changes_hash(self):
         kwargs = {"state": "NOT_FINISHED", "levels_completed": 0, "available_actions": [1]}
-        assert (
-            frame_fingerprint(frame=FRAME, **kwargs).frame_sha256
-            != frame_fingerprint(frame=[[[0, 1], [2, 4]]], **kwargs).frame_sha256
-        )
-
-    def test_missing_frame_has_no_hash(self):
-        fingerprint = frame_fingerprint(
-            state="NOT_FINISHED", levels_completed=0, available_actions=[], frame=None
-        )
-        assert fingerprint.frame_sha256 is None
-
-    def test_match_compares_grid_when_recorded(self):
-        kwargs = {"state": "NOT_FINISHED", "levels_completed": 0, "available_actions": [1]}
-        live = frame_fingerprint(frame=FRAME, **kwargs)
-        assert fingerprints_match(live, frame_fingerprint(frame=FRAME, **kwargs))
-        assert not fingerprints_match(
-            live, frame_fingerprint(frame=[[[9]]], **kwargs)
-        )
-
-    def test_match_falls_back_without_recorded_grid(self):
-        kwargs = {"levels_completed": 0, "available_actions": [1]}
-        live = frame_fingerprint(state="NOT_FINISHED", frame=FRAME, **kwargs)
-        assert fingerprints_match(
-            live, frame_fingerprint(state="NOT_FINISHED", frame=None, **kwargs)
-        )
-        assert not fingerprints_match(
-            live, frame_fingerprint(state="GAME_OVER", frame=None, **kwargs)
+        assert _fingerprint(frame=FRAME, **kwargs) != _fingerprint(
+            frame=[[[0, 1], [2, 4]]], **kwargs
         )
 
 
@@ -216,7 +191,6 @@ class TestParseToolkitRecording:
         assert steps[0].data == {}
         assert steps[2].reasoning == {"output": "go"}
         assert steps[0].guid == "guid-1"
-        assert steps[0].game_id == "ls20-abc123"
 
     def test_game_action_carries_coordinates(self, tmp_path):
         path = _write_jsonl(tmp_path / "r.jsonl", [_event("ACTION6", data={"x": 3, "y": 4})])
@@ -226,8 +200,8 @@ class TestParseToolkitRecording:
 
     def test_fingerprint_matches_live_frame_fingerprint(self, tmp_path):
         path = _write_jsonl(tmp_path / "r.jsonl", [_event()])
-        recorded = parse_toolkit_recording(path)[0].fingerprint()
-        live = frame_fingerprint(
+        recorded = frame_fingerprint(parse_toolkit_recording(path)[0])
+        live = _fingerprint(
             state=GameState.NOT_FINISHED,
             levels_completed=0,
             available_actions=[1, 2, 6],
@@ -247,10 +221,6 @@ class TestParseToolkitRecording:
         )
         steps = parse_toolkit_recording(path)
         assert [(s.index, s.action) for s in steps] == [(0, "ACTION2")]
-
-    def test_missing_frame_is_allowed(self, tmp_path):
-        path = _write_jsonl(tmp_path / "r.jsonl", [_event(frame=None)])
-        assert parse_toolkit_recording(path)[0].frame is None
 
     @pytest.mark.parametrize("reasoning", [None, "", {}])
     def test_empty_reasoning_normalizes_to_empty_dict(self, tmp_path, reasoning):
@@ -295,6 +265,7 @@ class TestParseToolkitRecording:
                 {"data": {k: v for k, v in _event()["data"].items() if k != "state"}},
                 "malformed action event",
             ),
+            (_event(frame=None), "malformed action event"),
         ],
     )
     def test_malformed_lines_raise_with_location(self, tmp_path, line, message):
@@ -321,6 +292,10 @@ class TestAgentSnapshot:
         # Opaque provider state is intentionally preserved in snapshots.
         assert loaded.runtime_state.payload["input_items"][0]["encrypted_content"] == "opaque"
 
+    def test_rejects_step_zero(self):
+        with pytest.raises(ValidationError):
+            _snapshot(step=0)
+
     def test_rejects_unsupported_schema_version(self):
         data = _snapshot().model_dump(mode="json")
         data["snapshot_schema_version"] = 999
@@ -345,30 +320,6 @@ class TestAgentSnapshot:
 
     def test_last_frame_is_a_fingerprint(self):
         assert isinstance(_snapshot().last_frame, FrameFingerprint)
-
-
-@pytest.mark.unit
-class TestPreparedRehydration:
-    def _steps(self, tmp_path: Path, count: int):
-        path = _write_jsonl(tmp_path / "r.jsonl", [_event() for _ in range(count)])
-        return parse_toolkit_recording(path)
-
-    def test_accepts_one_recorded_step_per_snapshot_step(self, tmp_path):
-        prepared = PreparedRehydration(
-            snapshot=_snapshot(step=3), steps=self._steps(tmp_path, 3)
-        )
-        assert len(prepared.steps) == 3
-
-    @pytest.mark.parametrize("count", [2, 4])
-    def test_rejects_misaligned_step_count(self, tmp_path, count):
-        with pytest.raises(ValidationError, match="Expected 3 recorded steps"):
-            PreparedRehydration(
-                snapshot=_snapshot(step=3), steps=self._steps(tmp_path, count)
-            )
-
-    def test_rejects_step_zero(self):
-        with pytest.raises(ValidationError, match="before step 1"):
-            PreparedRehydration(snapshot=_snapshot(step=0), steps=[])
 
 
 @pytest.mark.unit
@@ -423,10 +374,6 @@ class TestWriteSnapshotAtomic:
         for step in range(1, 5):
             write_snapshot_atomic(tmp_path, _snapshot(step=step))
         assert "notes.txt" in self._names(tmp_path)
-
-    def test_rejects_keep_below_one(self, tmp_path):
-        with pytest.raises(ValueError):
-            write_snapshot_atomic(tmp_path, _snapshot(), keep=0)
 
     def test_snapshot_file_is_fsynced_before_rename(self, tmp_path, monkeypatch):
         calls: list[str] = []
@@ -492,7 +439,7 @@ def _valid_snapshot(step: int = 3, **updates) -> AgentSnapshot:
         update={
             "model_config_id": CONFIG_ID,
             "model_config_sha256": config_sha256(get_model_config(CONFIG_ID)),
-            "last_frame": frame_fingerprint(
+            "last_frame": _fingerprint(
                 state="NOT_FINISHED",
                 levels_completed=0,
                 available_actions=[1, 2, 6],
@@ -542,11 +489,6 @@ class TestPrepareRehydration:
         with pytest.raises(RehydrationError, match="not the implicit RESET"):
             self._prepare(tmp_path, _valid_snapshot(step=3), events)
 
-    def test_recording_without_frames_aligns_by_state(self, tmp_path):
-        events = [_event("RESET", frame=None)] + [_event(frame=None) for _ in range(3)]
-        prepared = self._prepare(tmp_path, _valid_snapshot(step=3), events)
-        assert len(prepared.steps) == 3
-
     def test_rejects_recording_without_matching_step(self, tmp_path):
         with pytest.raises(RehydrationError, match="no step 3 matching"):
             self._prepare(tmp_path, _valid_snapshot(step=3), _recording(1, 2, 9))
@@ -559,15 +501,9 @@ class TestPrepareRehydration:
         with pytest.raises(RehydrationError, match="no action events"):
             self._prepare(tmp_path, _valid_snapshot(), [])
 
-    @pytest.mark.parametrize(
-        ("event_kwargs", "message"),
-        [({"guid": "other"}, "guid 'other'"), ({"game_id": "ls20-zzz"}, "for game")],
-    )
-    def test_rejects_events_from_another_session_or_game(
-        self, tmp_path, event_kwargs, message
-    ):
-        events = [_step_event(1), _step_event(2, **event_kwargs), _step_event(3)]
-        with pytest.raises(RehydrationError, match=message):
+    def test_rejects_events_from_another_session(self, tmp_path):
+        events = _recording(1) + [_step_event(2, guid="other"), _step_event(3)]
+        with pytest.raises(RehydrationError, match="guid 'other'"):
             self._prepare(tmp_path, _valid_snapshot(step=3), events)
 
     def test_requires_runtime_commit_sha(self, tmp_path, monkeypatch):

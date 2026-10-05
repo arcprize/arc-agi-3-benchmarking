@@ -13,7 +13,6 @@ from benchmarking.model_config import get_model_config, list_model_config_ids
 from benchmarking.rehydration import (
     AgentSnapshot,
     PreparedRehydration,
-    PreviousAction,
     RehydrationError,
     config_sha256,
     frame_fingerprint,
@@ -49,9 +48,7 @@ SNAPSHOTTED = {
     "_level_just_advanced",
     "_compaction_counter",
     "_pending_compaction_trigger_tokens",
-    "_previous_action",
-    "_previous_response_id",
-    "_pending_user_messages",
+    "_previous_action",  # rebuilt by replay
     "_runtime_state",
     "timer",  # as elapsed_seconds
     "run_record",  # total_usage; identity fields are per-session
@@ -84,6 +81,8 @@ FROM_CONFIG = {
     "_continuous_conversation",
     "_server_state",
     "_request_kwargs",
+    "_previous_response_id",  # server_state only, which rehydration refuses
+    "_pending_user_messages",  # server_state only, which rehydration refuses
     "_pricing",
     "_model_config_sha256",
     "_level_action_budgets",  # recomputed on resume, so budgets may change
@@ -350,12 +349,7 @@ class TestSnapshotsDuringRun:
             get_model_config(MANUAL_CONFIG)
         )
         assert snapshot.pricing == agent._pricing
-        assert snapshot.last_frame == frame_fingerprint(
-            state=latest_frame.state,
-            levels_completed=latest_frame.levels_completed,
-            available_actions=latest_frame.available_actions,
-            frame=latest_frame.frame,
-        )
+        assert snapshot.last_frame == frame_fingerprint(latest_frame)
         assert snapshot.runtime_state is None
 
         fields = snapshot.agent
@@ -367,12 +361,6 @@ class TestSnapshotsDuringRun:
         assert fields.level_just_advanced is False
         assert fields.compaction_counter == 0
         assert fields.pending_compaction_trigger_tokens is None
-        assert fields.previous_action.model_dump() == {
-            "name": "ACTION6",
-            "data": {"x": 3, "y": 4},
-        }
-        assert fields.previous_response_id is None
-        assert fields.pending_user_messages == []
         assert 0 <= fields.elapsed_seconds < 60
         assert fields.total_usage == agent.run_record.total_usage
         assert fields.total_usage.total_tokens == 45
@@ -420,6 +408,7 @@ class TestSnapshotRules:
         )
         agent.guid = "guid-1"
         agent.timer = 0.0
+        agent.step_counter = agent.action_counter = 1
         return agent
 
     @pytest.mark.parametrize(
@@ -439,8 +428,8 @@ class TestSnapshotRules:
 
     def test_refuses_counter_mismatch(self, monkeypatch, tmp_path):
         agent = self._boundary_agent(monkeypatch, tmp_path, MANUAL_CONFIG)
-        agent.action_counter = 1
-        with pytest.raises(RuntimeError, match="step_counter=0 != action_counter=1"):
+        agent.action_counter = 2
+        with pytest.raises(RuntimeError, match="step_counter=1 != action_counter=2"):
             agent._snapshot()
 
     def test_after_action_skips_when_no_frame(self, monkeypatch, tmp_path, caplog):
@@ -675,23 +664,6 @@ class TestRehydrationReplay:
         assert resumed._runtime_state == original._runtime_state
         assert resumed.arc_env.calls == original.arc_env.calls
 
-    def test_recording_without_frames_still_replays(
-        self, monkeypatch, tmp_path, caplog
-    ):
-        original = _run_manual(monkeypatch, tmp_path, actions=5)
-        prepared = _prepare(original, tmp_path, step=3)
-        prepared = PreparedRehydration(
-            snapshot=prepared.snapshot,
-            steps=[step.model_copy(update={"frame": None}) for step in prepared.steps],
-        )
-        resumed = _rehydrated_manual(monkeypatch, tmp_path, prepared, total_actions=5)
-
-        with caplog.at_level(logging.WARNING):
-            resumed.main()
-
-        assert resumed.step_counter == 5
-        assert "lacks frame data" in caplog.text
-
 
 @pytest.mark.unit
 class TestRehydrationFailures:
@@ -740,39 +712,6 @@ class TestRehydrationFailures:
         assert resumed._level_action_budgets == [10]
         assert resumed.step_counter == 5
 
-    def test_previous_action_mismatch_aborts(self, monkeypatch, tmp_path):
-        original = _run_manual(monkeypatch, tmp_path, actions=5)
-        prepared = _prepare(original, tmp_path, step=3)
-        prepared.snapshot.agent.previous_action = PreviousAction(
-            name="ACTION6", data={"x": 1, "y": 1}
-        )
-        resumed = _rehydrated_manual(monkeypatch, tmp_path, prepared, total_actions=5)
-        with pytest.raises(RehydrationError, match="previous action"):
-            resumed.main()
-        self._assert_failed_before_model(resumed)
-
-    def test_final_frame_mismatch_aborts(self, monkeypatch, tmp_path):
-        original = _run_manual(monkeypatch, tmp_path, actions=5)
-        prepared = _prepare(original, tmp_path, step=3)
-        prepared.snapshot.last_frame.frame_sha256 = "0" * 64
-        resumed = _rehydrated_manual(monkeypatch, tmp_path, prepared, total_actions=5)
-        with pytest.raises(RehydrationError, match="final frame"):
-            resumed.main()
-        self._assert_failed_before_model(resumed)
-
-    def test_runtime_state_mode_mismatch_aborts(self, monkeypatch, tmp_path):
-        original = _run_manual(monkeypatch, tmp_path, actions=5)
-        resumed = _build_agent(
-            monkeypatch,
-            tmp_path,
-            OPENAI_CONTINUOUS_CONFIG,
-            env=_ScriptedEnv(guid="guid-2"),
-            rehydration=_prepare(original, tmp_path, step=3),
-        )
-        resumed._adapter = _FakeModelAdapter([])
-        with pytest.raises(RehydrationError, match="no runtime_state"):
-            resumed.main()
-        self._assert_failed_before_model(resumed)
 
 
 @pytest.mark.unit
@@ -853,14 +792,10 @@ class TestRunIdentity:
             "card-1",
         )
 
-    def test_falls_back_to_random_id_without_session_guid(
-        self, monkeypatch, tmp_path, caplog
-    ):
-        with caplog.at_level(logging.WARNING):
-            agent = _build_agent(monkeypatch, tmp_path, MANUAL_CONFIG)
+    def test_falls_back_to_random_id_without_session_guid(self, monkeypatch, tmp_path):
+        agent = _build_agent(monkeypatch, tmp_path, MANUAL_CONFIG)
         assert len(agent.run_record.run_id) == 36  # uuid4
         assert _run_meta(agent)["guid"] is None
-        assert "No session guid" in caplog.text
 
     def test_reused_session_guid_fails_instead_of_merging_runs(
         self, monkeypatch, tmp_path

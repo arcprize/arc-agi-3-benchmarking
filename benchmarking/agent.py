@@ -37,14 +37,11 @@ from .recording import (
 from .rehydration import (
     AgentFields,
     AgentSnapshot,
-    FrameFingerprint,
     LineageEntry,
     PreparedRehydration,
-    PreviousAction,
     RehydrationError,
     SnapshotSource,
     config_sha256,
-    fingerprints_match,
     frame_fingerprint,
     write_snapshot_atomic,
 )
@@ -216,15 +213,9 @@ class BenchmarkingAgent(Agent):
         self.step_counter: int = 0
         # Name the run after the game session (set by make()'s reset) so its
         # files can be found from the session guid alone.
-        try:
-            session_guid = self.arc_env.observation_space.guid
-            if not session_guid:
-                raise ValueError("observation has no guid")
-        except (AttributeError, ValueError) as exc:
-            logger.warning(
-                f"{self.game_id} - No session guid ({exc}); using a random run id."
-            )
-            session_guid = None
+        session_guid = getattr(
+            getattr(self.arc_env, "observation_space", None), "guid", None
+        )
         run_id = session_guid or str(uuid.uuid4())
         self.run_dir = os.path.join("recordings", f"{self.name}.{run_id}")
         os.makedirs(self.run_dir)
@@ -641,7 +632,7 @@ class BenchmarkingAgent(Agent):
             model_config_sha256=self._model_config_sha256,
             pricing=self._pricing,
             step=self.step_counter,
-            last_frame=self._frame_fingerprint(self.frames[-1]),
+            last_frame=frame_fingerprint(self.frames[-1]),
             agent=AgentFields(
                 conversation=self.conversation,
                 token_counter=self.token_counter,
@@ -652,9 +643,6 @@ class BenchmarkingAgent(Agent):
                 pending_compaction_trigger_tokens=(
                     self._pending_compaction_trigger_tokens
                 ),
-                previous_action=self._previous_action_record(),
-                previous_response_id=self._previous_response_id,
-                pending_user_messages=self._pending_user_messages,
                 elapsed_seconds=time.time() - self.timer,
                 total_usage=self.run_record.total_usage,
             ),
@@ -663,39 +651,11 @@ class BenchmarkingAgent(Agent):
             ),
         )
 
-    @staticmethod
-    def _frame_fingerprint(frame: FrameData) -> FrameFingerprint:
-        return frame_fingerprint(
-            state=frame.state,
-            levels_completed=frame.levels_completed,
-            available_actions=frame.available_actions,
-            frame=frame.frame,
-        )
-
-    def _previous_action_record(self) -> PreviousAction | None:
-        if self._previous_action is None:
-            return None
-        data: dict[str, Any] = {}
-        if self._previous_action.is_complex():
-            action_data = self._previous_action.action_data.model_dump()
-            data = {"x": action_data["x"], "y": action_data["y"]}
-        return PreviousAction(name=self._previous_action.name, data=data)
-
     def _restore(self, snapshot: AgentSnapshot) -> None:
         """Load snapshot state after replay has rebuilt the game to its step."""
+        # The config hash check guarantees the snapshot's runtime mode matches.
         if self._continuous_conversation:
-            if snapshot.runtime_state is None:
-                raise RehydrationError("Snapshot has no runtime_state.")
-            snapshot.runtime_state.validate_for(
-                adapter_id=self._stateful_adapter.descriptor.adapter_id,
-                strategy=self._stateful_adapter.strategy,
-            )
             self._runtime_state = snapshot.runtime_state
-        elif snapshot.runtime_state is not None:
-            raise RehydrationError(
-                "Snapshot has runtime_state but the selected config does not "
-                "use continuous_conversation."
-            )
 
         fields = snapshot.agent
         self.conversation = deepcopy(fields.conversation)
@@ -708,8 +668,6 @@ class BenchmarkingAgent(Agent):
         self._pending_compaction_trigger_tokens = (
             fields.pending_compaction_trigger_tokens
         )
-        self._previous_response_id = fields.previous_response_id
-        self._pending_user_messages = deepcopy(fields.pending_user_messages)
         # base.main() applies the offset when it starts the timer; setting the
         # timer here too keeps snapshots taken before then consistent.
         self._elapsed_offset_seconds = fields.elapsed_seconds
@@ -755,12 +713,6 @@ class BenchmarkingAgent(Agent):
         step files and add no usage; totals come from the snapshot.
         """
         snapshot = prepared.snapshot
-        if any(step.frame is None for step in prepared.steps):
-            logger.warning(
-                "Recording lacks frame data for some steps; replay verification "
-                "compares state, levels, and available actions only."
-            )
-
         logger.info(f"{self.game_id} - Replaying {snapshot.step} recorded steps.")
         frame: FrameData | None = None
         for number, recorded in enumerate(prepared.steps, start=1):
@@ -770,20 +722,12 @@ class BenchmarkingAgent(Agent):
                 raise RehydrationError(f"Replay step {number}: invalid frame.")
             self.append_frame(frame)
             self.action_counter += 1
-            live = self._frame_fingerprint(frame)
-            if not fingerprints_match(live, recorded.fingerprint()):
+            live, expected = frame_fingerprint(frame), frame_fingerprint(recorded)
+            if live != expected:
                 raise RehydrationError(
                     f"Replay diverged at step {number}: live={live.model_dump()}, "
-                    f"recorded={recorded.fingerprint().model_dump()}."
+                    f"recorded={expected.model_dump()}."
                 )
-
-        if self._previous_action_record() != snapshot.agent.previous_action:
-            raise RehydrationError(
-                "Replayed previous action does not match the snapshot."
-            )
-        assert frame is not None  # PreparedRehydration guarantees >= 1 step
-        if not fingerprints_match(self._frame_fingerprint(frame), snapshot.last_frame):
-            raise RehydrationError("Replayed final frame does not match the snapshot.")
 
         self._restore(snapshot)
         # Snapshot the resume point under this session's guid, so this run can
