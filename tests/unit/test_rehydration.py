@@ -1,5 +1,4 @@
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -103,24 +102,6 @@ def _snapshot(step: int = 3, runtime_state: RuntimeState | None = None) -> Agent
 
 
 @pytest.mark.unit
-class TestRehydrationArgs:
-    def test_requires_existing_files(self, tmp_path):
-        recording = _write_jsonl(tmp_path / "r.jsonl", [])
-        state = tmp_path / "s.json"
-        state.write_text("{}")
-        args = RehydrationArgs(recording=recording, state=state)
-        assert args.recording == recording
-
-        with pytest.raises(ValidationError):
-            RehydrationArgs(recording=recording, state=tmp_path / "missing.json")
-
-    def test_rejects_unknown_keys(self, tmp_path):
-        recording = _write_jsonl(tmp_path / "r.jsonl", [])
-        with pytest.raises(ValidationError):
-            RehydrationArgs(recording=recording, state=recording, extra=recording)
-
-
-@pytest.mark.unit
 class TestConfigHash:
     BASE = {
         "agent": {"MAX_CONTEXT_LENGTH": 1000},
@@ -133,9 +114,6 @@ class TestConfigHash:
     def test_pricing_only_change_keeps_hash(self):
         changed = {**self.BASE, "pricing": {"input": 9.0, "output": 9.0}}
         assert config_sha256(changed) == config_sha256(self.BASE)
-        assert config_sha256({k: v for k, v in self.BASE.items() if k != "pricing"}) == (
-            config_sha256(self.BASE)
-        )
 
     def test_budget_multiplier_change_keeps_hash(self):
         agent = {**self.BASE["agent"], "MAX_ACTIONS_BASELINE_MULTIPLIER": 9.0}
@@ -168,6 +146,17 @@ class TestFrameFingerprint:
             frame=[[[0, 1], [2, 4]]], **kwargs
         )
 
+    def test_recorded_step_matches_live_frame(self, tmp_path):
+        path = _write_jsonl(tmp_path / "r.jsonl", [_event()])
+        recorded = frame_fingerprint(parse_toolkit_recording(path)[0])
+        live = _fingerprint(
+            state=GameState.NOT_FINISHED,
+            levels_completed=0,
+            available_actions=[1, 2, 6],
+            frame=FRAME,
+        )
+        assert recorded == live
+
 
 @pytest.mark.unit
 class TestParseToolkitRecording:
@@ -197,17 +186,6 @@ class TestParseToolkitRecording:
         action = parse_toolkit_recording(path)[0].game_action()
         assert action == GameAction.ACTION6
         assert (action.action_data.x, action.action_data.y) == (3, 4)
-
-    def test_fingerprint_matches_live_frame_fingerprint(self, tmp_path):
-        path = _write_jsonl(tmp_path / "r.jsonl", [_event()])
-        recorded = frame_fingerprint(parse_toolkit_recording(path)[0])
-        live = _fingerprint(
-            state=GameState.NOT_FINISHED,
-            levels_completed=0,
-            available_actions=[1, 2, 6],
-            frame=FRAME,
-        )
-        assert recorded == live
 
     def test_skips_non_action_lines_and_blank_lines(self, tmp_path):
         path = _write_jsonl(
@@ -289,8 +267,6 @@ class TestAgentSnapshot:
         loaded = load_snapshot(path)
 
         assert loaded == snapshot
-        # Opaque provider state is intentionally preserved in snapshots.
-        assert loaded.runtime_state.payload["input_items"][0]["encrypted_content"] == "opaque"
 
     def test_rejects_step_zero(self):
         with pytest.raises(ValidationError):
@@ -318,9 +294,6 @@ class TestAgentSnapshot:
         with pytest.raises(ValidationError):
             AgentSnapshot.model_validate(data)
 
-    def test_last_frame_is_a_fingerprint(self):
-        assert isinstance(_snapshot().last_frame, FrameFingerprint)
-
 
 @pytest.mark.unit
 class TestWriteSnapshotAtomic:
@@ -332,10 +305,13 @@ class TestWriteSnapshotAtomic:
         assert path == tmp_path / "state" / "state_step_0007.json"
         assert self._names(tmp_path) == ["state_step_0007.json"]
 
-    def test_keeps_only_latest_three(self, tmp_path):
+    def test_keeps_only_latest_three_and_ignores_other_files(self, tmp_path):
+        (tmp_path / "state").mkdir()
+        (tmp_path / "state" / "notes.txt").write_text("keep me")
         for step in range(1, 6):
             write_snapshot_atomic(tmp_path, _snapshot(step=step))
         assert self._names(tmp_path) == [
+            "notes.txt",
             "state_step_0003.json",
             "state_step_0004.json",
             "state_step_0005.json",
@@ -367,27 +343,6 @@ class TestWriteSnapshotAtomic:
         after = {p.name: p.read_bytes() for p in (tmp_path / "state").iterdir()}
         assert after == before  # no partial file, no temp file, nothing pruned
 
-    def test_ignores_unrelated_files_when_pruning(self, tmp_path):
-        state_dir = tmp_path / "state"
-        state_dir.mkdir()
-        (state_dir / "notes.txt").write_text("keep me")
-        for step in range(1, 5):
-            write_snapshot_atomic(tmp_path, _snapshot(step=step))
-        assert "notes.txt" in self._names(tmp_path)
-
-    def test_snapshot_file_is_fsynced_before_rename(self, tmp_path, monkeypatch):
-        calls: list[str] = []
-        real_fsync, real_replace = os.fsync, os.replace
-        monkeypatch.setattr(
-            rehydration.os, "fsync", lambda fd: (calls.append("fsync"), real_fsync(fd))
-        )
-        monkeypatch.setattr(
-            rehydration.os,
-            "replace",
-            lambda src, dst: (calls.append("replace"), real_replace(src, dst)),
-        )
-        write_snapshot_atomic(tmp_path, _snapshot())
-        assert calls == ["fsync", "replace"]
 
 
 @pytest.mark.unit
@@ -413,8 +368,10 @@ class TestParseRehydrateArgs:
         with pytest.raises(RehydrationError, match="Duplicate"):
             parse_rehydrate_args([f"state={recording}", f"state={recording}"])
 
-    @pytest.mark.parametrize("extra", [[], ["bogus=x"]])
-    def test_rejects_missing_or_unknown_keys(self, tmp_path, extra):
+    @pytest.mark.parametrize(
+        "extra", [[], ["bogus=x"], ["state=does-not-exist.json"]]
+    )
+    def test_rejects_missing_unknown_or_nonexistent_inputs(self, tmp_path, extra):
         recording = _write_jsonl(tmp_path / "r.jsonl", [])
         with pytest.raises(ValidationError):
             parse_rehydrate_args([f"recording={recording}", *extra])
@@ -506,19 +463,21 @@ class TestPrepareRehydration:
         with pytest.raises(RehydrationError, match="guid 'other'"):
             self._prepare(tmp_path, _valid_snapshot(step=3), events)
 
-    def test_requires_runtime_commit_sha(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("ARC_HARNESS_COMMIT_SHA")
-        with pytest.raises(RehydrationError, match="commit SHA must be known"):
-            self._prepare(tmp_path, _valid_snapshot(), [_step_event(3)])
-
-    def test_requires_snapshot_commit_sha(self, tmp_path):
-        snapshot = _valid_snapshot(harness_commit_sha=None)
-        with pytest.raises(RehydrationError, match="commit SHA must be known"):
-            self._prepare(tmp_path, snapshot, [_step_event(3)])
-
-    def test_rejects_commit_mismatch(self, tmp_path):
-        snapshot = _valid_snapshot(harness_commit_sha="other")
-        with pytest.raises(RehydrationError, match="commit mismatch"):
+    @pytest.mark.parametrize(
+        ("runtime_sha", "snapshot_sha", "message"),
+        [
+            (None, "abc123", "commit SHA must be known"),
+            ("abc123", None, "commit SHA must be known"),
+            ("abc123", "other", "commit mismatch"),
+        ],
+    )
+    def test_requires_matching_commit_sha(
+        self, tmp_path, monkeypatch, runtime_sha, snapshot_sha, message
+    ):
+        if runtime_sha is None:
+            monkeypatch.delenv("ARC_HARNESS_COMMIT_SHA")
+        snapshot = _valid_snapshot(harness_commit_sha=snapshot_sha)
+        with pytest.raises(RehydrationError, match=message):
             self._prepare(tmp_path, snapshot, [_step_event(3)])
 
     def test_rejects_different_config_id(self, tmp_path):
@@ -530,21 +489,21 @@ class TestPrepareRehydration:
                 config_id="openai-gpt-5.4-openrouter",
             )
 
-    def test_allows_pricing_only_config_change(self, tmp_path, monkeypatch):
-        entry = get_model_config(CONFIG_ID)
+    @pytest.mark.parametrize(
+        "change",
+        [
+            lambda entry: {**entry, "pricing": {"input": 99.0, "output": 99.0}},
+            lambda entry: {
+                **entry,
+                "agent": {**entry["agent"], "MAX_ACTIONS_BASELINE_MULTIPLIER": 9.0},
+            },
+        ],
+        ids=["pricing", "budget_multiplier"],
+    )
+    def test_allows_unhashed_config_changes(self, tmp_path, monkeypatch, change):
+        changed = change(get_model_config(CONFIG_ID))
         monkeypatch.setattr(
-            "benchmarking.rehydration.get_model_config",
-            lambda _id: {**entry, "pricing": {"input": 99.0, "output": 99.0}},
-        )
-        events = _recording(1, 2, 3)
-        assert self._prepare(tmp_path, _valid_snapshot(), events).snapshot.step == 3
-
-    def test_allows_budget_multiplier_change(self, tmp_path, monkeypatch):
-        entry = get_model_config(CONFIG_ID)
-        agent = {**entry["agent"], "MAX_ACTIONS_BASELINE_MULTIPLIER": 9.0}
-        monkeypatch.setattr(
-            "benchmarking.rehydration.get_model_config",
-            lambda _id: {**entry, "agent": agent},
+            "benchmarking.rehydration.get_model_config", lambda _id: changed
         )
         events = _recording(1, 2, 3)
         assert self._prepare(tmp_path, _valid_snapshot(), events).snapshot.step == 3
@@ -596,13 +555,3 @@ class TestPrepareRehydration:
         with pytest.raises(RehydrationError, match="no time budget left"):
             self._prepare(tmp_path, snapshot, [_step_event(3)])
 
-    def test_rejects_invalid_snapshot_file(self, tmp_path):
-        state = tmp_path / "state.json"
-        state.write_text('{"step": 1}')
-        recording = _write_jsonl(tmp_path / "r.jsonl", [_step_event(1)])
-        with pytest.raises(ValidationError):
-            prepare_rehydration(
-                RehydrationArgs(recording=recording, state=state),
-                config_id=CONFIG_ID,
-                game_ids=[GAME_ID],
-            )

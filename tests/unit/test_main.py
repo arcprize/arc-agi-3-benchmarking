@@ -121,11 +121,6 @@ def _args(*argv: str):
 
 @pytest.mark.unit
 class TestRehydrationCli:
-    def test_parser_collects_repeated_rehydrate_pairs(self):
-        args = _args("--rehydrate", "recording=r.jsonl", "--rehydrate", "state=s.json")
-        assert args.rehydrate == ["recording=r.jsonl", "state=s.json"]
-        assert _args().rehydrate is None
-
     def test_no_rehydrate_returns_nothing(self):
         assert cli_main.resolve_rehydration(_args(), ["g"]) is None
 

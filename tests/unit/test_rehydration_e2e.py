@@ -70,8 +70,8 @@ def _manual_action(label: int, big: bool = False) -> ModelResponse:
     )
 
 
-def _openai_action(label: int, big: bool = False) -> ModelResponse:
-    output = [
+def _responses_output(label: int) -> list[dict]:
+    return [
         {
             "type": "reasoning",
             "id": f"rs_{label}",
@@ -85,6 +85,10 @@ def _openai_action(label: int, big: bool = False) -> ModelResponse:
             "content": [{"type": "output_text", "text": "ACTION1"}],
         },
     ]
+
+
+def _openai_action(label: int, big: bool = False) -> ModelResponse:
+    output = _responses_output(label)
     if big:
         # Server-side compaction: the compaction item replaces prior history.
         output.insert(
@@ -163,22 +167,7 @@ def _xai_action(label: int, big: bool = False) -> ModelResponse:
         output_text="ACTION1",
         reasoning_text=f"thought {label}",
         usage=_usage(big),
-        raw_response={
-            "output": [
-                {
-                    "type": "reasoning",
-                    "id": f"rs_{label}",
-                    "summary": [{"type": "summary_text", "text": f"thought {label}"}],
-                    "encrypted_content": f"opaque-{label}",
-                },
-                {
-                    "type": "message",
-                    "id": f"msg_{label}",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": "ACTION1"}],
-                },
-            ]
-        },
+        raw_response={"output": _responses_output(label)},
     )
 
 

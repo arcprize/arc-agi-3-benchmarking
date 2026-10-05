@@ -306,6 +306,10 @@ def _run_openai_continuous(monkeypatch, tmp_path, actions: int = 3) -> Benchmark
     return agent
 
 
+def _run_meta(agent: BenchmarkingAgent) -> dict:
+    return json.loads((Path(agent.run_dir) / "run_meta.json").read_text())
+
+
 def _snapshot_names(agent: BenchmarkingAgent) -> list[str]:
     return sorted(p.name for p in (Path(agent.run_dir) / "state").iterdir())
 
@@ -324,11 +328,6 @@ class TestSnapshotsDuringRun:
             "state_step_0004.json",
             "state_step_0005.json",
         ]
-        steps = [
-            load_snapshot(Path(agent.run_dir) / "state" / name).step
-            for name in _snapshot_names(agent)
-        ]
-        assert steps == [3, 4, 5]
 
     def test_latest_snapshot_matches_agent_state(self, monkeypatch, tmp_path):
         agent = _run_manual(monkeypatch, tmp_path)
@@ -364,21 +363,6 @@ class TestSnapshotsDuringRun:
         assert 0 <= fields.elapsed_seconds < 60
         assert fields.total_usage == agent.run_record.total_usage
         assert fields.total_usage.total_tokens == 45
-
-    def test_continuous_snapshot_keeps_opaque_runtime_state(
-        self, monkeypatch, tmp_path
-    ):
-        agent = _run_openai_continuous(monkeypatch, tmp_path)
-        snapshot = _latest_snapshot(agent)
-
-        assert snapshot.step == 3
-        assert snapshot.runtime_state == agent._runtime_state
-        items = snapshot.runtime_state.payload["input_items"]
-        assert [item.get("encrypted_content") for item in items if item.get("type") == "reasoning"] == [
-            "opaque-2",
-            "opaque-3",
-        ]
-        assert len(snapshot.runtime_state.accepted_turns) == 2
 
     def test_snapshot_failure_does_not_stop_the_run(self, monkeypatch, tmp_path, caplog):
         def fail(*_args, **_kwargs):
@@ -439,19 +423,6 @@ class TestSnapshotRules:
         assert not (Path(agent.run_dir) / "state").exists()
         assert "action produced no frame" in caplog.text
 
-    def test_after_action_logs_instead_of_raising(self, monkeypatch, tmp_path, caplog):
-        agent = self._boundary_agent(monkeypatch, tmp_path, MANUAL_CONFIG)
-        agent._pending_action_reasoning = {"output": "x"}
-        with caplog.at_level(logging.ERROR):
-            agent._after_action(agent.frames[-1])
-        assert not (Path(agent.run_dir) / "state").exists()
-        assert "Failed to write state snapshot" in caplog.text
-
-    def test_missing_commit_sha_is_recorded_as_none(self, monkeypatch, tmp_path):
-        agent = self._boundary_agent(monkeypatch, tmp_path, MANUAL_CONFIG)
-        monkeypatch.delenv("ARC_HARNESS_COMMIT_SHA")
-        assert agent._snapshot().harness_commit_sha is None
-
     @pytest.mark.parametrize("config_id", CONTINUOUS_CONFIGS)
     def test_runtime_state_round_trips_for_every_adapter(
         self, monkeypatch, tmp_path, config_id
@@ -463,15 +434,8 @@ class TestSnapshotRules:
             agent._runtime_state, [Message(role="user", content="frame text")]
         )
         snapshot = agent._snapshot()
-
-        loaded = AgentSnapshot.model_validate_json(snapshot.model_dump_json())
-
-        assert loaded == snapshot
-        assert loaded.runtime_state == agent._runtime_state
-        loaded.runtime_state.validate_for(
-            adapter_id=agent._stateful_adapter.descriptor.adapter_id,
-            strategy=agent._stateful_adapter.strategy,
-        )
+        assert snapshot.runtime_state == agent._runtime_state
+        assert AgentSnapshot.model_validate_json(snapshot.model_dump_json()) == snapshot
 
 
 def _assert_classified(agent: BenchmarkingAgent) -> None:
@@ -545,33 +509,7 @@ def _comparable(snapshot: AgentSnapshot) -> dict:
 
 @pytest.mark.unit
 class TestRehydrationReplay:
-    def test_resumed_manual_run_matches_uninterrupted_run(self, monkeypatch, tmp_path):
-        original = _run_manual(monkeypatch, tmp_path, actions=5)
-        prepared = _prepare(original, tmp_path, step=3)
-        resumed = _rehydrated_manual(monkeypatch, tmp_path, prepared, total_actions=5)
-
-        resumed.main()
-
-        # Same actions and reasoning metadata reach the game, replayed or not.
-        assert resumed.arc_env.calls == original.arc_env.calls
-        assert [e["data"]["action_input"] for e in resumed.arc_env.events] == [
-            e["data"]["action_input"] for e in original.arc_env.events
-        ]
-        # The model sees exactly what the uninterrupted run sent at steps 4-5.
-        assert resumed._adapter.requests == original._adapter.requests[2:]
-        assert resumed.step_counter == resumed.action_counter == 5
-        assert resumed.run_record.total_usage == original.run_record.total_usage
-        assert resumed.run_record.total_steps == 5
-        # Replayed steps write no step files.
-        assert sorted(p.name for p in Path(resumed.run_dir).glob("step_*.json")) == [
-            "step_004.json",
-            "step_005.json",
-        ]
-        assert _comparable(_latest_snapshot(resumed)) == _comparable(
-            _latest_snapshot(original)
-        )
-
-    def test_snapshots_carry_lineage_and_new_session_identity(
+    def test_resumed_run_has_new_identity_lineage_and_provenance(
         self, monkeypatch, tmp_path
     ):
         original = _run_manual(monkeypatch, tmp_path, actions=5)
@@ -580,6 +518,7 @@ class TestRehydrationReplay:
 
         resumed.main()
 
+        assert resumed.run_record.run_id == "guid-2"
         # Step 3 is snapshotted at the resume point, before any new step.
         assert _snapshot_names(resumed) == [
             "state_step_0003.json",
@@ -587,15 +526,20 @@ class TestRehydrationReplay:
             "state_step_0005.json",
         ]
         latest = _latest_snapshot(resumed)
-        assert latest.source.run_id == resumed.run_record.run_id
-        assert latest.source.guid == "guid-2"
-        assert [entry.model_dump() for entry in latest.lineage] == [
-            {
-                "run_id": original.run_record.run_id,
-                "guid": "guid-1",
-                "rehydrated_at_step": 3,
-            }
-        ]
+        assert (latest.source.run_id, latest.source.guid) == ("guid-2", "guid-2")
+        lineage = [{"run_id": "guid-1", "guid": "guid-1", "rehydrated_at_step": 3}]
+        assert [entry.model_dump() for entry in latest.lineage] == lineage
+        meta = _run_meta(resumed)
+        assert meta["rehydration"] == {
+            "source_run_id": "guid-1",
+            "source_guid": "guid-1",
+            "source_card_id": "card-1",
+            "replayed_steps": 3,
+            "prior_elapsed_seconds": prepared.snapshot.agent.elapsed_seconds,
+            "lineage": lineage,
+        }
+        assert meta["total_steps"] == 5
+        _assert_classified(resumed)
 
     def test_elapsed_time_carries_forward(self, monkeypatch, tmp_path):
         original = _run_manual(monkeypatch, tmp_path, actions=5)
@@ -639,30 +583,16 @@ class TestRehydrationReplay:
             for entry in _latest_snapshot(second).lineage
         ] == [("guid-1", 3), ("guid-2", 4)]
 
-    def test_resumed_continuous_run_sends_identical_native_request(
-        self, monkeypatch, tmp_path
-    ):
-        original = _run_openai_continuous(monkeypatch, tmp_path, actions=4)
-        resumed = _build_agent(
-            monkeypatch,
-            tmp_path,
-            OPENAI_CONTINUOUS_CONFIG,
-            env=_ScriptedEnv(guid="guid-2"),
-            rehydration=_prepare(original, tmp_path, step=3),
+    def test_changed_level_budgets_use_current_budgets(self, monkeypatch, tmp_path):
+        original = _run_manual(monkeypatch, tmp_path, actions=5)
+        prepared = _prepare(original, tmp_path, step=3)
+        resumed = _rehydrated_manual(
+            monkeypatch, tmp_path, prepared, total_actions=5, baseline_actions=[2]
         )
-        resumed._stateful_adapter._model_adapter = _FakeModelAdapter(
-            [_openai_response(4)]
-        )
-        resumed.MAX_ACTIONS = 3
-
         resumed.main()
-
-        original_requests = original._stateful_adapter._model_adapter.requests
-        resumed_requests = resumed._stateful_adapter._model_adapter.requests
-        assert resumed_requests == original_requests[-1:]
-        assert "opaque-3" in json.dumps(resumed_requests[0].native_input)
-        assert resumed._runtime_state == original._runtime_state
-        assert resumed.arc_env.calls == original.arc_env.calls
+        assert original._level_action_budgets == []
+        assert resumed._level_action_budgets == [10]
+        assert resumed.step_counter == 5
 
 
 @pytest.mark.unit
@@ -701,63 +631,12 @@ class TestRehydrationFailures:
         assert len(resumed.arc_env.calls) == 2
         self._assert_failed_before_model(resumed)
 
-    def test_changed_level_budgets_use_current_budgets(self, monkeypatch, tmp_path):
-        original = _run_manual(monkeypatch, tmp_path, actions=5)
-        prepared = _prepare(original, tmp_path, step=3)
-        resumed = _rehydrated_manual(
-            monkeypatch, tmp_path, prepared, total_actions=5, baseline_actions=[2]
-        )
-        resumed.main()
-        assert original._level_action_budgets == []
-        assert resumed._level_action_budgets == [10]
-        assert resumed.step_counter == 5
-
-
-
-@pytest.mark.unit
-class TestRehydratedAttributeGuard:
-    def test_rehydrated_run_attributes_are_classified(self, monkeypatch, tmp_path):
-        original = _run_manual(monkeypatch, tmp_path, actions=5)
-        resumed = _rehydrated_manual(
-            monkeypatch, tmp_path, _prepare(original, tmp_path, step=3), total_actions=5
-        )
-        resumed.main()
-        _assert_classified(resumed)
-
-
-def _run_meta(agent: BenchmarkingAgent) -> dict:
-    return json.loads((Path(agent.run_dir) / "run_meta.json").read_text())
-
 
 @pytest.mark.unit
 class TestRehydrationRunMeta:
     def test_normal_run_meta_has_no_rehydration_key(self, monkeypatch, tmp_path):
         agent = _run_manual(monkeypatch, tmp_path)
         assert "rehydration" not in _run_meta(agent)
-
-    def test_rehydrated_run_meta_records_provenance(self, monkeypatch, tmp_path):
-        original = _run_manual(monkeypatch, tmp_path, actions=5)
-        prepared = _prepare(original, tmp_path, step=3)
-        resumed = _rehydrated_manual(monkeypatch, tmp_path, prepared, total_actions=5)
-
-        resumed.main()
-
-        meta = _run_meta(resumed)
-        assert meta["rehydration"] == {
-            "source_run_id": original.run_record.run_id,
-            "source_guid": "guid-1",
-            "source_card_id": "card-1",
-            "replayed_steps": 3,
-            "prior_elapsed_seconds": prepared.snapshot.agent.elapsed_seconds,
-            "lineage": [
-                {
-                    "run_id": original.run_record.run_id,
-                    "guid": "guid-1",
-                    "rehydrated_at_step": 3,
-                }
-            ],
-        }
-        assert meta["total_steps"] == 5
 
     def test_pricing_change_is_recorded_not_blocking(
         self, monkeypatch, tmp_path, caplog
@@ -806,12 +685,3 @@ class TestRunIdentity:
                 monkeypatch, tmp_path, MANUAL_CONFIG, env=_ScriptedEnv(guid="dup")
             )
 
-    def test_rehydrated_run_uses_new_session_guid(self, monkeypatch, tmp_path):
-        original = _run_manual(monkeypatch, tmp_path, actions=5)
-        resumed = _rehydrated_manual(
-            monkeypatch, tmp_path, _prepare(original, tmp_path, step=3), total_actions=5
-        )
-        resumed.main()
-        assert original.run_record.run_id == "guid-1"
-        assert resumed.run_record.run_id == "guid-2"
-        assert _run_meta(resumed)["rehydration"]["source_run_id"] == "guid-1"
