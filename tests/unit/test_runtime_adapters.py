@@ -1357,7 +1357,28 @@ class _FakeGoogleGenAIModels:
 
     def generate_content(self, **kwargs: object) -> object:
         self.calls.append(kwargs)
-        return self._response
+        import json
+
+        response = self._response
+        raw = {
+            "candidates": [
+                {
+                    "finishReason": "STOP",
+                    "content": {
+                        "parts": [
+                            vars(part) for part in response.candidates[0].content.parts
+                        ]
+                    },
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": response.usage_metadata.prompt_token_count,
+                "candidatesTokenCount": response.usage_metadata.candidates_token_count,
+                "thoughtsTokenCount": response.usage_metadata.thoughts_token_count,
+                "cachedContentTokenCount": response.usage_metadata.cached_content_token_count,
+            },
+        }
+        return SimpleNamespace(sdk_http_response=SimpleNamespace(body=json.dumps(raw)))
 
 
 class _FakeGoogleGenAIClient:

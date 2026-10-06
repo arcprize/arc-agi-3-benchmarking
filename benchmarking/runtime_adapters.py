@@ -19,12 +19,13 @@ from .exceptions import (
     InvalidProviderResponseError,
     TransientProviderError,
 )
+from .google_continuation import generate_with_continuation
+from .google_interactions_continuation import create_with_continuation
 from .runtime_models import (
     ModelRequest,
     ModelResponse,
     normalize_anthropic_messages_response,
     normalize_chat_completion_response,
-    normalize_google_genai_response,
     normalize_google_interaction_response,
     normalize_responses_response,
 )
@@ -41,6 +42,7 @@ SUPPORTED_RUNTIME_STATE = DEFAULT_RUNTIME_STATE
 SERVER_STATE_RUNTIME_KEYS = frozenset({("openai-python", "responses")})
 CONTINUOUS_CONVERSATION_RUNTIME_KEYS = frozenset(
     {
+        ("google-genai", "generate_content"),
         ("anthropic-python", "messages"),
         ("google-genai", "interactions"),
         ("openai-python", "chat_completions"),
@@ -426,10 +428,17 @@ class GoogleGenAIGenerateContentAdapter:
         }
 
     def invoke(self, request: ModelRequest) -> ModelResponse:
-        raw_response = self._client.models.generate_content(
-            **self._build_call_kwargs(request),
-        )
-        return normalize_google_genai_response(raw_response)
+        call_kwargs = self._build_call_kwargs(request)
+        try:
+            return generate_with_continuation(
+                self._client, call_kwargs, native_contents=request.native_input
+            )
+        except Exception as exc:
+            if _is_google_context_overflow(exc):
+                raise ContextOverflowError(str(exc)) from exc
+            if _is_google_transient_error(exc):
+                raise TransientProviderError(str(exc)) from exc
+            raise
 
 
 class GoogleGenAIInteractionsAdapter:
@@ -480,9 +489,7 @@ class GoogleGenAIInteractionsAdapter:
     def invoke(self, request: ModelRequest) -> ModelResponse:
         call_kwargs = self._build_call_kwargs(request)
         try:
-            raw_response = self._client.interactions.create(
-                **call_kwargs,
-            )
+            raw_response = create_with_continuation(self._client, call_kwargs)
         # Interactions exceptions live in a private SDK module whose package
         # layout is not stable across google-genai releases. Inspect the
         # provider error at this boundary and immediately re-raise anything
@@ -541,6 +548,8 @@ def build_model_runtime_adapter(
             return OpenAIResponsesAdapter(client)
         if runtime_key == ("openai-python", "chat_completions"):
             return DeepSeekChatCompletionsAdapter(client)
+        if runtime_key == ("google-genai", "generate_content"):
+            return GoogleGenAIGenerateContentAdapter(client)
         return GoogleGenAIInteractionsAdapter(client)
 
     if runtime_key == ("openai-python", "chat_completions"):

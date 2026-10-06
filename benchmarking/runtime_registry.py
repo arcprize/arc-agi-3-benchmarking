@@ -9,6 +9,7 @@ from .deepseek_runtime import (
     DEEPSEEK_ADAPTER_ID,
     DeepSeekContinuousConversationRuntimeAdapter,
 )
+from .google_content_runtime import GoogleContentConversationRuntimeAdapter
 from .google_runtime import GoogleContinuousConversationRuntimeAdapter
 from .openai_runtime import OpenAIContinuousConversationRuntimeAdapter
 from .runtime_state import (
@@ -160,6 +161,10 @@ def build_stateful_runtime_adapter(
             )
         if adapter_id == OPENAI_RESPONSES_ADAPTER_ID:
             return OpenAIContinuousConversationRuntimeAdapter(
+                model_adapter=model_adapter, descriptor=descriptor
+            )
+        if adapter_id == "google.generate_content.v1":
+            return GoogleContentConversationRuntimeAdapter(
                 model_adapter=model_adapter, descriptor=descriptor
             )
         if adapter_id == GOOGLE_INTERACTIONS_ADAPTER_ID:
