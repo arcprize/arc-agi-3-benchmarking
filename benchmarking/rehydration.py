@@ -1,8 +1,8 @@
 """Agent state snapshots and toolkit recording parsing for rehydration.
 
-This module is self-contained: it defines the snapshot schema, parses toolkit
-``.jsonl`` recordings, fingerprints frames, and writes rolling snapshots
-atomically. Wiring into the agent happens elsewhere.
+Defines the snapshot schema, writes rolling snapshots atomically, parses
+toolkit ``.jsonl`` recordings, and validates rehydration inputs offline.
+The agent-side replay and restore live in ``BenchmarkingAgent``.
 """
 
 from __future__ import annotations

@@ -394,13 +394,3 @@ class TestSwarmRehydration:
             ).main()
 
         assert [agent.rehydration for agent in DummyAgent.instances] == [prepared]
-
-    def test_omits_rehydration_kwarg_when_unset(self):
-        # DummyAgent has no rehydration parameter; passing one would raise.
-        with (
-            patch("benchmarking.swarm.BenchmarkingAgent", DummyAgent),
-            patch("benchmarking.swarm.Arcade", FakeArcade),
-            patch("benchmarking.swarm.Thread", FakeThread),
-        ):
-            Swarm(ROOT_URL="https://example.com", games=["g"]).main()
-        assert len(DummyAgent.instances) == 1

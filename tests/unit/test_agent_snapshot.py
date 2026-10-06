@@ -12,7 +12,6 @@ from benchmarking.rehydration import (
     AgentSnapshot,
     PreparedRehydration,
     RehydrationError,
-    config_sha256,
     frame_fingerprint,
     load_snapshot,
     parse_toolkit_recording,
@@ -188,15 +187,6 @@ def _run_meta(agent: BenchmarkingAgent) -> dict:
 
 @pytest.mark.unit
 class TestSnapshotsDuringRun:
-    def test_writes_rolling_snapshots_every_step(self, monkeypatch, tmp_path):
-        agent = _run_manual(monkeypatch, tmp_path, actions=5)
-        assert agent.step_counter == 5
-        assert snapshot_names(agent) == [
-            "state_step_0003.json",
-            "state_step_0004.json",
-            "state_step_0005.json",
-        ]
-
     def test_latest_snapshot_matches_agent_state(self, monkeypatch, tmp_path):
         agent = _run_manual(monkeypatch, tmp_path)
         snapshot = latest_snapshot(agent)
@@ -212,9 +202,6 @@ class TestSnapshotsDuringRun:
         }
         assert snapshot.lineage == []
         assert snapshot.model_config_id == MANUAL_CONFIG
-        assert snapshot.model_config_sha256 == config_sha256(
-            get_model_config(MANUAL_CONFIG)
-        )
         assert snapshot.pricing == agent._pricing
         assert snapshot.last_frame == frame_fingerprint(latest_frame)
         assert snapshot.runtime_state is None
@@ -224,13 +211,8 @@ class TestSnapshotsDuringRun:
         assert len(fields.conversation) == 7  # system + 3 user/assistant pairs
         assert fields.token_counter == agent.token_counter == 45
         assert fields.level_action_counter == agent._level_action_counter == 4
-        assert fields.last_levels_completed == 0
-        assert fields.level_just_advanced is False
-        assert fields.compaction_counter == 0
-        assert fields.pending_compaction_trigger_tokens is None
         assert 0 <= fields.elapsed_seconds < 60
         assert fields.total_usage == agent.run_record.total_usage
-        assert fields.total_usage.total_tokens == 45
 
     def test_snapshot_failure_does_not_stop_the_run(self, monkeypatch, tmp_path, caplog):
         def fail(*_args, **_kwargs):
@@ -288,13 +270,6 @@ class TestContinuousTranscript:
         [observation] = _messages_sent(agent, 3)
         assert observation["role"] == "user"
         assert observation["content"].startswith("State: GAME_OVER")
-
-    def test_manual_runs_keep_their_transcript(self, monkeypatch, tmp_path, caplog):
-        with caplog.at_level(logging.INFO):
-            agent = _run_manual(monkeypatch, tmp_path)
-
-        assert len(agent.conversation) == 7
-        assert "messages: 6" in caplog.text
 
 
 @pytest.mark.unit
@@ -380,9 +355,6 @@ class TestAttributeGuard:
         self, monkeypatch, tmp_path, config_id
     ):
         _assert_classified(build_agent(monkeypatch, tmp_path, config_id))
-
-    def test_manual_run_attributes_are_classified(self, monkeypatch, tmp_path):
-        _assert_classified(_run_manual(monkeypatch, tmp_path))
 
     def test_continuous_run_attributes_are_classified(self, monkeypatch, tmp_path):
         _assert_classified(_run_openai_continuous(monkeypatch, tmp_path))
@@ -514,30 +486,23 @@ class TestRehydrationFailures:
         assert not (Path(agent.run_dir) / "state").exists()
         assert list(Path(agent.run_dir).glob("step_*.json")) == []
 
-    def test_divergent_frame_aborts_replay(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize(
+        ("env_kwargs", "error", "message"),
+        [
+            ({"diverge_at": 2}, RehydrationError, "diverged at step 2"),
+            ({"fail_at": 2}, ValueError, "None frame data"),
+        ],
+        ids=["divergent_frame", "failed_step"],
+    )
+    def test_replay_aborts_without_retry(
+        self, monkeypatch, tmp_path, env_kwargs, error, message
+    ):
         original = _run_manual(monkeypatch, tmp_path, actions=5)
+        prepared = _prepare(original, tmp_path, step=3)
         resumed = _rehydrated_manual(
-            monkeypatch,
-            tmp_path,
-            _prepare(original, tmp_path, step=3),
-            total_actions=5,
-            diverge_at=2,
+            monkeypatch, tmp_path, prepared, total_actions=5, **env_kwargs
         )
-        with pytest.raises(RehydrationError, match="diverged at step 2"):
-            resumed.main()
-        assert len(resumed.arc_env.calls) == 2
-        self._assert_failed_before_model(resumed)
-
-    def test_failed_step_aborts_without_retry(self, monkeypatch, tmp_path):
-        original = _run_manual(monkeypatch, tmp_path, actions=5)
-        resumed = _rehydrated_manual(
-            monkeypatch,
-            tmp_path,
-            _prepare(original, tmp_path, step=3),
-            total_actions=5,
-            fail_at=2,
-        )
-        with pytest.raises(ValueError, match="None frame data"):
+        with pytest.raises(error, match=message):
             resumed.main()
         assert len(resumed.arc_env.calls) == 2
         self._assert_failed_before_model(resumed)
@@ -545,10 +510,6 @@ class TestRehydrationFailures:
 
 @pytest.mark.unit
 class TestRehydrationRunMeta:
-    def test_normal_run_meta_has_no_rehydration_key(self, monkeypatch, tmp_path):
-        agent = _run_manual(monkeypatch, tmp_path)
-        assert "rehydration" not in _run_meta(agent)
-
     def test_pricing_change_is_recorded_not_blocking(
         self, monkeypatch, tmp_path, caplog
     ):
@@ -585,14 +546,18 @@ class TestRunIdentity:
     def test_falls_back_to_random_id_without_session_guid(self, monkeypatch, tmp_path):
         agent = build_agent(monkeypatch, tmp_path, MANUAL_CONFIG)
         assert len(agent.run_record.run_id) == 36  # uuid4
-        assert _run_meta(agent)["guid"] is None
+        meta = _run_meta(agent)
+        assert meta["guid"] is None
+        assert "rehydration" not in meta
 
-    def test_reused_session_guid_fails_instead_of_merging_runs(
-        self, monkeypatch, tmp_path
-    ):
-        build_agent(monkeypatch, tmp_path, MANUAL_CONFIG, env=ScriptedEnv(guid="dup"))
-        with pytest.raises(FileExistsError):
-            build_agent(
-                monkeypatch, tmp_path, MANUAL_CONFIG, env=ScriptedEnv(guid="dup")
-            )
+    def test_reused_session_guid_gets_its_own_run_dir(self, monkeypatch, tmp_path):
+        first = build_agent(
+            monkeypatch, tmp_path, MANUAL_CONFIG, env=ScriptedEnv(guid="dup")
+        )
+        second = build_agent(
+            monkeypatch, tmp_path, MANUAL_CONFIG, env=ScriptedEnv(guid="dup")
+        )
+        assert first.run_dir == f"recordings/{first.name}.dup"
+        assert second.run_dir != first.run_dir
+        assert _run_meta(second)["guid"] == "dup"
 

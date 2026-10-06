@@ -184,6 +184,7 @@ class BenchmarkingAgent(Agent):
                 f"{self.game_id} - No baseline_actions available, "
                 f"using MAX_ACTIONS={self.MAX_ACTIONS}"
             )
+        # Testing/development only: a total action cap across all levels.
         hard_cap = os.environ.get("MAX_ACTIONS_HARD_CAP")
         self._max_actions_hard_cap = int(hard_cap) if hard_cap else None
         self._level_action_counter: int = 0
@@ -223,7 +224,11 @@ class BenchmarkingAgent(Agent):
         )
         run_id = session_guid or str(uuid.uuid4())
         self.run_dir = os.path.join("recordings", f"{self.name}.{run_id}")
-        os.makedirs(self.run_dir)
+        if os.path.exists(self.run_dir):
+            # Never mix two runs' files; snapshot pruning would cross runs.
+            run_id = str(uuid.uuid4())
+            self.run_dir = os.path.join("recordings", f"{self.name}.{run_id}")
+        os.makedirs(self.run_dir, exist_ok=True)
         runtime_metadata = None
         if self._continuous_conversation:
             commit_sha = harness_commit_sha()
@@ -662,8 +667,9 @@ class BenchmarkingAgent(Agent):
 
     def _restore(self, snapshot: AgentSnapshot) -> None:
         """Load snapshot state after replay has rebuilt the game to its step."""
-        # The config hash check guarantees the snapshot's runtime mode matches.
         if self._continuous_conversation:
+            if snapshot.runtime_state is None:
+                raise RehydrationError("Snapshot has no runtime_state to restore.")
             self._runtime_state = snapshot.runtime_state
 
         fields = snapshot.agent
@@ -703,10 +709,8 @@ class BenchmarkingAgent(Agent):
         }
         if snapshot.pricing != self._pricing:
             logger.warning(
-                "Pricing changed since the snapshot (%s -> %s); carried costs "
-                "use the previous pricing.",
-                snapshot.pricing,
-                self._pricing,
+                f"Pricing changed since the snapshot ({snapshot.pricing} -> "
+                f"{self._pricing}); carried costs use the previous pricing."
             )
             provenance["pricing_changed"] = {
                 "previous": snapshot.pricing,
@@ -760,15 +764,15 @@ class BenchmarkingAgent(Agent):
         """Write a rolling state snapshot. Never interrupts the run."""
         if frame is None:
             logger.warning(
-                "Skipping state snapshot after step %s: action produced no frame.",
-                self.step_counter,
+                f"Skipping state snapshot after step {self.step_counter}: "
+                "action produced no frame."
             )
             return
         try:
             path = write_snapshot_atomic(self.run_dir, self._snapshot())
         except Exception:
             logger.exception(
-                "Failed to write state snapshot after step %s.", self.step_counter
+                f"Failed to write state snapshot after step {self.step_counter}."
             )
             return
         logger.info(f"Saved state snapshot {self.step_counter} to {path}")

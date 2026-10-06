@@ -16,13 +16,13 @@ from .recorder import Recorder
 logger = logging.getLogger()
 
 class ExitReason(str, Enum):
-    UNKNOWN          = "UNKNOWN"
-    GAME_WIN         = "GAME_WIN"
-    ACTION_BUDGET    = "ACTION_BUDGET"
-    TIME_BUDGET      = "TIME_BUDGET"
-    SCORECARD_CLOSED = "SCORECARD_CLOSED"
-    API_ERROR        = "API_ERROR"
-    AGENT_ERROR      = "AGENT_ERROR"
+    UNKNOWN           = "UNKNOWN"
+    GAME_WIN          = "GAME_WIN"
+    ACTION_BUDGET     = "ACTION_BUDGET"
+    TIME_BUDGET       = "TIME_BUDGET"
+    SCORECARD_CLOSED  = "SCORECARD_CLOSED"
+    API_ERROR         = "API_ERROR"
+    AGENT_ERROR       = "AGENT_ERROR"
     REHYDRATION_ERROR = "REHYDRATION_ERROR"
 
 class Agent(ABC):

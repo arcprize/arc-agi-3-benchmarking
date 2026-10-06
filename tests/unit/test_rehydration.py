@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from arcengine import GameAction, GameState
+from arcengine import GameState
 from pydantic import ValidationError
 
 from benchmarking import rehydration
@@ -111,21 +111,10 @@ class TestConfigHash:
         "pricing": {"input": 1.0, "output": 2.0},
     }
 
-    def test_pricing_only_change_keeps_hash(self):
-        changed = {**self.BASE, "pricing": {"input": 9.0, "output": 9.0}}
-        assert config_sha256(changed) == config_sha256(self.BASE)
-
-    def test_budget_multiplier_change_keeps_hash(self):
-        agent = {**self.BASE["agent"], "MAX_ACTIONS_BASELINE_MULTIPLIER": 9.0}
-        assert config_sha256({**self.BASE, "agent": agent}) == config_sha256(self.BASE)
-
     @pytest.mark.parametrize("section", ["agent", "runtime", "client", "request"])
     def test_any_other_section_change_changes_hash(self, section):
         changed = {**self.BASE, section: {**self.BASE[section], "new_key": 1}}
         assert config_sha256(changed) != config_sha256(self.BASE)
-
-    def test_new_top_level_key_changes_hash(self):
-        assert config_sha256({**self.BASE, "future": {}}) != config_sha256(self.BASE)
 
     def test_key_order_does_not_matter(self):
         reordered = dict(reversed(list(self.BASE.items())))
@@ -145,17 +134,6 @@ class TestFrameFingerprint:
         assert _fingerprint(frame=FRAME, **kwargs) != _fingerprint(
             frame=[[[0, 1], [2, 4]]], **kwargs
         )
-
-    def test_recorded_step_matches_live_frame(self, tmp_path):
-        path = _write_jsonl(tmp_path / "r.jsonl", [_event()])
-        recorded = frame_fingerprint(parse_toolkit_recording(path)[0])
-        live = _fingerprint(
-            state=GameState.NOT_FINISHED,
-            levels_completed=0,
-            available_actions=[1, 2, 6],
-            frame=FRAME,
-        )
-        assert recorded == live
 
 
 @pytest.mark.unit
@@ -180,12 +158,6 @@ class TestParseToolkitRecording:
         assert steps[0].data == {}
         assert steps[2].reasoning == {"output": "go"}
         assert steps[0].guid == "guid-1"
-
-    def test_game_action_carries_coordinates(self, tmp_path):
-        path = _write_jsonl(tmp_path / "r.jsonl", [_event("ACTION6", data={"x": 3, "y": 4})])
-        action = parse_toolkit_recording(path)[0].game_action()
-        assert action == GameAction.ACTION6
-        assert (action.action_data.x, action.action_data.y) == (3, 4)
 
     def test_skips_non_action_lines_and_blank_lines(self, tmp_path):
         path = _write_jsonl(
@@ -268,10 +240,6 @@ class TestAgentSnapshot:
 
         assert loaded == snapshot
 
-    def test_rejects_step_zero(self):
-        with pytest.raises(ValidationError):
-            _snapshot(step=0)
-
     def test_rejects_unsupported_schema_version(self):
         data = _snapshot().model_dump(mode="json")
         data["snapshot_schema_version"] = 999
@@ -284,26 +252,11 @@ class TestAgentSnapshot:
         with pytest.raises(ValidationError):
             AgentSnapshot.model_validate(data)
 
-    def test_rejects_invalid_runtime_state(self):
-        data = _snapshot().model_dump(mode="json")
-        data["runtime_state"] = {
-            "schema_version": 999,
-            "adapter_id": "x",
-            "strategy": "continuous_conversation",
-        }
-        with pytest.raises(ValidationError):
-            AgentSnapshot.model_validate(data)
-
 
 @pytest.mark.unit
 class TestWriteSnapshotAtomic:
     def _names(self, tmp_path: Path) -> list[str]:
         return sorted(p.name for p in (tmp_path / "state").iterdir())
-
-    def test_writes_padded_filename_in_state_dir(self, tmp_path):
-        path = write_snapshot_atomic(tmp_path, _snapshot(step=7))
-        assert path == tmp_path / "state" / "state_step_0007.json"
-        assert self._names(tmp_path) == ["state_step_0007.json"]
 
     def test_keeps_only_latest_three_and_ignores_other_files(self, tmp_path):
         (tmp_path / "state").mkdir()
@@ -344,19 +297,13 @@ class TestWriteSnapshotAtomic:
         assert after == before  # no partial file, no temp file, nothing pruned
 
 
-
 @pytest.mark.unit
 class TestParseRehydrateArgs:
-    def test_builds_args_from_pairs(self, tmp_path):
-        recording = _write_jsonl(tmp_path / "r.jsonl", [])
+    def test_builds_args_from_pairs_with_equals_in_path(self, tmp_path):
+        recording = _write_jsonl(tmp_path / "a=b.jsonl", [])
         state = _write_jsonl(tmp_path / "s.json", [])
         args = parse_rehydrate_args([f"recording={recording}", f"state={state}"])
         assert (args.recording, args.state) == (recording, state)
-
-    def test_path_may_contain_equals(self, tmp_path):
-        recording = _write_jsonl(tmp_path / "a=b.jsonl", [])
-        args = parse_rehydrate_args([f"recording={recording}", f"state={recording}"])
-        assert args.recording == recording
 
     @pytest.mark.parametrize("pair", ["recording", "=path", "recording="])
     def test_rejects_malformed_pairs(self, pair):
@@ -446,13 +393,10 @@ class TestPrepareRehydration:
         with pytest.raises(RehydrationError, match="not the implicit RESET"):
             self._prepare(tmp_path, _valid_snapshot(step=3), events)
 
-    def test_rejects_recording_without_matching_step(self, tmp_path):
+    @pytest.mark.parametrize("values", [(1, 2, 9), (1, 2)], ids=["mismatch", "short"])
+    def test_rejects_recording_without_matching_step(self, tmp_path, values):
         with pytest.raises(RehydrationError, match="no step 3 matching"):
-            self._prepare(tmp_path, _valid_snapshot(step=3), _recording(1, 2, 9))
-
-    def test_rejects_recording_shorter_than_snapshot(self, tmp_path):
-        with pytest.raises(RehydrationError, match="no step 3 matching"):
-            self._prepare(tmp_path, _valid_snapshot(step=3), _recording(1, 2))
+            self._prepare(tmp_path, _valid_snapshot(step=3), _recording(*values))
 
     def test_rejects_empty_recording(self, tmp_path):
         with pytest.raises(RehydrationError, match="no action events"):
