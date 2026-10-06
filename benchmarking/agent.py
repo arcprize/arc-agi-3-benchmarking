@@ -224,11 +224,7 @@ class BenchmarkingAgent(Agent):
         )
         run_id = session_guid or str(uuid.uuid4())
         self.run_dir = os.path.join("recordings", f"{self.name}.{run_id}")
-        if os.path.exists(self.run_dir):
-            # Never mix two runs' files; snapshot pruning would cross runs.
-            run_id = str(uuid.uuid4())
-            self.run_dir = os.path.join("recordings", f"{self.name}.{run_id}")
-        os.makedirs(self.run_dir, exist_ok=True)
+        os.makedirs(self.run_dir)
         runtime_metadata = None
         if self._continuous_conversation:
             commit_sha = harness_commit_sha()

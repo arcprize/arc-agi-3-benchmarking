@@ -550,14 +550,12 @@ class TestRunIdentity:
         assert meta["guid"] is None
         assert "rehydration" not in meta
 
-    def test_reused_session_guid_gets_its_own_run_dir(self, monkeypatch, tmp_path):
-        first = build_agent(
-            monkeypatch, tmp_path, MANUAL_CONFIG, env=ScriptedEnv(guid="dup")
-        )
-        second = build_agent(
-            monkeypatch, tmp_path, MANUAL_CONFIG, env=ScriptedEnv(guid="dup")
-        )
-        assert first.run_dir == f"recordings/{first.name}.dup"
-        assert second.run_dir != first.run_dir
-        assert _run_meta(second)["guid"] == "dup"
+    def test_reused_session_guid_fails_instead_of_merging_runs(
+        self, monkeypatch, tmp_path
+    ):
+        build_agent(monkeypatch, tmp_path, MANUAL_CONFIG, env=ScriptedEnv(guid="dup"))
+        with pytest.raises(FileExistsError):
+            build_agent(
+                monkeypatch, tmp_path, MANUAL_CONFIG, env=ScriptedEnv(guid="dup")
+            )
 
