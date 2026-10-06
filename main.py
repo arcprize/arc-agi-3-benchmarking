@@ -10,7 +10,6 @@ import os
 import signal
 import sys
 import threading
-from functools import partial
 from types import FrameType
 from typing import Optional
 from urllib.parse import urlparse
@@ -201,34 +200,42 @@ def resolve_rehydration(
     return prepared
 
 
-def run_agent(swarm: Swarm) -> None:
-    swarm.main()
-    os.kill(os.getpid(), signal.SIGINT)
+_shutting_down = False
+_swarm: Optional[Swarm] = None
 
 
-def cleanup(
-    swarm: Swarm,
-    signum: Optional[int],
-    frame: Optional[FrameType],
-) -> None:
-    logger.info("Received SIGINT, exiting...")
-    card_id = swarm.card_id
-    if card_id:
-        scorecard = swarm.close_scorecard(card_id)
+def handle_shutdown_signal(signum: int, frame: Optional[FrameType]) -> None:
+    """Close the scorecard and exit 128 + signum (130 for SIGINT, 143 for SIGTERM)."""
+    # A second signal runs nested on this same thread, so guard with a flag, not a lock.
+    global _shutting_down
+    name = signal.Signals(signum).name
+    if _shutting_down:
+        logger.info(f"Ignoring {name}: shutdown already in progress.")
+        return
+    _shutting_down = True
+    logger.info(f"Received {name}, shutting down.")
+
+    if _swarm is None:
+        logger.info("SHUTDOWN: no scorecard opened")
+    else:
+        _swarm.request_shutdown()
+        scorecard = _swarm.close_scorecard()
         if scorecard:
             logger.info("--- EXISTING SCORECARD REPORT ---")
             logger.info(json.dumps(scorecard.model_dump(), indent=2))
-            swarm.cleanup(scorecard)
+            _swarm.cleanup(scorecard)
 
         # Provide web link to scorecard
-        if card_id:
-            scorecard_url = f"{ROOT_URL}/scorecards/{card_id}"
+        if _swarm.card_id:
+            scorecard_url = f"{ROOT_URL}/scorecards/{_swarm.card_id}"
             logger.info(f"View your scorecard online: {scorecard_url}")
 
-    sys.exit(0)
+    sys.exit(128 + signum)
 
 
 def main() -> None:
+    global _swarm
+
     log_level = logging.INFO
     if os.environ.get("DEBUG", "False") == "True":
         log_level = logging.DEBUG
@@ -246,6 +253,10 @@ def main() -> None:
 
     logger.addHandler(file_handler)
     logger.addHandler(stdout_handler)
+
+    # Before any startup work; this also replaces an inherited SIG_IGN.
+    signal.signal(signal.SIGINT, handle_shutdown_signal)
+    signal.signal(signal.SIGTERM, handle_shutdown_signal)
 
     # logging.getLogger("requests").setLevel(logging.CRITICAL)
     # logging.getLogger("werkzeug").setLevel(logging.CRITICAL)
@@ -314,22 +325,13 @@ def main() -> None:
         config=args.config,
         rehydration=rehydration,
     )
-    agent_thread = threading.Thread(target=partial(run_agent, swarm))
-    agent_thread.daemon = True  # die when the main thread dies
+    _swarm = swarm
+    agent_thread = threading.Thread(target=swarm.main, daemon=True)  # dies with the main thread
     agent_thread.start()
 
-    signal.signal(signal.SIGINT, partial(cleanup, swarm))  # handler for Ctrl+C
-
-    try:
-        # Wait for the agent thread to complete
-        while agent_thread.is_alive():
-            agent_thread.join(timeout=5)  # Check every 5 second
-    except KeyboardInterrupt:
-        logger.info("KeyboardInterrupt received in main thread")
-        cleanup(swarm, signal.SIGINT, None)
-    except Exception as e:
-        logger.error(f"Unexpected error in main thread: {e}")
-        cleanup(swarm, None, None)
+    # A timed join lets signal handlers run promptly on the main thread
+    while agent_thread.is_alive():
+        agent_thread.join(timeout=1)
 
 
 if __name__ == "__main__":

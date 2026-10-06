@@ -1,4 +1,5 @@
 import logging
+import signal
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -169,3 +170,73 @@ class TestRehydrationCli:
 
         assert excinfo.value.code == cli_main.REHYDRATION_EXIT_CODE == 3
         swarm.assert_not_called()
+
+
+@pytest.fixture
+def shutdown_state(monkeypatch, caplog):
+    """Reset the shutdown globals and restore signal handlers after the test."""
+    monkeypatch.setattr(cli_main, "_shutting_down", False)
+    monkeypatch.setattr(cli_main, "_swarm", None)
+    caplog.set_level(logging.INFO)
+    saved = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    yield
+    for sig, handler in saved.items():
+        signal.signal(sig, handler)
+
+
+def _messages(caplog) -> list[str]:
+    return [record.getMessage() for record in caplog.records]
+
+
+@pytest.mark.unit
+@pytest.mark.usefixtures("shutdown_state")
+class TestShutdownSignals:
+    @pytest.mark.parametrize(
+        ("signum", "code"), [(signal.SIGINT, 130), (signal.SIGTERM, 143)]
+    )
+    def test_exit_code_without_swarm(self, caplog, signum, code):
+        with pytest.raises(SystemExit) as excinfo:
+            cli_main.handle_shutdown_signal(signum, None)
+
+        assert excinfo.value.code == code
+        assert "SHUTDOWN: no scorecard opened" in _messages(caplog)
+
+    def test_nested_signal_during_close_is_ignored(self, caplog, monkeypatch):
+        swarm = MagicMock()
+        swarm.card_id = "card-123"
+        swarm.close_scorecard.side_effect = (
+            lambda: cli_main.handle_shutdown_signal(signal.SIGINT, None)
+        )
+        monkeypatch.setattr(cli_main, "_swarm", swarm)
+
+        with pytest.raises(SystemExit) as excinfo:
+            cli_main.handle_shutdown_signal(signal.SIGTERM, None)
+
+        assert excinfo.value.code == 143
+        swarm.request_shutdown.assert_called_once()
+        swarm.close_scorecard.assert_called_once()
+        assert "Ignoring SIGINT: shutdown already in progress." in _messages(caplog)
+
+    def test_signal_during_startup_exits_before_swarm(self, caplog, monkeypatch, tmp_path):
+        # main() writes logs.log to the cwd and attaches root-logger handlers.
+        monkeypatch.chdir(tmp_path)
+        root = logging.getLogger()
+        monkeypatch.setattr(root, "handlers", list(root.handlers))
+        monkeypatch.setattr("sys.argv", ["main.py", "-g", "ls20", "-c", "cfg"])
+        monkeypatch.setattr(cli_main, "print_requested_resource_lists", lambda *a, **k: False)
+        monkeypatch.setattr(cli_main, "validate_required_model_api_key", lambda _id: None)
+
+        def fetch_games(_url):
+            signal.raise_signal(signal.SIGTERM)
+            return ["ls20-abc"]
+
+        monkeypatch.setattr(cli_main, "fetch_available_games", fetch_games)
+        swarm = MagicMock()
+        monkeypatch.setattr(cli_main, "Swarm", swarm)
+
+        with pytest.raises(SystemExit) as excinfo:
+            cli_main.main()
+
+        assert excinfo.value.code == 143
+        swarm.assert_not_called()
+        assert "SHUTDOWN: no scorecard opened" in _messages(caplog)
