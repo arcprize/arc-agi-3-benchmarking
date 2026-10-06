@@ -184,6 +184,8 @@ class BenchmarkingAgent(Agent):
                 f"{self.game_id} - No baseline_actions available, "
                 f"using MAX_ACTIONS={self.MAX_ACTIONS}"
             )
+        hard_cap = os.environ.get("MAX_ACTIONS_HARD_CAP")
+        self._max_actions_hard_cap = int(hard_cap) if hard_cap else None
         self._level_action_counter: int = 0
         self._last_levels_completed: int = 0
         self._level_just_advanced: bool = False
@@ -948,6 +950,11 @@ class BenchmarkingAgent(Agent):
     def is_done(self, frames: list[FrameData], latest_frame: FrameData) -> bool:
         if latest_frame.state is GameState.WIN:
             self.exit_reason = ExitReason.GAME_WIN
+            return True
+        cap = self._max_actions_hard_cap
+        if cap is not None and self.action_counter >= cap:
+            logger.info(f"{self.game_id} - Reached MAX_ACTIONS_HARD_CAP={cap}. Stopping.")
+            self.exit_reason = ExitReason.ACTION_BUDGET
             return True
         # Check per-level action budget
         if self._level_action_budgets:

@@ -91,6 +91,7 @@ FROM_CONFIG = {
     "_pricing",
     "_model_config_sha256",
     "_level_action_budgets",  # recomputed on resume, so budgets may change
+    "_max_actions_hard_cap",  # from MAX_ACTIONS_HARD_CAP env var, re-read on resume
     "analysis_mode",
 }
 # Per-session identity or per-turn scratch that does not carry across steps.
