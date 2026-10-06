@@ -1078,3 +1078,46 @@ def test_compaction_diagnostics_have_unique_names_and_redact_opaque_data(tmp_pat
     files = list(tmp_path.glob("diagnostic_compaction_before_step_8_attempt_1_*.json"))
     assert len(files) == 2
     assert all("secret" not in file.read_text() for file in files)
+
+
+@pytest.mark.parametrize("recovers", [True, False])
+def test_transient_summary_failures_allow_ten_attempts(monkeypatch, recovers):
+    failures = [TransientProviderError("unavailable") for _ in range(9)]
+    failures.append(
+        _summary_response("recovered") if recovers
+        else TransientProviderError("unavailable")
+    )
+    adapter, low_level = _google_adapter(failures)
+    sleeps = []
+    monkeypatch.setattr("benchmarking.compaction.time.sleep", sleeps.append)
+    state = adapter.initial_state()
+    original = state.model_copy(deep=True)
+    kwargs = dict(
+        adapter=adapter, state=state, request_config=_request_config(),
+        trigger_tokens=175_000, max_context_length=1_048_576, max_retries=3,
+    )
+    if recovers:
+        result = SummaryCompactor(_policy()).compact(**kwargs)
+        assert result.attempts == 10
+        assert result.summary == "recovered"
+    else:
+        with pytest.raises(CompactionFailureError, match="10 transient provider failures"):
+            SummaryCompactor(_policy()).compact(**kwargs)
+    assert len(low_level.requests) == 10
+    assert sleeps == [0.25, 0.5, 1, 2, 4, 8, 16, 30, 30]
+    assert state == original
+    assert all(r.native_input == low_level.requests[0].native_input for r in low_level.requests)
+
+
+def test_transient_retries_do_not_consume_invalid_summary_budget(monkeypatch):
+    failures = [TransientProviderError("unavailable") for _ in range(9)]
+    failures.extend([_summary_response("") for _ in range(4)])
+    adapter, low_level = _google_adapter(failures)
+    monkeypatch.setattr("benchmarking.compaction.time.sleep", lambda _: None)
+    with pytest.raises(CompactionFailureError, match="4 response failures"):
+        SummaryCompactor(_policy()).compact(
+            adapter=adapter, state=adapter.initial_state(),
+            request_config=_request_config(), trigger_tokens=175_000,
+            max_context_length=1_048_576, max_retries=3,
+        )
+    assert len(low_level.requests) == 13

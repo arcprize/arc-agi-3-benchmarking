@@ -122,6 +122,8 @@ def build_summary_prompt_record(state: RuntimeState) -> dict[str, Any]:
 
 class SummaryCompactor:
     TRANSIENT_RETRY_BASE_SECONDS = 0.25
+    TRANSIENT_MAX_ATTEMPTS = 10
+    TRANSIENT_RETRY_MAX_SECONDS = 30.0
 
     def __init__(self, policy: SummaryCompactionPolicy) -> None:
         self.policy = policy
@@ -161,6 +163,7 @@ class SummaryCompactor:
         excluded_history_items = 0
         overflow_recoveries = 0
         response_failures = 0
+        transient_failures = 0
         attempts = 0
 
         def record_failure(
@@ -245,12 +248,19 @@ class SummaryCompactor:
                     error_type=type(exc).__name__,
                     status_code=getattr(exc.__cause__, "status_code", None),
                 )
-                response_failures += 1
-                if response_failures <= max_retries:
-                    delay = self.TRANSIENT_RETRY_BASE_SECONDS * (
-                        2 ** (response_failures - 1)
-                    )
-                    time.sleep(delay)
+                transient_failures += 1
+                if transient_failures >= self.TRANSIENT_MAX_ATTEMPTS:
+                    raise CompactionFailureError(
+                        "Harness summary compaction failed after "
+                        f"{transient_failures} transient provider failures.",
+                        usage=accumulated_usage,
+                    ) from exc
+                delay = min(
+                    self.TRANSIENT_RETRY_BASE_SECONDS
+                    * (2 ** (transient_failures - 1)),
+                    self.TRANSIENT_RETRY_MAX_SECONDS,
+                )
+                time.sleep(delay)
                 continue
             except Exception as exc:
                 record_failure("unexpected_error", error_type=type(exc).__name__)

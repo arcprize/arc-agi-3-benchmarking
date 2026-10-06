@@ -509,12 +509,18 @@ def test_summary_uses_tool_and_excludes_pending_observations():
 
     assert result.summary == "Keep moving east."
     assert calls[1]["tools"][0]["function"]["name"] == SUMMARY_TOOL_NAME
+    assert calls[1]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": SUMMARY_TOOL_NAME},
+    }
+    assert "tool_choice" not in calls[0]
     assert calls[1]["messages"][2]["reasoning_content"] == "exact thought"
     assert calls[1]["messages"][3]["role"] == "tool"
     assert calls[1]["messages"][-1]["content"] == SUMMARY_REQUEST_PROMPT
     assert "GAME_OVER" not in json.dumps(calls[1])
     assert state.model_dump() == snapshot
     _turn(adapter, result.state, "fresh reset frame")
+    assert "tool_choice" not in calls[2]
     assert [message["content"] for message in calls[2]["messages"][-2:]] == [
         "GAME_OVER buffered observation",
         "fresh reset frame",

@@ -359,6 +359,11 @@ class DeepSeekChatCompletionsAdapter:
         tool = self._tool_for_request(request)
         kwargs["tools"] = [deepcopy(tool)]
         expected_tool_name = tool["function"]["name"]
+        if expected_tool_name == SUMMARY_TOOL_NAME:
+            kwargs["tool_choice"] = {
+                "type": "function",
+                "function": {"name": SUMMARY_TOOL_NAME},
+            }
         if kwargs.get("stream"):
             kwargs["stream_options"] = {
                 **(kwargs.get("stream_options") or {}),
