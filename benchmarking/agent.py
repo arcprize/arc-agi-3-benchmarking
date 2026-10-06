@@ -103,6 +103,9 @@ class BenchmarkingAgent(Agent):
                 "Use --list-configs to see available options."
             )
         self.MODEL_CONFIG_ID = self.config
+        # Message transcript for manual_rolling and previous_response_id configs.
+        # Continuous configs leave it empty: `self._runtime_state` holds their
+        # transcript, and compaction keeps that bounded.
         self.conversation: list[dict[str, Any]] = []
         self.token_counter: int = 0
 
@@ -876,12 +879,15 @@ class BenchmarkingAgent(Agent):
         self._sync_level_progress(latest_frame)
         self._level_action_counter += 1
 
+        observation: list[dict[str, Any]] = []
         if forced_action == GameAction.RESET and latest_frame.state is GameState.GAME_OVER:
             frame_message = {
                 "role": "user",
                 "content": self.build_frame_content(latest_frame),
             }
-            self.conversation.append(frame_message)
+            observation.append(frame_message)
+            if not self._continuous_conversation:
+                self.conversation.append(frame_message)
             # This observation reaches the model only on the next real API call,
             # so buffer it for server-managed state too.
             if self._server_state:
@@ -898,7 +904,13 @@ class BenchmarkingAgent(Agent):
                 timestamp=datetime.now(timezone.utc),
                 duration_seconds=0.0,
                 model=self.MODEL,
-                messages_sent=list(self.conversation),
+                # Continuous configs log only the buffered observation; their
+                # full transcript is logged with the next model request.
+                messages_sent=(
+                    observation
+                    if self._continuous_conversation
+                    else list(self.conversation)
+                ),
                 parsed_action=self._format_parsed_action(forced_action),
             )
         )
@@ -965,24 +977,18 @@ class BenchmarkingAgent(Agent):
         self._sync_level_progress(latest_frame)
         self._level_action_counter += 1
 
-        # Ensure the system prompt is present before the first real turn
-        if not self.conversation:
-            self.conversation.append(
-                {"role": "system", "content": self._build_system_prompt()}
-            )
-        elif self._continuous_conversation and self.conversation[0].get(
-            "role"
-        ) != "system":
-            self.conversation.insert(
-                0, {"role": "system", "content": self._build_system_prompt()}
-            )
-
         # Normal turn: append frame, call the model, parse action
         frame_message = {
             "role": "user",
             "content": self.build_frame_content(latest_frame),
         }
-        self.conversation.append(frame_message)
+        if not self._continuous_conversation:
+            # Ensure the system prompt is present before the first real turn
+            if not self.conversation:
+                self.conversation.append(
+                    {"role": "system", "content": self._build_system_prompt()}
+                )
+            self.conversation.append(frame_message)
         if self._server_state:
             self._pending_user_messages.append(frame_message)
         if hasattr(self, "_stateful_adapter"):
@@ -1013,15 +1019,16 @@ class BenchmarkingAgent(Agent):
             self._previous_response_id = model_response.response_id
             self._pending_user_messages = []
 
-        self.conversation.append(
-            {
-                "role": "assistant",
-                "content": self._build_assistant_turn_content(
-                    model_response.output_text,
-                    model_response.reasoning_text,
-                ),
-            }
-        )
+        if not self._continuous_conversation:
+            self.conversation.append(
+                {
+                    "role": "assistant",
+                    "content": self._build_assistant_turn_content(
+                        model_response.output_text,
+                        model_response.reasoning_text,
+                    ),
+                }
+            )
 
         logger.info(f"Parsed action: {self._format_parsed_action(action)}")
         request_record = None
@@ -1264,11 +1271,16 @@ class BenchmarkingAgent(Agent):
                         sanitized_messages = turn_result.sanitized_request.get(
                             "messages"
                         )
-                    messages_sent = (
-                        sanitized_messages
-                        if isinstance(sanitized_messages, list)
-                        else list(self.conversation)
-                    )
+                    if isinstance(sanitized_messages, list):
+                        messages_sent = sanitized_messages
+                    elif self._continuous_conversation:
+                        # No readable projection: log this turn's new input.
+                        messages_sent = [
+                            {"role": "system", "content": self._build_system_prompt()},
+                            *(m.model_dump() for m in self._pending_turn_messages),
+                        ]
+                    else:
+                        messages_sent = list(self.conversation)
                 else:
                     assert model_request is not None
                     messages_sent = [
@@ -1325,21 +1337,26 @@ class BenchmarkingAgent(Agent):
 
     # ── Token tracking & cleanup ─────────────────────────────────────────
 
+    def _conversation_length(self) -> int | None:
+        """Transcript size for telemetry; None when provider state holds it."""
+        if self._continuous_conversation:
+            return None
+        return len(self.conversation)
+
     def track_tokens(self, tokens: int, message: str = "") -> None:
         self.token_counter += tokens
+        length = self._conversation_length()
         if hasattr(self, "recorder"):
-            self.recorder.record(
-                {
-                    "tokens": tokens,
-                    "total_tokens": self.token_counter,
-                    "conversation_length": len(self.conversation),
-                    "assistant": message,
-                }
-            )
-        logger.info(
-            f"Tokens: {tokens}, total: {self.token_counter}, "
-            f"messages: {len(self.conversation)}"
-        )
+            record: dict[str, Any] = {
+                "tokens": tokens,
+                "total_tokens": self.token_counter,
+            }
+            if length is not None:
+                record["conversation_length"] = length
+            record["assistant"] = message
+            self.recorder.record(record)
+        messages = "" if length is None else f", messages: {length}"
+        logger.info(f"Tokens: {tokens}, total: {self.token_counter}{messages}")
 
     def cleanup(self, *args: Any, **kwargs: Any) -> None:
         if self._cleanup:
@@ -1359,11 +1376,12 @@ class BenchmarkingAgent(Agent):
             self._write_run_meta()
 
             if hasattr(self, "recorder"):
-                self.recorder.record(
-                    {
-                        "system_prompt": self._build_system_prompt(),
-                        "final_conversation_length": len(self.conversation),
-                        "total_tokens": self.token_counter,
-                    }
-                )
+                summary: dict[str, Any] = {
+                    "system_prompt": self._build_system_prompt(),
+                }
+                length = self._conversation_length()
+                if length is not None:
+                    summary["final_conversation_length"] = length
+                summary["total_tokens"] = self.token_counter
+                self.recorder.record(summary)
         super().cleanup(*args, **kwargs)

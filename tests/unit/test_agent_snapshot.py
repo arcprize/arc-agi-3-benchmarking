@@ -294,9 +294,11 @@ def _openai_response(step: int) -> ModelResponse:
     )
 
 
-def _run_openai_continuous(monkeypatch, tmp_path, actions: int = 3) -> BenchmarkingAgent:
+def _run_openai_continuous(
+    monkeypatch, tmp_path, actions: int = 3, env=None
+) -> BenchmarkingAgent:
     agent = _build_agent(
-        monkeypatch, tmp_path, OPENAI_CONTINUOUS_CONFIG, env=_ScriptedEnv()
+        monkeypatch, tmp_path, OPENAI_CONTINUOUS_CONFIG, env=env or _ScriptedEnv()
     )
     agent._stateful_adapter._model_adapter = _FakeModelAdapter(
         [_openai_response(step) for step in range(2, actions + 1)]
@@ -375,6 +377,58 @@ class TestSnapshotsDuringRun:
         assert agent.step_counter == 4
         assert not (Path(agent.run_dir) / "state").exists()
         assert "Failed to write state snapshot after step 1" in caplog.text
+
+
+def _messages_sent(agent: BenchmarkingAgent, step: int) -> list[dict]:
+    path = Path(agent.run_dir) / f"step_{step:03d}.json"
+    return json.loads(path.read_text())["messages_sent"]
+
+
+@pytest.mark.unit
+class TestContinuousTranscript:
+    """Continuous configs keep no conversation mirror, so logs and snapshots
+    stay bounded by provider state, which compaction keeps small."""
+
+    def test_keeps_no_mirror_and_logs_only_new_input(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        with caplog.at_level(logging.INFO):
+            agent = _run_openai_continuous(monkeypatch, tmp_path, actions=4)
+
+        assert agent.step_counter == 4
+        assert agent.conversation == []
+        assert _latest_snapshot(agent).agent.conversation == []
+        assert "messages:" not in caplog.text
+        # OpenAI returns no readable projection, so each step logs the system
+        # prompt and that turn's new frame instead of a growing history.
+        for step in (2, 3, 4):
+            assert [m["role"] for m in _messages_sent(agent, step)] == [
+                "system",
+                "user",
+            ]
+
+    def test_forced_reset_logs_only_the_buffered_observation(
+        self, monkeypatch, tmp_path
+    ):
+        agent = _run_openai_continuous(
+            monkeypatch, tmp_path, actions=4, env=_ScriptedEnv(game_over_at=2)
+        )
+
+        assert agent.step_counter == 4
+        assert agent.conversation == []
+        # Step 1 resets a NOT_PLAYED game, so there is nothing to observe.
+        assert _messages_sent(agent, 1) == []
+        # Step 3 resets after GAME_OVER: only that frame is logged.
+        [observation] = _messages_sent(agent, 3)
+        assert observation["role"] == "user"
+        assert observation["content"].startswith("State: GAME_OVER")
+
+    def test_manual_runs_keep_their_transcript(self, monkeypatch, tmp_path, caplog):
+        with caplog.at_level(logging.INFO):
+            agent = _run_manual(monkeypatch, tmp_path)
+
+        assert len(agent.conversation) == 7
+        assert "messages: 6" in caplog.text
 
 
 @pytest.mark.unit
