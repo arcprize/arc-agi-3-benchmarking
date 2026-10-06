@@ -1,4 +1,4 @@
-"""Golden equivalence tests for rehydration (REHYDRATION_PLAN.md §8).
+"""Golden equivalence tests for rehydration.
 
 For each adapter and scenario:
   A: an uninterrupted run of TOTAL steps.
@@ -23,11 +23,11 @@ from benchmarking.agent import BenchmarkingAgent
 from benchmarking.base import ExitReason
 from benchmarking.rehydration import RehydrationArgs, prepare_rehydration
 from benchmarking.runtime_models import ModelRequest, ModelResponse, NormalizedUsage
-from tests.unit.test_agent_snapshot import (
-    _build_agent,
-    _comparable,
-    _latest_snapshot,
-    _ScriptedEnv,
+from tests.unit.rehydration_fakes import (
+    ScriptedEnv,
+    build_agent,
+    comparable_snapshot,
+    latest_snapshot,
 )
 
 RESUME_AT = 3
@@ -277,8 +277,8 @@ def _script(adapter: Adapter, scenario: str) -> list[ModelResponse]:
     raise ValueError(scenario)
 
 
-def _env(scenario: str, guid: str) -> _ScriptedEnv:
-    return _ScriptedEnv(
+def _env(scenario: str, guid: str) -> ScriptedEnv:
+    return ScriptedEnv(
         guid=guid,
         initial_state=GameState.NOT_FINISHED,
         game_over_at=RESUME_AT - 1 if scenario == "buffered_reset_at_resume" else None,
@@ -302,7 +302,7 @@ def _run(
     responses: list[ModelResponse],
     rehydration=None,
 ) -> tuple[BenchmarkingAgent, _ScriptedModel]:
-    agent = _build_agent(
+    agent = build_agent(
         monkeypatch,
         tmp_path,
         adapter.config_id,
@@ -375,8 +375,8 @@ def _assert_equivalent(
     assert resumed.run_record.total_usage == uninterrupted.run_record.total_usage
     assert resumed.run_record.total_steps == uninterrupted.run_record.total_steps
     assert resumed.run_record.runtime == uninterrupted.run_record.runtime
-    assert _comparable(_latest_snapshot(resumed)) == _comparable(
-        _latest_snapshot(uninterrupted)
+    assert comparable_snapshot(latest_snapshot(resumed)) == comparable_snapshot(
+        latest_snapshot(uninterrupted)
     )
 
 
@@ -432,7 +432,7 @@ def test_scenarios_exercise_their_boundary_conditions(monkeypatch, tmp_path):
         steps=RESUME_AT, guid="guid-b",
         responses=_script(google, "compactions_before_and_at_resume"),
     )
-    snapshot = _latest_snapshot(crashed)
+    snapshot = latest_snapshot(crashed)
     assert snapshot.agent.pending_compaction_trigger_tokens == TRIGGER
     assert snapshot.agent.compaction_counter == 1  # one compaction already done
 
@@ -442,7 +442,7 @@ def test_scenarios_exercise_their_boundary_conditions(monkeypatch, tmp_path):
         steps=RESUME_AT, guid="guid-b",
         responses=_script(anthropic, "compactions_before_and_at_resume"),
     )
-    payload = _latest_snapshot(crashed).runtime_state.payload
+    payload = latest_snapshot(crashed).runtime_state.payload
     assert payload["context_tokens"] == TRIGGER
     assert payload["messages"][0]["content"][0]["type"] == "compaction"
 
@@ -452,7 +452,7 @@ def test_scenarios_exercise_their_boundary_conditions(monkeypatch, tmp_path):
         steps=RESUME_AT, guid="guid-b",
         responses=_script(deepseek, "buffered_reset_at_resume"),
     )
-    snapshot = _latest_snapshot(crashed)
+    snapshot = latest_snapshot(crashed)
     assert crashed._previous_action.name == "RESET"
     assert len(snapshot.runtime_state.payload["pending_messages"]) == 1
 
@@ -462,7 +462,7 @@ def test_scenarios_exercise_their_boundary_conditions(monkeypatch, tmp_path):
 def test_steps_recorded_after_last_snapshot_are_truncated(
     monkeypatch, tmp_path, adapter_name
 ):
-    """Crash after action N+1 was submitted but before snapshot N+1 (plan F6)."""
+    """Crash after action N+1 was submitted but before snapshot N+1."""
     adapter = ADAPTERS[adapter_name]
     uninterrupted, uninterrupted_model = _run(
         monkeypatch, tmp_path, adapter, "plain",

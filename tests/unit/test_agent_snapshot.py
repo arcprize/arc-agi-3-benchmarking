@@ -1,11 +1,9 @@
 import json
 import logging
 from pathlib import Path
-from types import SimpleNamespace
 
-import numpy as np
 import pytest
-from arcengine import ActionInput, FrameData, FrameDataRaw, GameAction, GameState
+from arcengine import FrameData, GameState
 
 from benchmarking.agent import BenchmarkingAgent
 from benchmarking.base import ExitReason
@@ -25,6 +23,13 @@ from benchmarking.runtime_models import (
     ModelResponse,
     NormalizedUsage,
 )
+from tests.unit.rehydration_fakes import (
+    ScriptedEnv,
+    build_agent,
+    comparable_snapshot,
+    latest_snapshot,
+    snapshot_names,
+)
 
 MANUAL_CONFIG = "openai-gpt-5-4-2026-03-05"
 OPENAI_CONTINUOUS_CONFIG = "openai-gpt-5-6-sol-max-provider-adapter"
@@ -34,7 +39,7 @@ CONTINUOUS_CONFIGS = [
     if get_model_config(config_id)["runtime"].get("state") == "continuous_conversation"
 ]
 
-# Every BenchmarkingAgent instance attribute must be classified here (plan F2).
+# Every BenchmarkingAgent instance attribute must be classified here.
 # A new attribute that affects future prompts or budgets must be added to the
 # snapshot (rehydration.AgentFields) and to SNAPSHOTTED; otherwise rehydrated
 # runs silently drift from uninterrupted ones.
@@ -118,140 +123,8 @@ class _FakeModelAdapter:
         return self._responses.pop(0)
 
 
-def _raw_frame(
-    state: GameState,
-    value: int,
-    action: GameAction,
-    guid: str = "guid-1",
-    levels_completed: int = 0,
-) -> FrameDataRaw:
-    raw = FrameDataRaw()
-    raw.game_id = "game-id"
-    raw.frame = [np.array([[value]], dtype=np.int8)]
-    raw.state = state
-    raw.levels_completed = levels_completed
-    raw.win_levels = 2
-    raw.action_input = ActionInput(id=action, data={}, reasoning=None)
-    raw.guid = guid
-    raw.full_reset = False
-    raw.available_actions = [GameAction.ACTION1.value, GameAction.ACTION6.value]
-    return raw
-
-
-def _recording_event(
-    raw: FrameDataRaw,
-    action: GameAction,
-    data: dict,
-    reasoning: dict,
-    full_reset: bool = False,
-) -> dict:
-    return {
-        "timestamp": "2026-10-01T00:00:00+00:00",
-        "data": {
-            "game_id": raw.game_id,
-            "state": raw.state.name,
-            "levels_completed": raw.levels_completed,
-            "win_levels": raw.win_levels,
-            "action_input": {
-                "id": action.name,
-                "data": dict(data),
-                "reasoning": json.dumps(reasoning) if reasoning else None,
-            },
-            "guid": raw.guid,
-            "full_reset": full_reset,
-            "available_actions": raw.available_actions,
-            "frame": [layer.tolist() for layer in raw.frame],
-        },
-    }
-
-
-class _ScriptedEnv:
-    """Deterministic fake game session.
-
-    Starts NOT_PLAYED by default (forcing RESET). Each frame depends on the
-    full action history, so a fresh session replaying the same actions sees the
-    same frames and a different action diverges. ``game_over_at`` makes that
-    step's frame GAME_OVER; ``level_up_at`` completes level 1 from that step on.
-    Steps are also kept as toolkit-format recording events, with reasoning
-    stored as the JSON string the remote client sends.
-    """
-
-    def __init__(
-        self,
-        guid: str = "guid-1",
-        diverge_at: int | None = None,
-        fail_at: int | None = None,
-        initial_state: GameState = GameState.NOT_PLAYED,
-        game_over_at: int | None = None,
-        level_up_at: int | None = None,
-        baseline_actions: list[int] | None = None,
-    ) -> None:
-        self.info = SimpleNamespace(baseline_actions=baseline_actions or [])
-        self.guid = guid
-        self.diverge_at = diverge_at
-        self.fail_at = fail_at
-        self.game_over_at = game_over_at
-        self.level_up_at = level_up_at
-        self.observation_space = _raw_frame(initial_state, 0, GameAction.RESET, guid)
-        self._make_event = _recording_event(
-            self.observation_space, GameAction.RESET, {}, {}, full_reset=True
-        )
-        self.history: list[int] = []
-        self.calls: list[tuple[str, dict, dict]] = []
-        self.events: list[dict] = []
-
-    def step(
-        self, action: GameAction, *, data: dict, reasoning: dict
-    ) -> FrameDataRaw | None:
-        self.calls.append((action.name, dict(data), reasoning))
-        if len(self.calls) == self.fail_at:
-            return None
-        self.history.append(action.value + data.get("x", 0))
-        value = len(self.history) * 10 + sum(self.history)
-        if len(self.history) == self.diverge_at:
-            value += 1
-        state = (
-            GameState.GAME_OVER
-            if len(self.history) == self.game_over_at
-            else GameState.NOT_FINISHED
-        )
-        levels = int(
-            self.level_up_at is not None and len(self.history) >= self.level_up_at
-        )
-        raw = _raw_frame(state, value, action, self.guid, levels)
-        self.events.append(_recording_event(raw, action, data, reasoning))
-        self.observation_space = raw
-        return raw
-
-    def write_recording(self, path: Path) -> Path:
-        """Write the toolkit recording: the implicit make() RESET, then each step."""
-        events = [self._make_event, *self.events]
-        path.write_text("".join(json.dumps(event) + "\n" for event in events))
-        return path
-
-
 def _usage() -> NormalizedUsage:
     return NormalizedUsage(input_tokens=10, output_tokens=5, total_tokens=15)
-
-
-def _build_agent(
-    monkeypatch, tmp_path, config_id: str, env=None, rehydration=None
-) -> BenchmarkingAgent:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("ARC_HARNESS_COMMIT_SHA", "commit-abc")
-    monkeypatch.setattr(
-        "benchmarking.agent.build_model_runtime_client", lambda **_kwargs: object()
-    )
-    return BenchmarkingAgent(
-        card_id="card-1",
-        game_id="game-id",
-        agent_name="agent-name",
-        ROOT_URL="https://arcprize.org",
-        record=False,
-        arc_env=env or SimpleNamespace(info=SimpleNamespace(baseline_actions=[])),
-        config=config_id,
-        rehydration=rehydration,
-    )
 
 
 def _manual_texts(actions: int) -> list[str]:
@@ -264,7 +137,7 @@ def _manual_responses(texts: list[str]) -> list[ModelResponse]:
 
 
 def _run_manual(monkeypatch, tmp_path, actions: int = 4) -> BenchmarkingAgent:
-    agent = _build_agent(monkeypatch, tmp_path, MANUAL_CONFIG, env=_ScriptedEnv())
+    agent = build_agent(monkeypatch, tmp_path, MANUAL_CONFIG, env=ScriptedEnv())
     agent._adapter = _FakeModelAdapter(_manual_responses(_manual_texts(actions)))
     agent.MAX_ACTIONS = actions - 1  # main() runs while action_counter <= MAX_ACTIONS
     agent.main()
@@ -297,8 +170,8 @@ def _openai_response(step: int) -> ModelResponse:
 def _run_openai_continuous(
     monkeypatch, tmp_path, actions: int = 3, env=None
 ) -> BenchmarkingAgent:
-    agent = _build_agent(
-        monkeypatch, tmp_path, OPENAI_CONTINUOUS_CONFIG, env=env or _ScriptedEnv()
+    agent = build_agent(
+        monkeypatch, tmp_path, OPENAI_CONTINUOUS_CONFIG, env=env or ScriptedEnv()
     )
     agent._stateful_adapter._model_adapter = _FakeModelAdapter(
         [_openai_response(step) for step in range(2, actions + 1)]
@@ -312,20 +185,12 @@ def _run_meta(agent: BenchmarkingAgent) -> dict:
     return json.loads((Path(agent.run_dir) / "run_meta.json").read_text())
 
 
-def _snapshot_names(agent: BenchmarkingAgent) -> list[str]:
-    return sorted(p.name for p in (Path(agent.run_dir) / "state").iterdir())
-
-
-def _latest_snapshot(agent: BenchmarkingAgent) -> AgentSnapshot:
-    return load_snapshot(Path(agent.run_dir) / "state" / _snapshot_names(agent)[-1])
-
-
 @pytest.mark.unit
 class TestSnapshotsDuringRun:
     def test_writes_rolling_snapshots_every_step(self, monkeypatch, tmp_path):
         agent = _run_manual(monkeypatch, tmp_path, actions=5)
         assert agent.step_counter == 5
-        assert _snapshot_names(agent) == [
+        assert snapshot_names(agent) == [
             "state_step_0003.json",
             "state_step_0004.json",
             "state_step_0005.json",
@@ -333,7 +198,7 @@ class TestSnapshotsDuringRun:
 
     def test_latest_snapshot_matches_agent_state(self, monkeypatch, tmp_path):
         agent = _run_manual(monkeypatch, tmp_path)
-        snapshot = _latest_snapshot(agent)
+        snapshot = latest_snapshot(agent)
         latest_frame = agent.frames[-1]
 
         assert snapshot.step == agent.step_counter == agent.action_counter == 4
@@ -397,7 +262,7 @@ class TestContinuousTranscript:
 
         assert agent.step_counter == 4
         assert agent.conversation == []
-        assert _latest_snapshot(agent).agent.conversation == []
+        assert latest_snapshot(agent).agent.conversation == []
         assert "messages:" not in caplog.text
         # OpenAI returns no readable projection, so each step logs the system
         # prompt and that turn's new frame instead of a growing history.
@@ -411,7 +276,7 @@ class TestContinuousTranscript:
         self, monkeypatch, tmp_path
     ):
         agent = _run_openai_continuous(
-            monkeypatch, tmp_path, actions=4, env=_ScriptedEnv(game_over_at=2)
+            monkeypatch, tmp_path, actions=4, env=ScriptedEnv(game_over_at=2)
         )
 
         assert agent.step_counter == 4
@@ -434,7 +299,7 @@ class TestContinuousTranscript:
 @pytest.mark.unit
 class TestSnapshotRules:
     def _boundary_agent(self, monkeypatch, tmp_path, config_id: str) -> BenchmarkingAgent:
-        agent = _build_agent(monkeypatch, tmp_path, config_id)
+        agent = build_agent(monkeypatch, tmp_path, config_id)
         agent.frames.append(
             FrameData(
                 frame=[[[1]]],
@@ -503,7 +368,7 @@ def _assert_classified(agent: BenchmarkingAgent) -> None:
 
 @pytest.mark.unit
 class TestAttributeGuard:
-    """Fails when a new agent attribute is not classified (plan F2)."""
+    """Fails when a new agent attribute is not classified."""
 
     def test_classification_sets_are_disjoint(self):
         sets = [SNAPSHOTTED, IN_FLIGHT, FROM_CONFIG, SESSION]
@@ -513,7 +378,7 @@ class TestAttributeGuard:
     def test_constructed_agent_attributes_are_classified(
         self, monkeypatch, tmp_path, config_id
     ):
-        _assert_classified(_build_agent(monkeypatch, tmp_path, config_id))
+        _assert_classified(build_agent(monkeypatch, tmp_path, config_id))
 
     def test_manual_run_attributes_are_classified(self, monkeypatch, tmp_path):
         _assert_classified(_run_manual(monkeypatch, tmp_path))
@@ -539,26 +404,17 @@ def _prepare(
 def _rehydrated_manual(
     monkeypatch, tmp_path, prepared: PreparedRehydration, total_actions: int, **env_kwargs
 ) -> BenchmarkingAgent:
-    agent = _build_agent(
+    agent = build_agent(
         monkeypatch,
         tmp_path,
         MANUAL_CONFIG,
-        env=_ScriptedEnv(guid="guid-2", **env_kwargs),
+        env=ScriptedEnv(guid="guid-2", **env_kwargs),
         rehydration=prepared,
     )
     remaining = _manual_texts(total_actions)[prepared.snapshot.step - 1 :]
     agent._adapter = _FakeModelAdapter(_manual_responses(remaining))
     agent.MAX_ACTIONS = total_actions - 1
     return agent
-
-
-def _comparable(snapshot: AgentSnapshot) -> dict:
-    """Snapshot content that must match an uninterrupted run."""
-    data = snapshot.model_dump(
-        mode="json", exclude={"created_at", "source", "lineage"}
-    )
-    data["agent"].pop("elapsed_seconds")
-    return data
 
 
 @pytest.mark.unit
@@ -574,12 +430,12 @@ class TestRehydrationReplay:
 
         assert resumed.run_record.run_id == "guid-2"
         # Step 3 is snapshotted at the resume point, before any new step.
-        assert _snapshot_names(resumed) == [
+        assert snapshot_names(resumed) == [
             "state_step_0003.json",
             "state_step_0004.json",
             "state_step_0005.json",
         ]
-        latest = _latest_snapshot(resumed)
+        latest = latest_snapshot(resumed)
         assert (latest.source.run_id, latest.source.guid) == ("guid-2", "guid-2")
         lineage = [{"run_id": "guid-1", "guid": "guid-1", "rehydrated_at_step": 3}]
         assert [entry.model_dump() for entry in latest.lineage] == lineage
@@ -608,7 +464,7 @@ class TestRehydrationReplay:
             Path(resumed.run_dir) / "state" / "state_step_0003.json"
         )
         assert 1_000.0 <= resume_point.agent.elapsed_seconds < 1_060.0
-        assert 1_000.0 <= _latest_snapshot(resumed).agent.elapsed_seconds < 1_060.0
+        assert 1_000.0 <= latest_snapshot(resumed).agent.elapsed_seconds < 1_060.0
 
     def test_chained_rehydration(self, monkeypatch, tmp_path):
         original = _run_manual(monkeypatch, tmp_path, actions=5)
@@ -616,11 +472,11 @@ class TestRehydrationReplay:
             monkeypatch, tmp_path, _prepare(original, tmp_path, step=3), total_actions=5
         )
         first.main()
-        second = _build_agent(
+        second = build_agent(
             monkeypatch,
             tmp_path,
             MANUAL_CONFIG,
-            env=_ScriptedEnv(guid="guid-3"),
+            env=ScriptedEnv(guid="guid-3"),
             rehydration=_prepare(first, tmp_path, step=4),
         )
         second._adapter = _FakeModelAdapter(_manual_responses(_manual_texts(5)[3:]))
@@ -629,12 +485,12 @@ class TestRehydrationReplay:
         second.main()
 
         assert second.arc_env.calls == original.arc_env.calls
-        assert _comparable(_latest_snapshot(second)) == _comparable(
-            _latest_snapshot(original)
+        assert comparable_snapshot(latest_snapshot(second)) == comparable_snapshot(
+            latest_snapshot(original)
         )
         assert [
             (entry.guid, entry.rehydrated_at_step)
-            for entry in _latest_snapshot(second).lineage
+            for entry in latest_snapshot(second).lineage
         ] == [("guid-1", 3), ("guid-2", 4)]
 
     def test_changed_level_budgets_use_current_budgets(self, monkeypatch, tmp_path):
@@ -713,8 +569,8 @@ class TestRehydrationRunMeta:
 @pytest.mark.unit
 class TestRunIdentity:
     def test_run_is_named_after_session_guid(self, monkeypatch, tmp_path):
-        agent = _build_agent(
-            monkeypatch, tmp_path, MANUAL_CONFIG, env=_ScriptedEnv(guid="session-1")
+        agent = build_agent(
+            monkeypatch, tmp_path, MANUAL_CONFIG, env=ScriptedEnv(guid="session-1")
         )
         assert agent.run_record.run_id == "session-1"
         assert agent.run_dir == f"recordings/{agent.name}.session-1"
@@ -726,16 +582,16 @@ class TestRunIdentity:
         )
 
     def test_falls_back_to_random_id_without_session_guid(self, monkeypatch, tmp_path):
-        agent = _build_agent(monkeypatch, tmp_path, MANUAL_CONFIG)
+        agent = build_agent(monkeypatch, tmp_path, MANUAL_CONFIG)
         assert len(agent.run_record.run_id) == 36  # uuid4
         assert _run_meta(agent)["guid"] is None
 
     def test_reused_session_guid_fails_instead_of_merging_runs(
         self, monkeypatch, tmp_path
     ):
-        _build_agent(monkeypatch, tmp_path, MANUAL_CONFIG, env=_ScriptedEnv(guid="dup"))
+        build_agent(monkeypatch, tmp_path, MANUAL_CONFIG, env=ScriptedEnv(guid="dup"))
         with pytest.raises(FileExistsError):
-            _build_agent(
-                monkeypatch, tmp_path, MANUAL_CONFIG, env=_ScriptedEnv(guid="dup")
+            build_agent(
+                monkeypatch, tmp_path, MANUAL_CONFIG, env=ScriptedEnv(guid="dup")
             )
 

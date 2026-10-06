@@ -1,8 +1,8 @@
 """Agent state snapshots and toolkit recording parsing for rehydration.
 
-See REHYDRATION_PLAN.md. This module is self-contained: it defines the
-snapshot schema, parses toolkit ``.jsonl`` recordings, fingerprints frames, and
-writes rolling snapshots atomically. Wiring into the agent happens elsewhere.
+This module is self-contained: it defines the snapshot schema, parses toolkit
+``.jsonl`` recordings, fingerprints frames, and writes rolling snapshots
+atomically. Wiring into the agent happens elsewhere.
 """
 
 from __future__ import annotations
@@ -220,7 +220,7 @@ def _normalize_reasoning(value: Any, where: str) -> dict[str, Any]:
     """Return reasoning as the dict originally passed to ``arc_env.step``.
 
     The remote client sends ``json.dumps(reasoning)``, so the server may store a
-    string. Re-sending must reproduce that string exactly (plan F27).
+    string. Re-sending must reproduce that string exactly.
     """
     if not value:
         return {}

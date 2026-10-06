@@ -603,7 +603,11 @@ class BenchmarkingAgent(Agent):
         )
 
     def _snapshot(self) -> AgentSnapshot:
-        """Serialize agent state at a clean loop boundary (REHYDRATION_PLAN.md §3)."""
+        """Serialize agent state at a clean loop boundary.
+
+        A clean boundary is right after step N: N actions submitted, frame N
+        appended, and no in-flight turn or compaction buffers.
+        """
         in_flight = {
             "_pending_turn_messages": getattr(self, "_pending_turn_messages", []),
             "_pending_action_reasoning": self._pending_action_reasoning,
