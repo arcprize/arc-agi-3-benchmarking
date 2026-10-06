@@ -296,6 +296,9 @@ def test_rejects_invalid_tool_protocol(raw):
     with pytest.raises(InvalidProviderResponseError) as captured:
         normalize_deepseek_response(raw)
     assert captured.value.usage.total_tokens == 120
+    assert captured.value.response["validation_error"] == str(captured.value)
+    assert captured.value.response["choices"][0]["tool_call_count"] == 1
+    assert "tool_calls" not in captured.value.response["choices"][0]["message"]
 
 
 @pytest.mark.parametrize(
@@ -506,12 +509,18 @@ def test_summary_uses_tool_and_excludes_pending_observations():
 
     assert result.summary == "Keep moving east."
     assert calls[1]["tools"][0]["function"]["name"] == SUMMARY_TOOL_NAME
+    assert calls[1]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": SUMMARY_TOOL_NAME},
+    }
+    assert "tool_choice" not in calls[0]
     assert calls[1]["messages"][2]["reasoning_content"] == "exact thought"
     assert calls[1]["messages"][3]["role"] == "tool"
     assert calls[1]["messages"][-1]["content"] == SUMMARY_REQUEST_PROMPT
     assert "GAME_OVER" not in json.dumps(calls[1])
     assert state.model_dump() == snapshot
     _turn(adapter, result.state, "fresh reset frame")
+    assert "tool_choice" not in calls[2]
     assert [message["content"] for message in calls[2]["messages"][-2:]] == [
         "GAME_OVER buffered observation",
         "fresh reset frame",
@@ -685,3 +694,26 @@ def test_summary_preserves_deepseek_settings_and_replaces_output_limit():
         == request["extra_body"]["chat_template_kwargs"]
     )
     assert request["max_tokens"] == 256
+
+
+def test_summary_failure_diagnostic_retains_protocol_reason_and_usage():
+    from benchmarking.exceptions import CompactionFailureError
+
+    adapter, _ = _adapter([_text_raw()])
+    state = adapter.initial_state()
+    original = state.model_copy(deep=True)
+    events = []
+    with pytest.raises(CompactionFailureError) as error:
+        SummaryCompactor(SummaryCompactionPolicy(
+            strategy="harness_summary", trigger_tokens=175_000,
+        )).compact(
+            adapter=adapter, state=state, request_config=_config()["request"],
+            trigger_tokens=175_000, max_context_length=1_000_000, max_retries=0,
+            on_failed_attempt=events.append,
+        )
+    assert state == original
+    assert error.value.usage.total_tokens == 120
+    assert events[0]["request_settings"]["max_tokens"] == 8192
+    assert events[0]["response"]["validation_error"] == "DeepSeek did not finish with a tool call."
+    assert events[0]["response"]["choices"][0]["finish_reason"] == "stop"
+    assert events[0]["response"]["choices"][0]["tool_call_count"] == 0
