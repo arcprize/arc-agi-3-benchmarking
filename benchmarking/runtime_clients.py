@@ -72,7 +72,15 @@ def build_model_runtime_client(
             config_id=config_id,
             default_api_key_env=DEFAULT_GOOGLE_API_KEY_ENV,
         )
-        return google_genai.Client(api_key=api_key)
+        api_version = client_config.get("api_version")
+        base_url = client_config.get("base_url")
+        http_options = None
+        if api_version is not None or base_url is not None:
+          http_options = google_genai.types.HttpOptions(
+              api_version=client_config.get("api_version"),
+              base_url=client_config.get("base_url"),
+          )
+        return google_genai.Client(api_key=api_key, http_options=http_options)
 
     raise ValueError(
         f"Model config '{config_id}' uses unsupported runtime "
