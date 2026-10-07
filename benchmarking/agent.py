@@ -1393,7 +1393,7 @@ class BenchmarkingAgent(Agent):
                 self.run_record.outcome = "GAME_OVER"
             elif self._timed_out:
                 self.run_record.outcome = "TIMEOUT"
-            elif self.action_counter >= self.MAX_ACTIONS:
+            elif self.exit_reason == ExitReason.ACTION_BUDGET or self.action_counter >= self.MAX_ACTIONS:
                 self.run_record.outcome = "MAX_ACTIONS"
             self._write_run_meta()
 

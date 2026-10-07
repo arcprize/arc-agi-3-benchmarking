@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 import requests
 
 from benchmarking import BenchmarkingAgent, Swarm
+from benchmarking.base import ExitReason
 from benchmarking.cli_list import print_requested_resource_lists
 from benchmarking.model_config import (
     get_model_config,
@@ -175,7 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-# Process exit code when rehydration inputs fail offline validation
+# Process exit code when rehydration fails (offline validation or replay)
 # (2 is taken by argparse usage errors).
 REHYDRATION_EXIT_CODE = 3
 
@@ -332,6 +333,8 @@ def main() -> None:
     # A timed join lets signal handlers run promptly on the main thread
     while agent_thread.is_alive():
         agent_thread.join(timeout=1)
+    if any(a.exit_reason == ExitReason.REHYDRATION_ERROR for a in swarm.agents):
+        sys.exit(REHYDRATION_EXIT_CODE)
 
 
 if __name__ == "__main__":
