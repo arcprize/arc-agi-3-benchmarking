@@ -10,7 +10,6 @@ import os
 import signal
 import sys
 import threading
-from functools import partial
 from types import FrameType
 from typing import Optional
 from urllib.parse import urlparse
@@ -18,12 +17,19 @@ from urllib.parse import urlparse
 import requests
 
 from benchmarking import BenchmarkingAgent, Swarm
+from benchmarking.base import ExitReason
 from benchmarking.cli_list import print_requested_resource_lists
 from benchmarking.model_config import (
     get_model_config,
 )
 from benchmarking.model_config import (
     list_model_config_ids as _list_model_config_ids,
+)
+from benchmarking.rehydration import (
+    PreparedRehydration,
+    RehydrationError,
+    parse_rehydrate_args,
+    prepare_rehydration,
 )
 
 logger = logging.getLogger()
@@ -157,37 +163,80 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List available model config IDs and exit.",
     )
+    parser.add_argument(
+        "--rehydrate",
+        action="append",
+        metavar="KEY=PATH",
+        help=(
+            "Resume a previous session. Repeat for each input: "
+            "recording=<toolkit .jsonl> and state=<state_step_NNNN.json>. "
+            "Requires --config and a single -g game."
+        ),
+    )
     return parser
 
 
-def run_agent(swarm: Swarm) -> None:
-    swarm.main()
-    os.kill(os.getpid(), signal.SIGINT)
+# Process exit code when rehydration fails (offline validation or replay)
+# (2 is taken by argparse usage errors).
+REHYDRATION_EXIT_CODE = 3
 
 
-def cleanup(
-    swarm: Swarm,
-    signum: Optional[int],
-    frame: Optional[FrameType],
-) -> None:
-    logger.info("Received SIGINT, exiting...")
-    card_id = swarm.card_id
-    if card_id:
-        scorecard = swarm.close_scorecard(card_id)
+def resolve_rehydration(
+    args: argparse.Namespace, games: list[str]
+) -> Optional[PreparedRehydration]:
+    """Validate rehydration inputs offline, before any scorecard is opened."""
+    if not args.rehydrate:
+        return None
+    if not args.config:
+        raise RehydrationError("--rehydrate requires --config.")
+    prepared = prepare_rehydration(
+        parse_rehydrate_args(args.rehydrate),
+        config_id=args.config,
+        game_ids=games,
+    )
+    logger.info(
+        f"Rehydrating {prepared.snapshot.source.game_id} at step "
+        f"{prepared.snapshot.step} from run {prepared.snapshot.source.run_id}."
+    )
+    return prepared
+
+
+_shutting_down = False
+_swarm: Optional[Swarm] = None
+
+
+def handle_shutdown_signal(signum: int, frame: Optional[FrameType]) -> None:
+    """Close the scorecard and exit 128 + signum (130 for SIGINT, 143 for SIGTERM)."""
+    # A second signal runs nested on this same thread, so guard with a flag, not a lock.
+    global _shutting_down
+    name = signal.Signals(signum).name
+    if _shutting_down:
+        logger.info(f"Ignoring {name}: shutdown already in progress.")
+        return
+    _shutting_down = True
+    logger.info(f"Received {name}, shutting down.")
+
+    if _swarm is None:
+        logger.info("SHUTDOWN: no scorecard opened")
+    else:
+        _swarm.request_shutdown()
+        scorecard = _swarm.close_scorecard()
         if scorecard:
             logger.info("--- EXISTING SCORECARD REPORT ---")
             logger.info(json.dumps(scorecard.model_dump(), indent=2))
-            swarm.cleanup(scorecard)
+            _swarm.cleanup(scorecard)
 
         # Provide web link to scorecard
-        if card_id:
-            scorecard_url = f"{ROOT_URL}/scorecards/{card_id}"
+        if _swarm.card_id:
+            scorecard_url = f"{ROOT_URL}/scorecards/{_swarm.card_id}"
             logger.info(f"View your scorecard online: {scorecard_url}")
 
-    sys.exit(0)
+    sys.exit(128 + signum)
 
 
 def main() -> None:
+    global _swarm
+
     log_level = logging.INFO
     if os.environ.get("DEBUG", "False") == "True":
         log_level = logging.DEBUG
@@ -205,6 +254,10 @@ def main() -> None:
 
     logger.addHandler(file_handler)
     logger.addHandler(stdout_handler)
+
+    # Before any startup work; this also replaces an inherited SIG_IGN.
+    signal.signal(signal.SIGINT, handle_shutdown_signal)
+    signal.signal(signal.SIGTERM, handle_shutdown_signal)
 
     # logging.getLogger("requests").setLevel(logging.CRITICAL)
     # logging.getLogger("werkzeug").setLevel(logging.CRITICAL)
@@ -252,6 +305,12 @@ def main() -> None:
             )
         return
 
+    try:
+        rehydration = resolve_rehydration(args, games)
+    except ValueError as e:
+        logger.error(f"Cannot rehydrate: {e}")
+        sys.exit(REHYDRATION_EXIT_CODE)
+
     # Start with Empty tags, "agent" and agent name will be added by the Swarm later
     tags: list[str] = []
 
@@ -265,23 +324,17 @@ def main() -> None:
         games,
         tags=tags,
         config=args.config,
+        rehydration=rehydration,
     )
-    agent_thread = threading.Thread(target=partial(run_agent, swarm))
-    agent_thread.daemon = True  # die when the main thread dies
+    _swarm = swarm
+    agent_thread = threading.Thread(target=swarm.main, daemon=True)  # dies with the main thread
     agent_thread.start()
 
-    signal.signal(signal.SIGINT, partial(cleanup, swarm))  # handler for Ctrl+C
-
-    try:
-        # Wait for the agent thread to complete
-        while agent_thread.is_alive():
-            agent_thread.join(timeout=5)  # Check every 5 second
-    except KeyboardInterrupt:
-        logger.info("KeyboardInterrupt received in main thread")
-        cleanup(swarm, signal.SIGINT, None)
-    except Exception as e:
-        logger.error(f"Unexpected error in main thread: {e}")
-        cleanup(swarm, None, None)
+    # A timed join lets signal handlers run promptly on the main thread
+    while agent_thread.is_alive():
+        agent_thread.join(timeout=1)
+    if any(a.exit_reason == ExitReason.REHYDRATION_ERROR for a in swarm.agents):
+        sys.exit(REHYDRATION_EXIT_CODE)
 
 
 if __name__ == "__main__":

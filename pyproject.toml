@@ -6,7 +6,7 @@ readme = "readme.md"
 requires-python = ">=3.12"
 dependencies = [
     "anthropic==0.95.0",
-    "arc-agi>=0.9.8",
+    "arc-agi>=0.9.9",
     "dotenv>=0.9.9",
     "google-genai>=2.4.0",
     "langchain[openai]>=0.3.27",

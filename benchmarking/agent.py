@@ -6,6 +6,7 @@ import re
 import textwrap
 import time
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -32,6 +33,17 @@ from .recording import (
     RunRecord,
     StepRecord,
     StepUsage,
+)
+from .rehydration import (
+    AgentFields,
+    AgentSnapshot,
+    LineageEntry,
+    PreparedRehydration,
+    RehydrationError,
+    SnapshotSource,
+    config_sha256,
+    frame_fingerprint,
+    write_snapshot_atomic,
 )
 from .runtime_adapters import build_model_runtime_adapter
 from .runtime_clients import build_model_runtime_client
@@ -76,14 +88,24 @@ class BenchmarkingAgent(Agent):
     # Using 1.0 is intentionally conservative relative to observed runs.
     ESTIMATED_CHARS_PER_TOKEN: float = 1.0
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        rehydration: PreparedRehydration | None = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
+        self._rehydration = rehydration
+        self._lineage: list[LineageEntry] = []
         if not self.config:
             raise ValueError(
                 "No model config specified. Pass --config=<config_id> when running main.py. "
                 "Use --list-configs to see available options."
             )
         self.MODEL_CONFIG_ID = self.config
+        # Message transcript for manual_rolling and previous_response_id configs.
+        # Continuous configs leave it empty: `self._runtime_state` holds their
+        # transcript, and compaction keeps that bounded.
         self.conversation: list[dict[str, Any]] = []
         self.token_counter: int = 0
 
@@ -91,6 +113,9 @@ class BenchmarkingAgent(Agent):
             self._load_model_config()
         )
         self._pricing: dict[str, float] = pricing_cfg
+        self._model_config_sha256 = config_sha256(
+            get_model_config(self.MODEL_CONFIG_ID)
+        )
 
         # Server-managed conversation state (OpenAI Responses previous_response_id
         # + compaction). When enabled, we send only the new message(s) each turn
@@ -159,6 +184,9 @@ class BenchmarkingAgent(Agent):
                 f"{self.game_id} - No baseline_actions available, "
                 f"using MAX_ACTIONS={self.MAX_ACTIONS}"
             )
+        # Testing/development only: a total action cap across all levels.
+        hard_cap = os.environ.get("MAX_ACTIONS_HARD_CAP")
+        self._max_actions_hard_cap = int(hard_cap) if hard_cap else None
         self._level_action_counter: int = 0
         self._last_levels_completed: int = 0
         self._level_just_advanced: bool = False
@@ -189,9 +217,14 @@ class BenchmarkingAgent(Agent):
             self._pending_turn_messages: list[Message] = []
         # Per-step recording
         self.step_counter: int = 0
-        run_id = uuid.uuid4()
+        # Name the run after the game session (set by make()'s reset) so its
+        # files can be found from the session guid alone.
+        session_guid = getattr(
+            getattr(self.arc_env, "observation_space", None), "guid", None
+        )
+        run_id = session_guid or str(uuid.uuid4())
         self.run_dir = os.path.join("recordings", f"{self.name}.{run_id}")
-        os.makedirs(self.run_dir, exist_ok=True)
+        os.makedirs(self.run_dir)
         runtime_metadata = None
         if self._continuous_conversation:
             commit_sha = harness_commit_sha()
@@ -228,8 +261,10 @@ class BenchmarkingAgent(Agent):
                     "context_limit_tokens": self.MAX_CONTEXT_LENGTH,
                 }
         self.run_record = RunRecord(
-            run_id=str(run_id),
+            run_id=run_id,
             game_id=self.game_id,
+            guid=session_guid,
+            card_id=self.card_id,
             agent_name=self.name,
             model=self.MODEL,
             started_at=datetime.now(timezone.utc),
@@ -493,7 +528,11 @@ class BenchmarkingAgent(Agent):
     def _write_run_meta(self) -> None:
         path = os.path.join(self.run_dir, "run_meta.json")
         with open(path, "w") as f:
-            exclude = {"runtime"} if self.run_record.runtime is None else None
+            exclude = {
+                field
+                for field in ("runtime", "rehydration")
+                if getattr(self.run_record, field) is None
+            }
             f.write(self.run_record.model_dump_json(indent=2, exclude=exclude))
 
     def _save_diagnostic(self, response: Any) -> None:
@@ -575,6 +614,175 @@ class BenchmarkingAgent(Agent):
         with open(filename, "w") as f:
             json.dump(sanitize_settings(event), f, indent=2, default=str)
         logger.warning("Saved harness summary diagnostic to %s", filename)
+
+    def _snapshot(self) -> AgentSnapshot:
+        """Serialize agent state at a clean loop boundary.
+
+        A clean boundary is right after step N: N actions submitted, frame N
+        appended, and no in-flight turn or compaction buffers.
+        """
+        in_flight = {
+            "_pending_turn_messages": getattr(self, "_pending_turn_messages", []),
+            "_pending_action_reasoning": self._pending_action_reasoning,
+            "_pending_compaction_usage": self._pending_compaction_usage,
+            "_pending_compaction_continuation": self._pending_compaction_continuation,
+        }
+        busy = [name for name, value in in_flight.items() if value]
+        if busy:
+            raise RuntimeError(
+                f"Cannot snapshot with in-flight state: {', '.join(busy)}."
+            )
+        if self.step_counter != self.action_counter:
+            raise RuntimeError(
+                f"Cannot snapshot: step_counter={self.step_counter} != "
+                f"action_counter={self.action_counter}."
+            )
+
+        return AgentSnapshot(
+            harness_commit_sha=harness_commit_sha(),
+            created_at=datetime.now(timezone.utc),
+            source=SnapshotSource(
+                run_id=self.run_record.run_id,
+                guid=self.guid,
+                game_id=self.game_id,
+                card_id=self.card_id,
+            ),
+            lineage=self._lineage,
+            model_config_id=self.MODEL_CONFIG_ID,
+            model_config_sha256=self._model_config_sha256,
+            pricing=self._pricing,
+            step=self.step_counter,
+            last_frame=frame_fingerprint(self.frames[-1]),
+            agent=AgentFields(
+                conversation=self.conversation,
+                token_counter=self.token_counter,
+                level_action_counter=self._level_action_counter,
+                last_levels_completed=self._last_levels_completed,
+                level_just_advanced=self._level_just_advanced,
+                compaction_counter=self._compaction_counter,
+                pending_compaction_trigger_tokens=(
+                    self._pending_compaction_trigger_tokens
+                ),
+                elapsed_seconds=time.time() - self.timer,
+                total_usage=self.run_record.total_usage,
+            ),
+            runtime_state=(
+                self._runtime_state if self._continuous_conversation else None
+            ),
+        )
+
+    def _restore(self, snapshot: AgentSnapshot) -> None:
+        """Load snapshot state after replay has rebuilt the game to its step."""
+        if self._continuous_conversation:
+            if snapshot.runtime_state is None:
+                raise RehydrationError("Snapshot has no runtime_state to restore.")
+            self._runtime_state = snapshot.runtime_state
+
+        fields = snapshot.agent
+        self.conversation = deepcopy(fields.conversation)
+        self.token_counter = fields.token_counter
+        self.step_counter = snapshot.step
+        self._level_action_counter = fields.level_action_counter
+        self._last_levels_completed = fields.last_levels_completed
+        self._level_just_advanced = fields.level_just_advanced
+        self._compaction_counter = fields.compaction_counter
+        self._pending_compaction_trigger_tokens = (
+            fields.pending_compaction_trigger_tokens
+        )
+        # base.main() applies the offset when it starts the timer; setting the
+        # timer here too keeps snapshots taken before then consistent.
+        self._elapsed_offset_seconds = fields.elapsed_seconds
+        self.timer = time.time() - fields.elapsed_seconds
+        self._lineage = [
+            *snapshot.lineage,
+            LineageEntry(
+                run_id=snapshot.source.run_id,
+                guid=snapshot.source.guid,
+                rehydrated_at_step=snapshot.step,
+            ),
+        ]
+        self.run_record.total_usage = fields.total_usage
+        self.run_record.total_steps = snapshot.step
+        if self.run_record.runtime and "compaction_count" in self.run_record.runtime:
+            self.run_record.runtime["compaction_count"] = fields.compaction_counter
+        provenance: dict[str, Any] = {
+            "source_run_id": snapshot.source.run_id,
+            "source_guid": snapshot.source.guid,
+            "source_card_id": snapshot.source.card_id,
+            "replayed_steps": snapshot.step,
+            "prior_elapsed_seconds": fields.elapsed_seconds,
+            "lineage": [entry.model_dump() for entry in self._lineage],
+        }
+        if snapshot.pricing != self._pricing:
+            logger.warning(
+                f"Pricing changed since the snapshot ({snapshot.pricing} -> "
+                f"{self._pricing}); carried costs use the previous pricing."
+            )
+            provenance["pricing_changed"] = {
+                "previous": snapshot.pricing,
+                "current": self._pricing,
+            }
+        self.run_record.rehydration = provenance
+        self._write_run_meta()
+
+    def _rehydrate(self, prepared: PreparedRehydration) -> None:
+        """Replay recorded actions, verify every frame, then restore state.
+
+        Replayed steps re-submit their original reasoning metadata but write no
+        step files and add no usage; totals come from the snapshot.
+        """
+        snapshot = prepared.snapshot
+        logger.info(f"{self.game_id} - Replaying {snapshot.step} recorded steps.")
+        frame: FrameData | None = None
+        for number, recorded in enumerate(prepared.steps, start=1):
+            self._pending_action_reasoning = dict(recorded.reasoning)
+            frame = self.take_action(recorded.game_action())
+            if frame is None:
+                raise RehydrationError(f"Replay step {number}: invalid frame.")
+            self.append_frame(frame)
+            self.action_counter += 1
+            live, expected = frame_fingerprint(frame), frame_fingerprint(recorded)
+            if live != expected:
+                raise RehydrationError(
+                    f"Replay diverged at step {number}: live={live.model_dump()}, "
+                    f"recorded={expected.model_dump()}."
+                )
+
+        self._restore(snapshot)
+        # Snapshot the resume point under this session's guid, so this run can
+        # itself be rehydrated even if it stops before its first new step.
+        self._after_action(frame)
+        logger.info(
+            f"{self.game_id} - Rehydrated at step {snapshot.step}; "
+            "resuming normal play."
+        )
+
+    def main(self) -> None:
+        if self._rehydration is not None:
+            try:
+                self._rehydrate(self._rehydration)
+            except Exception:
+                self.exit_reason = ExitReason.REHYDRATION_ERROR
+                self.cleanup()
+                raise
+        super().main()
+
+    def _after_action(self, frame: Optional[FrameData]) -> None:
+        """Write a rolling state snapshot. Never interrupts the run."""
+        if frame is None:
+            logger.warning(
+                f"Skipping state snapshot after step {self.step_counter}: "
+                "action produced no frame."
+            )
+            return
+        try:
+            path = write_snapshot_atomic(self.run_dir, self._snapshot())
+        except Exception:
+            logger.exception(
+                f"Failed to write state snapshot after step {self.step_counter}."
+            )
+            return
+        logger.info(f"Saved state snapshot {self.step_counter} to {path}")
 
     def _run_pending_compaction(self) -> None:
         trigger_tokens = getattr(self, "_pending_compaction_trigger_tokens", None)
@@ -689,12 +897,15 @@ class BenchmarkingAgent(Agent):
         self._sync_level_progress(latest_frame)
         self._level_action_counter += 1
 
+        observation: list[dict[str, Any]] = []
         if forced_action == GameAction.RESET and latest_frame.state is GameState.GAME_OVER:
             frame_message = {
                 "role": "user",
                 "content": self.build_frame_content(latest_frame),
             }
-            self.conversation.append(frame_message)
+            observation.append(frame_message)
+            if not self._continuous_conversation:
+                self.conversation.append(frame_message)
             # This observation reaches the model only on the next real API call,
             # so buffer it for server-managed state too.
             if self._server_state:
@@ -711,7 +922,13 @@ class BenchmarkingAgent(Agent):
                 timestamp=datetime.now(timezone.utc),
                 duration_seconds=0.0,
                 model=self.MODEL,
-                messages_sent=list(self.conversation),
+                # Continuous configs log only the buffered observation; their
+                # full transcript is logged with the next model request.
+                messages_sent=(
+                    observation
+                    if self._continuous_conversation
+                    else list(self.conversation)
+                ),
                 parsed_action=self._format_parsed_action(forced_action),
             )
         )
@@ -746,6 +963,11 @@ class BenchmarkingAgent(Agent):
         if latest_frame.state is GameState.WIN:
             self.exit_reason = ExitReason.GAME_WIN
             return True
+        cap = self._max_actions_hard_cap
+        if cap is not None and self.action_counter >= cap:
+            logger.info(f"{self.game_id} - Reached MAX_ACTIONS_HARD_CAP={cap}. Stopping.")
+            self.exit_reason = ExitReason.ACTION_BUDGET
+            return True
         # Check per-level action budget
         if self._level_action_budgets:
             self._sync_level_progress(latest_frame)
@@ -778,24 +1000,18 @@ class BenchmarkingAgent(Agent):
         self._sync_level_progress(latest_frame)
         self._level_action_counter += 1
 
-        # Ensure the system prompt is present before the first real turn
-        if not self.conversation:
-            self.conversation.append(
-                {"role": "system", "content": self._build_system_prompt()}
-            )
-        elif self._continuous_conversation and self.conversation[0].get(
-            "role"
-        ) != "system":
-            self.conversation.insert(
-                0, {"role": "system", "content": self._build_system_prompt()}
-            )
-
         # Normal turn: append frame, call the model, parse action
         frame_message = {
             "role": "user",
             "content": self.build_frame_content(latest_frame),
         }
-        self.conversation.append(frame_message)
+        if not self._continuous_conversation:
+            # Ensure the system prompt is present before the first real turn
+            if not self.conversation:
+                self.conversation.append(
+                    {"role": "system", "content": self._build_system_prompt()}
+                )
+            self.conversation.append(frame_message)
         if self._server_state:
             self._pending_user_messages.append(frame_message)
         if hasattr(self, "_stateful_adapter"):
@@ -826,15 +1042,16 @@ class BenchmarkingAgent(Agent):
             self._previous_response_id = model_response.response_id
             self._pending_user_messages = []
 
-        self.conversation.append(
-            {
-                "role": "assistant",
-                "content": self._build_assistant_turn_content(
-                    model_response.output_text,
-                    model_response.reasoning_text,
-                ),
-            }
-        )
+        if not self._continuous_conversation:
+            self.conversation.append(
+                {
+                    "role": "assistant",
+                    "content": self._build_assistant_turn_content(
+                        model_response.output_text,
+                        model_response.reasoning_text,
+                    ),
+                }
+            )
 
         logger.info(f"Parsed action: {self._format_parsed_action(action)}")
         request_record = None
@@ -1077,11 +1294,16 @@ class BenchmarkingAgent(Agent):
                         sanitized_messages = turn_result.sanitized_request.get(
                             "messages"
                         )
-                    messages_sent = (
-                        sanitized_messages
-                        if isinstance(sanitized_messages, list)
-                        else list(self.conversation)
-                    )
+                    if isinstance(sanitized_messages, list):
+                        messages_sent = sanitized_messages
+                    elif self._continuous_conversation:
+                        # No readable projection: log this turn's new input.
+                        messages_sent = [
+                            {"role": "system", "content": self._build_system_prompt()},
+                            *(m.model_dump() for m in self._pending_turn_messages),
+                        ]
+                    else:
+                        messages_sent = list(self.conversation)
                 else:
                     assert model_request is not None
                     messages_sent = [
@@ -1138,21 +1360,26 @@ class BenchmarkingAgent(Agent):
 
     # ── Token tracking & cleanup ─────────────────────────────────────────
 
+    def _conversation_length(self) -> int | None:
+        """Transcript size for telemetry; None when provider state holds it."""
+        if self._continuous_conversation:
+            return None
+        return len(self.conversation)
+
     def track_tokens(self, tokens: int, message: str = "") -> None:
         self.token_counter += tokens
+        length = self._conversation_length()
         if hasattr(self, "recorder"):
-            self.recorder.record(
-                {
-                    "tokens": tokens,
-                    "total_tokens": self.token_counter,
-                    "conversation_length": len(self.conversation),
-                    "assistant": message,
-                }
-            )
-        logger.info(
-            f"Tokens: {tokens}, total: {self.token_counter}, "
-            f"messages: {len(self.conversation)}"
-        )
+            record: dict[str, Any] = {
+                "tokens": tokens,
+                "total_tokens": self.token_counter,
+            }
+            if length is not None:
+                record["conversation_length"] = length
+            record["assistant"] = message
+            self.recorder.record(record)
+        messages = "" if length is None else f", messages: {length}"
+        logger.info(f"Tokens: {tokens}, total: {self.token_counter}{messages}")
 
     def cleanup(self, *args: Any, **kwargs: Any) -> None:
         if self._cleanup:
@@ -1161,22 +1388,25 @@ class BenchmarkingAgent(Agent):
             self.run_record.duration_seconds = round(
                 (now - self.run_record.started_at).total_seconds(), 3
             )
-            if self.state is GameState.WIN:
+            if self.exit_reason == ExitReason.REHYDRATION_ERROR:
+                self.run_record.outcome = "REHYDRATION_ERROR"
+            elif self.state is GameState.WIN:
                 self.run_record.outcome = "WIN"
             elif self.state is GameState.GAME_OVER:
                 self.run_record.outcome = "GAME_OVER"
             elif self._timed_out:
                 self.run_record.outcome = "TIMEOUT"
-            elif self.action_counter >= self.MAX_ACTIONS:
+            elif self.exit_reason == ExitReason.ACTION_BUDGET or self.action_counter >= self.MAX_ACTIONS:
                 self.run_record.outcome = "MAX_ACTIONS"
             self._write_run_meta()
 
             if hasattr(self, "recorder"):
-                self.recorder.record(
-                    {
-                        "system_prompt": self._build_system_prompt(),
-                        "final_conversation_length": len(self.conversation),
-                        "total_tokens": self.token_counter,
-                    }
-                )
+                summary: dict[str, Any] = {
+                    "system_prompt": self._build_system_prompt(),
+                }
+                length = self._conversation_length()
+                if length is not None:
+                    summary["final_conversation_length"] = length
+                summary["total_tokens"] = self.token_counter
+                self.recorder.record(summary)
         super().cleanup(*args, **kwargs)

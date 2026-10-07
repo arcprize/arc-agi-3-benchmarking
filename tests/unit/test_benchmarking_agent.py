@@ -115,6 +115,7 @@ def _agent_for_choose_action(
     agent._pricing = {}
     agent.step_counter = 0
     agent._level_action_budgets = []
+    agent._max_actions_hard_cap = None
     agent._level_action_counter = 0
     agent._last_levels_completed = 0
     agent._level_just_advanced = False
@@ -1870,6 +1871,7 @@ def _is_done_agent() -> BenchmarkingAgent:
     agent.game_id = "game-id"
     agent.exit_reason = ExitReason.UNKNOWN
     agent._level_action_budgets = []
+    agent._max_actions_hard_cap = None
     agent._level_action_counter = 0
     agent._last_levels_completed = 0
     agent._level_just_advanced = False
