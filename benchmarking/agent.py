@@ -763,6 +763,7 @@ class BenchmarkingAgent(Agent):
                 self._rehydrate(self._rehydration)
             except Exception:
                 self.exit_reason = ExitReason.REHYDRATION_ERROR
+                self.cleanup()
                 raise
         super().main()
 
@@ -1387,7 +1388,9 @@ class BenchmarkingAgent(Agent):
             self.run_record.duration_seconds = round(
                 (now - self.run_record.started_at).total_seconds(), 3
             )
-            if self.state is GameState.WIN:
+            if self.exit_reason == ExitReason.REHYDRATION_ERROR:
+                self.run_record.outcome = "REHYDRATION_ERROR"
+            elif self.state is GameState.WIN:
                 self.run_record.outcome = "WIN"
             elif self.state is GameState.GAME_OVER:
                 self.run_record.outcome = "GAME_OVER"
