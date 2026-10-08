@@ -161,6 +161,15 @@ def _usage(value: dict[str, Any] | None) -> NormalizedUsage:
     )
 
 
+def _diagnostic_usage(value: Any) -> NormalizedUsage:
+    if not isinstance(value, dict):
+        return NormalizedUsage()
+    try:
+        return _usage(value)
+    except (TypeError, ValueError):
+        return NormalizedUsage()
+
+
 def _invalid(message: str, response: dict[str, Any]) -> InvalidProviderResponseError:
     diagnostic = {key: response[key] for key in ("id", "usage") if key in response}
     diagnostic["choices"] = [
@@ -179,8 +188,23 @@ def _invalid(message: str, response: dict[str, Any]) -> InvalidProviderResponseE
     return InvalidProviderResponseError(
         message,
         response=sanitize_settings(diagnostic),
-        usage=_usage(response.get("usage")),
+        usage=_diagnostic_usage(response.get("usage")),
     )
+
+
+def _required_usage(response: dict[str, Any]) -> NormalizedUsage:
+    raw_usage = response.get("usage")
+    if not isinstance(raw_usage, dict):
+        raise _invalid("Chat completion did not return valid token usage.", response)
+    try:
+        usage = _usage(raw_usage)
+    except (TypeError, ValueError) as exc:
+        raise _invalid(
+            "Chat completion did not return valid token usage.", response
+        ) from exc
+    if min(usage.input_tokens, usage.output_tokens, usage.total_tokens) <= 0:
+        raise _invalid("Chat completion did not return valid token usage.", response)
+    return usage
 
 
 def _classified_provider_error(exc: APIError) -> Exception | None:
@@ -243,7 +267,7 @@ def normalize_open_source_response(raw: dict[str, Any]) -> ModelResponse:
         reasoning_text=reasoning_values[0]
         if reasoning_values
         else next((value for value in reasoning_fields if value is not None), None),
-        usage=_usage(raw.get("usage")),
+        usage=_required_usage(raw),
         raw_response=raw,
         response_status="completed",
         response_id=raw.get("id"),

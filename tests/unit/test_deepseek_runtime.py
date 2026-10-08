@@ -397,6 +397,72 @@ def test_stream_accumulates_reasoning_tool_call_and_usage():
     assert result.state.payload["messages"][1]["tool_calls"][0]["id"] == "call_stream"
 
 
+def test_completed_stream_rejects_missing_usage_trailer():
+    stream = _stream(
+        [
+            (
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_stream",
+                            "type": "function",
+                            "function": {
+                                "name": ACTION_TOOL_NAME,
+                                "arguments": '{"action_type":"ACTION1"}',
+                            },
+                        }
+                    ]
+                },
+                "tool_calls",
+            )
+        ],
+        include_usage=False,
+    )
+    adapter, _ = _adapter([stream])
+
+    with pytest.raises(
+        InvalidProviderResponseError, match="did not return valid token usage"
+    ) as captured:
+        _turn(
+            adapter,
+            request_config={**_config()["request"], "stream": True},
+        )
+
+    assert captured.value.usage.total_tokens == 0
+
+
+@pytest.mark.parametrize(
+    ("usage", "expected_total"),
+    [
+        (None, 0),
+        ({}, 0),
+        ({"prompt_tokens": 100, "completion_tokens": 0, "total_tokens": 100}, 100),
+        (
+            {
+                "prompt_tokens": "invalid",
+                "completion_tokens": 20,
+                "total_tokens": 120,
+            },
+            0,
+        ),
+    ],
+)
+def test_completed_response_rejects_missing_or_invalid_usage(usage, expected_total):
+    raw = _tool_raw({"action_type": "ACTION1"})
+    if usage is None:
+        raw.pop("usage")
+    else:
+        raw["usage"] = usage
+
+    with pytest.raises(
+        InvalidProviderResponseError, match="did not return valid token usage"
+    ) as captured:
+        normalize_deepseek_response(raw)
+
+    assert captured.value.usage.total_tokens == expected_total
+
+
 def test_interrupted_stream_preserves_usage_and_closes():
     class BrokenStream:
         closed = False

@@ -334,6 +334,49 @@ def test_sdk_stream_accumulates_reasoning_and_usage_trailer(field):
     assert calls[1]["messages"][2][field] == "think more"
 
 
+def test_completed_stream_rejects_missing_usage_trailer():
+    stream = _stream([({"content": "ACTION1"}, "stop")], usage=False)
+    adapter, _ = _adapter([stream])
+
+    with pytest.raises(
+        InvalidProviderResponseError, match="did not return valid token usage"
+    ) as captured:
+        _turn(adapter, request_config={**_config()["request"], "stream": True})
+
+    assert captured.value.usage.total_tokens == 0
+
+
+@pytest.mark.parametrize(
+    ("usage", "expected_total"),
+    [
+        (None, 0),
+        ({}, 0),
+        ({"prompt_tokens": 100, "completion_tokens": 0, "total_tokens": 100}, 100),
+        (
+            {
+                "prompt_tokens": "invalid",
+                "completion_tokens": 20,
+                "total_tokens": 120,
+            },
+            0,
+        ),
+    ],
+)
+def test_completed_response_rejects_missing_or_invalid_usage(usage, expected_total):
+    raw = _raw()
+    if usage is None:
+        raw.pop("usage")
+    else:
+        raw["usage"] = usage
+
+    with pytest.raises(
+        InvalidProviderResponseError, match="did not return valid token usage"
+    ) as captured:
+        normalize_open_source_response(raw)
+
+    assert captured.value.usage.total_tokens == expected_total
+
+
 @pytest.mark.parametrize("finish", [None, "length", "content_filter", "tool_calls"])
 def test_incomplete_stream_never_accepts_action(finish):
     adapter, _ = _adapter([_stream([({"content": "ACTION1"}, finish)])])
