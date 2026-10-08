@@ -26,6 +26,7 @@ from .exceptions import (
     EmptyResponseError,
 )
 from .model_config import get_model_config
+from .provider_requests import current_provider_request_ids, provider_request_context
 from .recording import (
     CompactionContinuationRecord,
     CompactionRecord,
@@ -541,8 +542,14 @@ class BenchmarkingAgent(Agent):
         with open(filename, "w") as f:
             exclude = {
                 field
-                for field in ("request_record", "state_transition", "continuation")
+                for field in (
+                    "provider_request_ids",
+                    "request_record",
+                    "state_transition",
+                    "continuation",
+                )
                 if getattr(step, field) is None
+                or (field == "provider_request_ids" and not getattr(step, field))
             }
             f.write(step.model_dump_json(indent=2, exclude=exclude))
         self._write_run_meta()
@@ -584,16 +591,21 @@ class BenchmarkingAgent(Agent):
 
         started = time.monotonic()
         try:
-            result = summary_compactor.compact(
-                adapter=self._stateful_adapter,
-                state=self._runtime_state,
-                request_config=dict(self._request_kwargs),
-                trigger_tokens=trigger_tokens,
-                max_context_length=self.MAX_CONTEXT_LENGTH,
-                max_retries=self.MAX_RETRIES,
-                estimated_chars_per_token=self.ESTIMATED_CHARS_PER_TOKEN,
-                on_failed_attempt=self._save_compaction_diagnostic,
-            )
+            with provider_request_context(
+                run_dir=getattr(self, "run_dir", None),
+                step=getattr(self, "step_counter", 0) + 1,
+                operation="harness_compaction",
+            ):
+                result = summary_compactor.compact(
+                    adapter=self._stateful_adapter,
+                    state=self._runtime_state,
+                    request_config=dict(self._request_kwargs),
+                    trigger_tokens=trigger_tokens,
+                    max_context_length=self.MAX_CONTEXT_LENGTH,
+                    max_retries=self.MAX_RETRIES,
+                    estimated_chars_per_token=self.ESTIMATED_CHARS_PER_TOKEN,
+                    on_failed_attempt=self._save_compaction_diagnostic,
+                )
         except (CompactionFailureError, CompactionContextOverflowError) as exc:
             if isinstance(exc.usage, NormalizedUsage):
                 self.track_tokens(exc.usage.total_tokens)
@@ -803,9 +815,13 @@ class BenchmarkingAgent(Agent):
 
         actions = self._get_actions(latest_frame)
         start = time.monotonic()
-        model_response, action, retries, messages_sent = self._request_with_retries(
-            actions
-        )
+        (
+            model_response,
+            action,
+            retries,
+            messages_sent,
+            provider_request_ids,
+        ) = self._request_with_retries(actions)
         duration = round(time.monotonic() - start, 3)
         step_usage = StepUsage.from_normalized_usage(model_response.usage)
 
@@ -857,6 +873,7 @@ class BenchmarkingAgent(Agent):
                 parsed_action=self._format_parsed_action(action),
                 usage=step_usage,
                 retries=retries,
+                provider_request_ids=provider_request_ids,
                 request_record=request_record,
                 state_transition=state_transition,
                 continuation=continuation,
@@ -936,7 +953,7 @@ class BenchmarkingAgent(Agent):
 
     def _request_with_retries(
         self, actions: list[GameAction]
-    ) -> tuple[ModelResponse, GameAction, int, list[dict[str, Any]]]:
+    ) -> tuple[ModelResponse, GameAction, int, list[dict[str, Any]], list[str]]:
         """Call the API with retries.
 
         Returns (model_response, action, retries, messages_sent) where
@@ -950,28 +967,41 @@ class BenchmarkingAgent(Agent):
         attempt = 0
         max_attempts = self.MAX_RETRIES + 1
         action_overflow_recoveries = 0
+        provider_request_ids: list[str] = []
         while attempt < max_attempts:
             try:
                 # Server-managed state compacts on OpenAI's side; the docs say not
                 # to manually prune when chaining via previous_response_id.
                 if not hasattr(self, "_stateful_adapter") and not self._server_state:
                     self._trim_to_fit_context()
-                if hasattr(self, "_stateful_adapter"):
-                    turn_request = ModelTurnRequest(
-                        system_prompt=self._build_system_prompt(),
-                        new_messages=list(self._pending_turn_messages),
-                        request_config=dict(self._request_kwargs),
-                        previous_state=self._runtime_state,
-                        max_context_length=self.MAX_CONTEXT_LENGTH,
-                        estimated_chars_per_token=self.ESTIMATED_CHARS_PER_TOKEN,
-                        include_reasoning_summary_in_transcript=self.analysis_mode,
-                    )
-                    turn_result = self._stateful_adapter.invoke_turn(turn_request)
-                    model_response = turn_result.response
-                    model_request = None
-                else:
-                    model_request = self._build_model_request()
-                    model_response = self._call_api(model_request)
+                with provider_request_context(
+                    run_dir=getattr(self, "run_dir", None),
+                    step=getattr(self, "step_counter", 0) + 1,
+                    attempt=attempt + 1,
+                    operation="action",
+                ) as request_context:
+                    try:
+                        if hasattr(self, "_stateful_adapter"):
+                            turn_request = ModelTurnRequest(
+                                system_prompt=self._build_system_prompt(),
+                                new_messages=list(self._pending_turn_messages),
+                                request_config=dict(self._request_kwargs),
+                                previous_state=self._runtime_state,
+                                max_context_length=self.MAX_CONTEXT_LENGTH,
+                                estimated_chars_per_token=self.ESTIMATED_CHARS_PER_TOKEN,
+                                include_reasoning_summary_in_transcript=self.analysis_mode,
+                            )
+                            turn_result = self._stateful_adapter.invoke_turn(turn_request)
+                            model_response = turn_result.response
+                            model_request = None
+                        else:
+                            model_request = self._build_model_request()
+                            model_response = self._call_api(model_request)
+                    finally:
+                        if request_context is not None:
+                            for provider_request_id in current_provider_request_ids():
+                                if provider_request_id not in provider_request_ids:
+                                    provider_request_ids.append(provider_request_id)
             except ContextOverflowError as e:
                 summary_compactor = getattr(self, "_summary_compactor", None)
                 can_recover = (
@@ -1092,6 +1122,7 @@ class BenchmarkingAgent(Agent):
                     action,
                     attempt,
                     messages_sent,
+                    provider_request_ids,
                 )
 
             logger.warning(

@@ -773,7 +773,7 @@ class TestBenchmarkingAgentRetries:
 
         agent._call_api = fake_call_api
 
-        model_response, action, retries, messages_sent = agent._request_with_retries(
+        model_response, action, retries, messages_sent, _ = agent._request_with_retries(
             [GameAction.RESET]
         )
 
@@ -820,7 +820,7 @@ class TestBenchmarkingAgentRetries:
 
         agent._call_api = fake_call_api
 
-        model_response, action, retries, _ = agent._request_with_retries(
+        model_response, action, retries, _, _ = agent._request_with_retries(
             [GameAction.RESET]
         )
 
@@ -860,7 +860,7 @@ class TestBenchmarkingAgentRetries:
             ]
         )
 
-        model_response, action, retries, messages_sent = agent._request_with_retries(
+        model_response, action, retries, messages_sent, _ = agent._request_with_retries(
             [GameAction.RESET]
         )
 
@@ -901,7 +901,7 @@ class TestBenchmarkingAgentRetries:
         ]
         agent._adapter = adapter
 
-        model_response, action, retries, messages_sent = agent._request_with_retries(
+        model_response, action, retries, messages_sent, _ = agent._request_with_retries(
             [GameAction.RESET]
         )
 
@@ -1754,7 +1754,7 @@ class TestBenchmarkingAgentContinuousConversationState:
             runtime={"compaction_count": 0},
         )
 
-        response, action, retries, messages_sent = agent._request_with_retries(
+        response, action, retries, messages_sent, _ = agent._request_with_retries(
             [GameAction.ACTION1]
         )
 
@@ -2016,7 +2016,9 @@ class TestBenchmarkingAgentAnthropicState:
                 }
             }
         artifacts = "\n".join(
-            path.read_text() for path in Path(agent.run_dir).glob("*.json")
+            path.read_text()
+            for path in Path(agent.run_dir).glob("*.json")
+            if not path.name.startswith("provider_request_")
         )
         for secret in (
             "private-signature",
@@ -2026,6 +2028,16 @@ class TestBenchmarkingAgentAnthropicState:
         ):
             assert secret not in artifacts
             assert secret not in caplog.text
+        provider_ledger = Path(agent.run_dir) / "provider_requests.jsonl"
+        assert provider_ledger.exists()
+        provider_rows = [
+            json.loads(line)
+            for line in provider_ledger.read_text().splitlines()
+            if line.strip()
+        ]
+        assert len(provider_rows) == agent.MAX_RETRIES + 1
+        assert all(row["http_status"] == 400 for row in provider_rows)
+        assert all(row.get("diagnostic_path") for row in provider_rows)
 
     @pytest.mark.parametrize(
         "failure_kind", ["invalid_action", "refusal", "empty_summary"]
