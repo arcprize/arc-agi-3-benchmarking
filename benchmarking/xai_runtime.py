@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .exceptions import EmptyResponseError
 from .openai_runtime import sanitized_item_descriptor
+from .provider_requests import begin_provider_request
 from .runtime_models import (
     Message,
     ModelRequest,
@@ -215,12 +216,31 @@ class XAIResponsesAdapter:
             if request.native_input is not None
             else [message.model_dump() for message in request.messages]
         )
-        raw = self._client.responses.create(
-            input=deepcopy(items), **deepcopy(request.request_config)
+        request_payload = {
+            **deepcopy(request.request_config),
+            "input": deepcopy(items),
+        }
+        attempt = begin_provider_request(
+            provider="xai",
+            api_surface="responses",
+            request_payload=request_payload,
         )
-        if request.request_config.get("stream", False):
-            return self._consume_stream(raw)
-        return normalize_xai_response(raw)
+        try:
+            raw = self._client.responses.create(**attempt.request_payload)
+            response = (
+                self._consume_stream(raw)
+                if request.request_config.get("stream", False)
+                else normalize_xai_response(raw)
+            )
+        except Exception as exc:
+            attempt.record_exception(
+                exc,
+                response=getattr(exc, "response", None),
+                usage=getattr(exc, "usage", None),
+            )
+            raise
+        attempt.record_success(response.raw_response, usage=response.usage)
+        return response
 
     @staticmethod
     def _consume_stream(stream: Any) -> ModelResponse:

@@ -668,7 +668,7 @@ def test_agent_retries_invalid_tool_action_from_last_accepted_state(tmp_path):
         ]
     )
     agent = _agent(adapter, tmp_path)
-    response, action, retries, _ = agent._request_with_retries([GameAction.ACTION1])
+    response, action, retries, _, _ = agent._request_with_retries([GameAction.ACTION1])
     assert action == GameAction.ACTION1
     assert retries == 1
     assert response.usage.total_tokens == agent.token_counter == 240

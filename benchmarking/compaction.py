@@ -22,6 +22,7 @@ from .exceptions import (
     EmptyResponseError,
     TransientProviderError,
 )
+from .provider_requests import provider_request_context
 from .runtime_models import Message, NormalizedUsage
 from .runtime_state import (
     CompactionUnwindResult,
@@ -205,18 +206,22 @@ class SummaryCompactor:
             attempts += 1
             prompt = build_summary_prompt_record(candidate_state)
             try:
-                result = adapter.invoke_turn(
-                    ModelTurnRequest(
-                        system_prompt=SUMMARY_SYSTEM_PROMPT,
-                        new_messages=[
-                            Message(role="user", content=SUMMARY_REQUEST_PROMPT)
-                        ],
-                        request_config=summary_request_config,
-                        previous_state=candidate_state,
-                        max_context_length=max_context_length,
-                        estimated_chars_per_token=estimated_chars_per_token,
+                with provider_request_context(
+                    attempt=attempts,
+                    operation=HARNESS_SUMMARY_COMPACTION,
+                ):
+                    result = adapter.invoke_turn(
+                        ModelTurnRequest(
+                            system_prompt=SUMMARY_SYSTEM_PROMPT,
+                            new_messages=[
+                                Message(role="user", content=SUMMARY_REQUEST_PROMPT)
+                            ],
+                            request_config=summary_request_config,
+                            previous_state=candidate_state,
+                            max_context_length=max_context_length,
+                            estimated_chars_per_token=estimated_chars_per_token,
+                        )
                     )
-                )
             except ContextOverflowError as exc:
                 record_failure("context_overflow", error_type=type(exc).__name__)
                 unwind = adapter.unwind_latest_accepted_turn(candidate_state)

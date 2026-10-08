@@ -10,6 +10,7 @@ from typing import Any
 from google.genai import types
 
 from .exceptions import InvalidProviderResponseError
+from .provider_requests import begin_provider_request
 from .runtime_models import (
     ModelResponse,
     NormalizedUsage,
@@ -54,12 +55,18 @@ def generate_with_continuation(
     seen_tokens: set[str] = set()
     usage = NormalizedUsage()
     while True:
+        request_payload = {**call_kwargs, "config": config.model_copy(deep=True)}
+        attempt = begin_provider_request(
+            provider="google",
+            api_surface="generate_content",
+            request_payload=request_payload,
+            model=call_kwargs.get("model"),
+        )
         try:
-            response = client.models.generate_content(
-                **{**call_kwargs, "config": config.model_copy(deep=True)}
-            )
+            response = client.models.generate_content(**attempt.request_payload)
             raw = json.loads(response.sdk_http_response.body)
         except Exception as exc:
+            attempt.record_exception(exc, response=getattr(exc, "response", None))
             if not slices:
                 raise
             raise InvalidProviderResponseError(
@@ -68,6 +75,12 @@ def generate_with_continuation(
                 usage=usage,
             ) from exc
         if not isinstance(raw, dict):
+            attempt.record_exception(
+                InvalidProviderResponseError("Gemini continuation response is not an object."),
+                response=raw,
+                usage=usage,
+                outcome="invalid_response",
+            )
             raise InvalidProviderResponseError(
                 "Gemini continuation response is not an object.",
                 response={"slices": slices},
@@ -85,6 +98,7 @@ def generate_with_continuation(
             total_tokens=prompt + output + thoughts,
             cached_tokens=counts.get("cachedContentTokenCount") or 0,
         )
+        attempt.record_success(raw, usage=usage)
 
         def invalid(message: str) -> InvalidProviderResponseError:
             return InvalidProviderResponseError(

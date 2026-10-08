@@ -21,6 +21,7 @@ from .exceptions import (
 )
 from .google_continuation import generate_with_continuation
 from .google_interactions_continuation import create_with_continuation
+from .provider_requests import begin_provider_request
 from .runtime_models import (
     ModelRequest,
     ModelResponse,
@@ -109,13 +110,33 @@ class OpenAIChatCompletionsAdapter:
             if not isinstance(options, dict) or options.get("include_usage", True) is not True:
                 raise ValueError("Streaming requires stream_options.include_usage=true.")
             kwargs["stream_options"] = {**options, "include_usage": True}
-        raw_response = self._client.chat.completions.create(
-            messages=[message.model_dump() for message in request.messages],
+        request_payload = {
             **kwargs,
+            "messages": [message.model_dump() for message in request.messages],
+        }
+        attempt = begin_provider_request(
+            provider="openai",
+            api_surface="chat_completions",
+            request_payload=request_payload,
         )
-        if streaming:
-            return consume_chat_stream(raw_response)
-        return normalize_chat_completion_response(raw_response)
+        try:
+            raw_response = self._client.chat.completions.create(
+                **attempt.request_payload,
+            )
+            response = (
+                consume_chat_stream(raw_response)
+                if streaming
+                else normalize_chat_completion_response(raw_response)
+            )
+        except Exception as exc:
+            attempt.record_exception(
+                exc,
+                response=getattr(exc, "response", None),
+                usage=getattr(exc, "usage", None),
+            )
+            raise
+        attempt.record_success(response.raw_response, usage=response.usage)
+        return response
 
 
 class OpenAIResponsesAdapter:
@@ -146,10 +167,24 @@ class OpenAIResponsesAdapter:
         return request_kwargs
 
     def invoke(self, request: ModelRequest) -> ModelResponse:
-        raw_response = self._client.responses.create(
-            **self._build_request_kwargs(request),
+        request_payload = self._build_request_kwargs(request)
+        attempt = begin_provider_request(
+            provider="openai",
+            api_surface="responses",
+            request_payload=request_payload,
         )
-        return normalize_responses_response(raw_response)
+        try:
+            raw_response = self._client.responses.create(**attempt.request_payload)
+            response = normalize_responses_response(raw_response)
+        except Exception as exc:
+            attempt.record_exception(
+                exc,
+                response=getattr(exc, "response", None),
+                usage=getattr(exc, "usage", None),
+            )
+            raise
+        attempt.record_success(response.raw_response, usage=response.usage)
+        return response
 
 
 class OpenAIResponsesServerStateAdapter:
@@ -200,10 +235,24 @@ class OpenAIResponsesServerStateAdapter:
         return request_kwargs
 
     def invoke(self, request: ModelRequest) -> ModelResponse:
-        raw_response = self._client.responses.create(
-            **self._build_request_kwargs(request),
+        request_payload = self._build_request_kwargs(request)
+        attempt = begin_provider_request(
+            provider="openai",
+            api_surface="responses",
+            request_payload=request_payload,
         )
-        return normalize_responses_response(raw_response)
+        try:
+            raw_response = self._client.responses.create(**attempt.request_payload)
+            response = normalize_responses_response(raw_response)
+        except Exception as exc:
+            attempt.record_exception(
+                exc,
+                response=getattr(exc, "response", None),
+                usage=getattr(exc, "usage", None),
+            )
+            raise
+        attempt.record_success(response.raw_response, usage=response.usage)
+        return response
 
 
 class AnthropicMessagesAdapter:
@@ -308,7 +357,9 @@ class AnthropicMessagesAdapter:
             )
         )
 
-    def _invoke_native_streaming(self, request_kwargs: dict[str, Any]) -> dict[str, Any]:
+    def _invoke_native_streaming(
+        self, request_kwargs: dict[str, Any], attempt: Any | None = None
+    ) -> dict[str, Any]:
         usage: dict[str, Any] = {}
         metadata: dict[str, Any] = {}
         stopped = False
@@ -336,6 +387,8 @@ class AnthropicMessagesAdapter:
                     raise RuntimeError("Anthropic stream ended before message_stop.")
                 final = native_mapping(stream.get_final_message())
         except Exception as exc:
+            if attempt is not None:
+                attempt.record_exception(exc, response=getattr(exc, "response", None))
             raise InvalidProviderResponseError(
                 f"Anthropic stream did not complete ({type(exc).__name__}).",
                 response={
@@ -359,24 +412,67 @@ class AnthropicMessagesAdapter:
                 request_kwargs["extra_body"] = {
                     "compaction": request_kwargs.pop("compaction")
                 }
-            if self._should_stream(request_kwargs):
-                raw_response = self._invoke_native_streaming(request_kwargs)
-            else:
-                try:
-                    raw_response = self._client.beta.messages.create(**request_kwargs)
-                except Exception as exc:
-                    raise InvalidProviderResponseError(
-                        f"Anthropic request failed ({type(exc).__name__}).",
-                        response={"provider_error": safe_provider_error_metadata(exc)},
-                    ) from None
-            return normalize_native_response(raw_response, request.request_config)
-        if self._should_stream(request_kwargs):
-            return self._invoke_streaming(request_kwargs)
-
-        raw_response = self._client.messages.create(
-            **request_kwargs,
+            attempt = begin_provider_request(
+                provider="anthropic",
+                api_surface="messages",
+                request_payload=request_kwargs,
+            )
+            try:
+                if self._should_stream(attempt.request_payload):
+                    raw_response = self._invoke_native_streaming(
+                        attempt.request_payload,
+                        attempt,
+                    )
+                else:
+                    try:
+                        raw_response = self._client.beta.messages.create(
+                            **attempt.request_payload
+                        )
+                    except Exception as exc:
+                        attempt.record_exception(
+                            exc,
+                            response=getattr(exc, "response", None),
+                        )
+                        raise InvalidProviderResponseError(
+                            f"Anthropic request failed ({type(exc).__name__}).",
+                            response={
+                                "provider_error": safe_provider_error_metadata(exc)
+                            },
+                        ) from None
+                response = normalize_native_response(
+                    raw_response, request.request_config
+                )
+            except Exception as exc:
+                attempt.record_exception(
+                    exc,
+                    response=getattr(exc, "response", None),
+                    usage=getattr(exc, "usage", None),
+                )
+                raise
+            attempt.record_success(response.raw_response, usage=response.usage)
+            return response
+        attempt = begin_provider_request(
+            provider="anthropic",
+            api_surface="messages",
+            request_payload=request_kwargs,
         )
-        return normalize_anthropic_messages_response(raw_response)
+        try:
+            if self._should_stream(attempt.request_payload):
+                response = self._invoke_streaming(attempt.request_payload)
+            else:
+                raw_response = self._client.messages.create(
+                    **attempt.request_payload,
+                )
+                response = normalize_anthropic_messages_response(raw_response)
+        except Exception as exc:
+            attempt.record_exception(
+                exc,
+                response=getattr(exc, "response", None),
+                usage=getattr(exc, "usage", None),
+            )
+            raise
+        attempt.record_success(response.raw_response, usage=response.usage)
+        return response
 
 
 class GoogleGenAIGenerateContentAdapter:
@@ -489,7 +585,12 @@ class GoogleGenAIInteractionsAdapter:
     def invoke(self, request: ModelRequest) -> ModelResponse:
         call_kwargs = self._build_call_kwargs(request)
         try:
-            raw_response = create_with_continuation(self._client, call_kwargs)
+            raw_response = create_with_continuation(
+                self._client,
+                call_kwargs,
+                provider="google",
+                api_surface="interactions",
+            )
         # Interactions exceptions live in a private SDK module whose package
         # layout is not stable across google-genai releases. Inspect the
         # provider error at this boundary and immediately re-raise anything

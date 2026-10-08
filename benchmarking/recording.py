@@ -103,6 +103,7 @@ class StepRecord(BaseModel):
     parsed_action: str | dict[str, Any]
     usage: StepUsage = Field(default_factory=StepUsage)
     retries: int = 0
+    provider_request_ids: list[str] = Field(default_factory=list)
     request_record: dict[str, Any] | None = None
     state_transition: dict[str, Any] | None = None
     continuation: CompactionContinuationRecord | None = None

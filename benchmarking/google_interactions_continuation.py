@@ -12,6 +12,7 @@ from copy import deepcopy
 from typing import Any
 
 from .exceptions import InvalidProviderResponseError
+from .provider_requests import begin_provider_request
 from .runtime_models import NormalizedUsage, _normalize_google_interactions_usage
 
 logger = logging.getLogger(__name__)
@@ -25,16 +26,29 @@ def value(response: Any, key: str, default: Any = None) -> Any:
     )
 
 
-def create_with_continuation(client: Any, kwargs: dict[str, Any]) -> Any:
+def create_with_continuation(
+    client: Any,
+    kwargs: dict[str, Any],
+    *,
+    provider: str = "google",
+    api_surface: str = "interactions",
+) -> Any:
     payload = deepcopy(kwargs)
     steps: list[Any] = []
     slices: list[Any] = []
     seen: set[str] = set()
     usage = NormalizedUsage()
     while True:
+        attempt = begin_provider_request(
+            provider=provider,
+            api_surface=api_surface,
+            request_payload=payload,
+            model=payload.get("model"),
+        )
         try:
-            response = client.interactions.create(**payload)
+            response = client.interactions.create(**attempt.request_payload)
         except Exception as exc:
+            attempt.record_exception(exc, response=getattr(exc, "response", None))
             if not slices:
                 raise
             raise InvalidProviderResponseError(
@@ -47,11 +61,13 @@ def create_with_continuation(client: Any, kwargs: dict[str, Any]) -> Any:
         continuing = reason == "CONTINUATION" or str(status).lower() == "continuation"
         # Preserve the existing SDK response and normalization on ordinary calls.
         if not slices and not continuing:
+            attempt.record_success(response)
             return response
         slices.append(response)
         usage += NormalizedUsage(
             **_normalize_google_interactions_usage(value(response, "usage"))
         )
+        attempt.record_success(response, usage=usage)
         steps.extend(deepcopy(value(response, "steps", []) or []))
         logger.info(
             "Experimental Gemini Interactions slice %d: status=%s finish_reason=%s",
