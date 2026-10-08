@@ -21,7 +21,9 @@ _PROVIDER_REQUEST_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
     "provider_request_context",
     default=None,
 )
-_CLIENT_HEADER_PROVIDERS = frozenset({"anthropic", "deepseek", "openai", "xai"})
+_CLIENT_HEADER_PROVIDERS = frozenset(
+    {"anthropic", "deepseek", "google", "openai", "xai"}
+)
 _REQUEST_ID_HEADERS = {
     "anthropic-request-id",
     "openai-request-id",
@@ -360,6 +362,40 @@ def _dedupe_identifiers(values: list[dict[str, str]]) -> list[dict[str, str]]:
     return deduped
 
 
+def _inject_client_request_header(
+    *,
+    provider: str,
+    api_surface: str,
+    payload: dict[str, Any],
+    client_request_id: str,
+) -> None:
+    if provider not in _CLIENT_HEADER_PROVIDERS:
+        return
+    if provider == "google" and api_surface == "generate_content":
+        config = payload.get("config")
+        if config is None:
+            return
+        options = getattr(config, "http_options", None)
+        if options is None:
+            try:
+                from google.genai import types
+
+                options = types.HttpOptions()
+            except Exception:
+                return
+        elif hasattr(options, "model_copy"):
+            options = options.model_copy(deep=True)
+        headers = dict(getattr(options, "headers", None) or {})
+        headers.setdefault(CLIENT_REQUEST_HEADER, client_request_id)
+        options.headers = headers
+        config.http_options = options
+        payload["config"] = config
+        return
+    headers = dict(payload.get("extra_headers") or {})
+    headers.setdefault(CLIENT_REQUEST_HEADER, client_request_id)
+    payload["extra_headers"] = headers
+
+
 def begin_provider_request(
     *,
     provider: str,
@@ -372,10 +408,12 @@ def begin_provider_request(
     client_request_id = f"arc3-{uuid.uuid4()}"
     if context is not None:
         context["request_index"] = int(context.get("request_index") or 0) + 1
-        if provider in _CLIENT_HEADER_PROVIDERS:
-            headers = dict(payload.get("extra_headers") or {})
-            headers.setdefault(CLIENT_REQUEST_HEADER, client_request_id)
-            payload["extra_headers"] = headers
+        _inject_client_request_header(
+            provider=provider,
+            api_surface=api_surface,
+            payload=payload,
+            client_request_id=client_request_id,
+        )
     return ProviderRequestAttempt(
         provider=provider,
         api_surface=api_surface,

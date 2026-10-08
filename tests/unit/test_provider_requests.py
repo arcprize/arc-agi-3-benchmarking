@@ -2,6 +2,7 @@ import json
 
 import httpx
 import pytest
+from google.genai import types
 
 from benchmarking.provider_requests import (
     CLIENT_REQUEST_HEADER,
@@ -80,3 +81,43 @@ class TestProviderRequestRecording:
 
         assert "extra_headers" not in attempt.request_payload
         assert not (tmp_path / LEDGER_FILENAME).exists()
+
+    def test_google_interactions_receives_client_request_header(self, tmp_path):
+        with provider_request_context(
+            run_dir=str(tmp_path),
+            step=1,
+            attempt=1,
+            operation="action",
+        ):
+            attempt = begin_provider_request(
+                provider="google",
+                api_surface="interactions",
+                request_payload={"model": "gemini-test", "input": "frame"},
+            )
+
+        assert attempt.request_payload["extra_headers"][CLIENT_REQUEST_HEADER]
+
+    def test_google_generate_content_receives_client_request_header(self, tmp_path):
+        config = types.GenerateContentConfig(
+            http_options=types.HttpOptions(headers={"x-existing": "1"})
+        )
+        with provider_request_context(
+            run_dir=str(tmp_path),
+            step=1,
+            attempt=1,
+            operation="action",
+        ):
+            attempt = begin_provider_request(
+                provider="google",
+                api_surface="generate_content",
+                request_payload={
+                    "model": "models/gemini-test",
+                    "contents": [],
+                    "config": config,
+                },
+            )
+
+        headers = attempt.request_payload["config"].http_options.headers
+        assert headers["x-existing"] == "1"
+        assert headers[CLIENT_REQUEST_HEADER]
+        assert "extra_headers" not in attempt.request_payload
