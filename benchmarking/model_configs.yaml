@@ -55,6 +55,63 @@
     input: 0.30
     output: 1.20
 
+- id: "zai-glm-5-3-flash-low-provider-adapter"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5
+    MAX_CONTEXT_LENGTH: 1_000_000
+  runtime:
+    sdk: "openai-python"
+    api: "chat_completions"
+    adapter_id: "open_source.chat_completions.v1"
+    state: "continuous_conversation"
+    reasoning_replay: "reasoning_content"
+    compaction:
+      strategy: "harness_summary"
+      trigger_tokens: 175_000
+      summary_max_output_tokens: 8_192
+      summary_input_headroom_tokens: 8_192
+  client:
+    base_url: "https://inference.baseten.co/v1"
+    api_key_env: "BASETEN_API_KEY"
+  request:
+    model: "zai-org/GLM-5.3-Flash"
+    max_tokens: 131_072
+    reasoning_effort: "low"
+    stream: true
+    extra_headers:
+      X-Baseten-Experimental-Predict-Timeout-Seconds: "3600"
+  pricing:
+    input: 0.15
+    output: 0.50
+
+- id: "alibaba-qwen3-8-27b-low-provider-adapter"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5
+    MAX_CONTEXT_LENGTH: 262_144
+    MAX_RETRIES: 7
+  runtime:
+    sdk: "openai-python"
+    api: "chat_completions"
+    adapter_id: "open_source.chat_completions.v1"
+    state: "continuous_conversation"
+    reasoning_replay: "reasoning_aliases"
+    compaction:
+      strategy: "harness_summary"
+      trigger_tokens: 100_000
+      summary_max_output_tokens: 8_192
+      summary_input_headroom_tokens: 8_192
+  client:
+    base_url: "https://model-wglyjv63.api.baseten.co/environments/production/sync/v1"
+    api_key_env: "BASETEN_API_KEY"
+  request:
+    model: "Qwen/Qwen3.8-27B"
+    max_tokens: 131_072
+    reasoning_effort: "low"
+    stream: true
+  pricing:
+    input: 0.425
+    output: 2.55
+
 - id: "openai-gpt-5.4-openrouter"
   agent:
     MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0

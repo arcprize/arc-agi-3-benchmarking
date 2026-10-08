@@ -136,6 +136,12 @@ uses DeepSeek's documented tools protocol, replays exact `reasoning_content`, an
 uses harness summary compaction. See the
 [DeepSeek Provider Adapter guide](docs/deepseek-provider-adapter.md).
 
+OpenAI-compatible open-weight endpoints can opt into
+`open_source.chat_completions.v1`. The generic adapter replays native reasoning
+fields without tools and reuses harness summary compaction. Checked-in low
+profiles for GLM-5.3-Flash and Qwen3.8-27B are documented in the
+[open-source Provider Adapter guide](docs/open-source-provider-adapter.md).
+
 Both harnesses use the same games, actions, limits, and scoring. The Standard
 harness supports controlled comparisons across providers, while the Provider
 Adapter harness measures performance using provider-native context management.

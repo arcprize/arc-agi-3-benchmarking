@@ -397,6 +397,72 @@ def test_stream_accumulates_reasoning_tool_call_and_usage():
     assert result.state.payload["messages"][1]["tool_calls"][0]["id"] == "call_stream"
 
 
+def test_completed_stream_rejects_missing_usage_trailer():
+    stream = _stream(
+        [
+            (
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_stream",
+                            "type": "function",
+                            "function": {
+                                "name": ACTION_TOOL_NAME,
+                                "arguments": '{"action_type":"ACTION1"}',
+                            },
+                        }
+                    ]
+                },
+                "tool_calls",
+            )
+        ],
+        include_usage=False,
+    )
+    adapter, _ = _adapter([stream])
+
+    with pytest.raises(
+        InvalidProviderResponseError, match="did not return valid token usage"
+    ) as captured:
+        _turn(
+            adapter,
+            request_config={**_config()["request"], "stream": True},
+        )
+
+    assert captured.value.usage.total_tokens == 0
+
+
+@pytest.mark.parametrize(
+    ("usage", "expected_total"),
+    [
+        (None, 0),
+        ({}, 0),
+        ({"prompt_tokens": 100, "completion_tokens": 0, "total_tokens": 100}, 100),
+        (
+            {
+                "prompt_tokens": "invalid",
+                "completion_tokens": 20,
+                "total_tokens": 120,
+            },
+            0,
+        ),
+    ],
+)
+def test_completed_response_rejects_missing_or_invalid_usage(usage, expected_total):
+    raw = _tool_raw({"action_type": "ACTION1"})
+    if usage is None:
+        raw.pop("usage")
+    else:
+        raw["usage"] = usage
+
+    with pytest.raises(
+        InvalidProviderResponseError, match="did not return valid token usage"
+    ) as captured:
+        normalize_deepseek_response(raw)
+
+    assert captured.value.usage.total_tokens == expected_total
+
+
 def test_interrupted_stream_preserves_usage_and_closes():
     class BrokenStream:
         closed = False
@@ -559,13 +625,11 @@ def test_registry_and_config_preserve_standard_chat_completions(tmp_path, monkey
     assert model_config.load_model_configs()[0] == config
     runtime = config["runtime"]
     assert resolve_adapter_id(runtime, "test") == DEEPSEEK_ADAPTER_ID
-    assert (
+    with pytest.raises(ValueError, match="requires runtime.adapter_id"):
         resolve_adapter_id(
             {key: value for key, value in runtime.items() if key != "adapter_id"},
             "test",
         )
-        == DEEPSEEK_ADAPTER_ID
-    )
     assert isinstance(
         build_model_runtime_adapter(
             client=None,
@@ -591,14 +655,22 @@ def test_registry_and_config_preserve_standard_chat_completions(tmp_path, monkey
     )
 
 
-@pytest.mark.parametrize("field", ["reasoning_replay", "tool_calling"])
-def test_config_rejects_removed_generic_runtime_modes(tmp_path, monkeypatch, field):
+@pytest.mark.parametrize(
+    "field,error",
+    [
+        ("reasoning_replay", "requires the open-source"),
+        ("tool_calling", "DeepSeek tool behavior is fixed"),
+    ],
+)
+def test_config_rejects_removed_generic_runtime_modes(
+    tmp_path, monkeypatch, field, error
+):
     config = _config()
     config["runtime"][field] = True
     path = tmp_path / "model_configs.yaml"
     path.write_text(yaml.safe_dump([config]))
     monkeypatch.setattr(model_config, "MODEL_CONFIG_PATH", path)
-    with pytest.raises(ValueError, match="DeepSeek tool behavior is fixed"):
+    with pytest.raises(ValueError, match=error):
         model_config.load_model_configs()
 
 

@@ -21,6 +21,10 @@ from .exceptions import (
 )
 from .google_continuation import generate_with_continuation
 from .google_interactions_continuation import create_with_continuation
+from .open_source_runtime import (
+    OPEN_SOURCE_ADAPTER_ID,
+    OpenSourceChatCompletionsAdapter,
+)
 from .runtime_models import (
     ModelRequest,
     ModelResponse,
@@ -547,6 +551,11 @@ def build_model_runtime_adapter(
         if runtime_key == ("openai-python", "responses"):
             return OpenAIResponsesAdapter(client)
         if runtime_key == ("openai-python", "chat_completions"):
+            from .runtime_registry import resolve_adapter_id
+
+            adapter_id = resolve_adapter_id(runtime_config, config_id)
+            if adapter_id == OPEN_SOURCE_ADAPTER_ID:
+                return OpenSourceChatCompletionsAdapter(client)
             return DeepSeekChatCompletionsAdapter(client)
         if runtime_key == ("google-genai", "generate_content"):
             return GoogleGenAIGenerateContentAdapter(client)

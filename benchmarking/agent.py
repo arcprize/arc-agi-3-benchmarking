@@ -215,6 +215,8 @@ class BenchmarkingAgent(Agent):
                     commit_sha=commit_sha,
                 ),
             }
+            if descriptor.adapter_id == "open_source.chat_completions.v1":
+                runtime_metadata["reasoning_replay"] = runtime_cfg["reasoning_replay"]
             if self._summary_compactor is not None:
                 runtime_metadata["compaction"] = {
                     **self._summary_compactor.policy.model_dump(),
