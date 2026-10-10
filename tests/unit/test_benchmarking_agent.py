@@ -1537,6 +1537,7 @@ class TestBenchmarkingAgentContinuousConversationState:
             "reasoning": {"context": "auto", "summary": "auto"},
         }
 
+        agent._save_diagnostic = lambda _: None
         action = agent.choose_action([], _playable_frame())
 
         assert action == GameAction.ACTION1
@@ -1607,15 +1608,14 @@ class TestBenchmarkingAgentContinuousConversationState:
         assert agent._saved_steps[0].retries == 1
         assert agent._saved_steps[0].usage.total_tokens == 12
 
-    def test_transient_retry_exhaustion_preserves_state_and_pending_input(self):
+    def test_transient_retry_exhaustion_preserves_state_and_pending_input(self, monkeypatch):
+        monkeypatch.setattr("benchmarking.agent.time.sleep", lambda _: None)
         class SequenceAdapter:
             def __init__(self):
                 self.requests = []
                 self.responses = [
                     _google_model_response(signature="accepted-history"),
-                    TransientProviderError("unavailable"),
-                    TransientProviderError("unavailable"),
-                    TransientProviderError("unavailable"),
+                    *[TransientProviderError("unavailable") for _ in range(10)],
                 ]
 
             def invoke(self, request):
@@ -1656,7 +1656,7 @@ class TestBenchmarkingAgentContinuousConversationState:
 
         assert agent._runtime_state == original_state
         assert agent._pending_turn_messages == pending
-        assert len(low_level.requests) == 4
+        assert len(low_level.requests) == 11
         assert all(
             request.native_input == low_level.requests[1].native_input
             for request in low_level.requests[1:]
@@ -2471,3 +2471,46 @@ class TestBenchmarkingAgentReasoningTruncation:
         agent = _choose_action_with_reasoning(reasoning_text)
 
         assert agent._pending_action_reasoning["reasoning"] == reasoning_text
+
+@pytest.mark.unit
+def test_action_transient_budget_is_independent_of_invalid_responses(monkeypatch):
+    agent = _agent_for_request_kwargs({'model': 'test-model'})
+    agent.conversation = [{'role': 'user', 'content': 'frame'}]
+    sleeps = []
+    monkeypatch.setattr('benchmarking.agent.time.sleep', sleeps.append)
+    failures = [TransientProviderError('busy') for _ in range(9)]
+    failures += [EmptyResponseError('malformed', usage=NormalizedUsage(total_tokens=7))]
+    failures += [ModelResponse(output_text='RESET', usage=NormalizedUsage(total_tokens=3))]
+    requests = []
+
+    def invoke(request):
+        requests.append(request.model_dump())
+        result = failures.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    agent._call_api = invoke
+    response, action, retries, _ = agent._request_with_retries([GameAction.RESET])
+    assert action == GameAction.RESET
+    assert response.usage.total_tokens == 10
+    assert retries == 10
+    assert all(request == requests[0] for request in requests)
+    assert sleeps == [0.25, 0.5, 1, 2, 4, 8, 16, 30, 30, 0.25]
+
+
+@pytest.mark.unit
+def test_action_transient_budget_stops_at_ten(monkeypatch):
+    agent = _agent_for_request_kwargs({'model': 'test-model'})
+    agent.conversation = [{'role': 'user', 'content': 'frame'}]
+    monkeypatch.setattr('benchmarking.agent.time.sleep', lambda _: None)
+    calls = []
+
+    def invoke(request):
+        calls.append(request)
+        raise TransientProviderError('busy')
+
+    agent._call_api = invoke
+    with pytest.raises(RuntimeError, match='after 10 attempts'):
+        agent._request_with_retries([GameAction.RESET])
+    assert len(calls) == 10

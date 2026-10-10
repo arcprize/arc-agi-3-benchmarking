@@ -40,3 +40,26 @@ continuation contract. No private model configuration or live evaluation is
 included with this change. Tests simulate the protocol through the installed SDK;
 a local ls20 run also verified CONTINUATION followed by STOP and a saved game
 action without retries.
+
+## Recoverable request failures
+
+The Google adapter classifies SDK `code` and `status_code` values for transient
+HTTP failures, including 500 and 503, plus HTTPX timeouts and network errors.
+This lets summary compaction use its existing ten-failure retry budget instead
+of aborting on an unclassified Google exception.
+
+Action requests also allow up to ten classified transient failures per turn,
+independently of the invalid-response budget (`MAX_RETRIES + 1`, normally four).
+Backoff starts at 0.25 seconds, doubles, and caps at 30 seconds. Invalid action
+responses and malformed summary responses also back off before retrying.
+Failed action responses are retained in diagnostic artifacts, and observed
+usage is accumulated across attempts. Provisional conversation state is only
+committed after an action passes validation.
+
+Malformed provider output is never salvaged as a game action. A terminal
+malformed response still fails after the bounded invalid-response budget.
+Failures after completed continuation slices retain their existing usage-aware
+invalid-response handling; this change does not resume a failed slice in place.
+These retries do not extend or recover an expired game session. They also do
+not guarantee recovery from a persistent provider failure, and another model
+request can incur additional usage.

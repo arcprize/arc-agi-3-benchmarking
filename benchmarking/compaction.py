@@ -241,12 +241,20 @@ class SummaryCompactor:
                 if isinstance(exc.usage, NormalizedUsage):
                     accumulated_usage = accumulated_usage + exc.usage
                 response_failures += 1
+                if response_failures < max_retries + 1:
+                    time.sleep(min(
+                        self.TRANSIENT_RETRY_BASE_SECONDS * (2 ** min(response_failures - 1, 10)),
+                        self.TRANSIENT_RETRY_MAX_SECONDS,
+                    ))
                 continue
             except TransientProviderError as exc:
                 record_failure(
                     "transient_provider_error",
                     error_type=type(exc).__name__,
-                    status_code=getattr(exc.__cause__, "status_code", None),
+                    status_code=(
+                        getattr(exc.__cause__, "status_code", None)
+                        or getattr(exc.__cause__, "code", None)
+                    ),
                 )
                 transient_failures += 1
                 if transient_failures >= self.TRANSIENT_MAX_ATTEMPTS:

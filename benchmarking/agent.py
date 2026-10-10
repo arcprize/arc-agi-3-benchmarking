@@ -24,6 +24,7 @@ from .exceptions import (
     CompactionFailureError,
     ContextOverflowError,
     EmptyResponseError,
+    TransientProviderError,
 )
 from .model_config import get_model_config
 from .recording import (
@@ -67,6 +68,9 @@ class BenchmarkingAgent(Agent):
     MODEL_CONFIG_ID: str = ""
     MAX_ACTIONS: int = 10  # Fallback only when baseline_actions are unavailable.
     MAX_ACTIONS_BASELINE_MULTIPLIER: float = 2.0
+    TRANSIENT_MAX_ATTEMPTS: int = 10
+    RETRY_BASE_SECONDS: float = 0.25
+    RETRY_MAX_SECONDS: float = 30.0
     MAX_RETRIES: int = 3
     MAX_CONTEXT_LENGTH: int = 100000
     MAX_ANIMATION_FRAMES: int = 7
@@ -500,7 +504,7 @@ class BenchmarkingAgent(Agent):
         """Dump a raw API response to a diagnostic file for post-mortem debugging."""
         filename = os.path.join(
             self.run_dir,
-            f"diagnostic_step_{self.step_counter + 1}_{int(time.time())}.json",
+            f"diagnostic_step_{self.step_counter + 1}_{int(time.time())}_{uuid.uuid4().hex}.json",
         )
         try:
             if self._continuous_conversation:
@@ -950,6 +954,7 @@ class BenchmarkingAgent(Agent):
         attempt = 0
         max_attempts = self.MAX_RETRIES + 1
         action_overflow_recoveries = 0
+        transient_failures = 0
         while attempt < max_attempts:
             try:
                 # Server-managed state compacts on OpenAI's side; the docs say not
@@ -1002,6 +1007,17 @@ class BenchmarkingAgent(Agent):
                     raise
                 attempt += 1
                 continue
+            except TransientProviderError as e:
+                transient_failures += 1
+                logger.warning(
+                    "Transient provider error (%s/%s): %s",
+                    transient_failures, self.TRANSIENT_MAX_ATTEMPTS,
+                    type(e.__cause__ or e).__name__,
+                )
+                if transient_failures >= self.TRANSIENT_MAX_ATTEMPTS:
+                    break
+                self._retry_backoff(transient_failures)
+                continue
             except EmptyResponseError as e:
                 if isinstance(e.usage, NormalizedUsage):
                     self.track_tokens(e.usage.total_tokens)
@@ -1017,6 +1033,8 @@ class BenchmarkingAgent(Agent):
                     f"(attempt {attempt + 1}/{max_attempts})."
                 )
                 attempt += 1
+                if attempt < max_attempts:
+                    self._retry_backoff(attempt)
                 continue
             except Exception as e:
                 logger.warning(
@@ -1090,7 +1108,7 @@ class BenchmarkingAgent(Agent):
                 return (
                     model_response,
                     action,
-                    attempt,
+                    attempt + transient_failures,
                     messages_sent,
                 )
 
@@ -1098,7 +1116,11 @@ class BenchmarkingAgent(Agent):
                 f"Could not parse action from response "
                 f"(attempt {attempt + 1}/{max_attempts})."
             )
+            if model_response.raw_response is not None:
+                self._save_diagnostic(model_response.raw_response)
             attempt += 1
+            if attempt < max_attempts:
+                self._retry_backoff(attempt)
 
         if hasattr(self, "_stateful_adapter") and hasattr(self, "run_record"):
             self.run_record.total_usage = (
@@ -1107,8 +1129,14 @@ class BenchmarkingAgent(Agent):
             )
             self._write_run_meta()
         raise RuntimeError(
-            f"Failed to get a valid action after {max_attempts} attempts."
+            f"Failed to get a valid action after {attempt + transient_failures} attempts."
         )
+
+    def _retry_backoff(self, failures: int) -> None:
+        time.sleep(min(
+            self.RETRY_BASE_SECONDS * (2 ** min(failures - 1, 10)),
+            self.RETRY_MAX_SECONDS,
+        ))
 
     def _call_api(self, model_request: ModelRequest) -> ModelResponse:
         return self._adapter.invoke(model_request)
