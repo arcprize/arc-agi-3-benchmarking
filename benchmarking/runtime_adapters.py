@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Protocol
 
+import httpx
 from google.genai import types as google_genai_types
 
 from .anthropic_runtime import (
@@ -77,6 +78,8 @@ def _is_google_context_overflow(error: Exception) -> bool:
 
 
 def _is_google_transient_error(error: Exception) -> bool:
+    if isinstance(error, (httpx.TimeoutException, httpx.NetworkError)):
+        return True
     error_type = type(error)
     if error_type.__module__.startswith("google.genai") and error_type.__name__ in {
         "APIConnectionError",
@@ -84,6 +87,8 @@ def _is_google_transient_error(error: Exception) -> bool:
     }:
         return True
     status_code = getattr(error, "status_code", None)
+    if status_code is None:
+        status_code = getattr(error, "code", None)
     return isinstance(status_code, int) and (
         status_code in {408, 409, 429} or status_code >= 500
     )
