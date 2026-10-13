@@ -134,6 +134,8 @@ class RunRecord(BaseModel):
 
     run_id: str
     game_id: str
+    guid: Optional[str] = None
+    card_id: Optional[str] = None
     agent_name: str
     model: str
     started_at: datetime
@@ -144,3 +146,4 @@ class RunRecord(BaseModel):
     outcome: Optional[str] = None
     run_dir: str
     runtime: dict[str, Any] | None = None
+    rehydration: dict[str, Any] | None = None
