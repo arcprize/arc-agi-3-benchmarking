@@ -85,6 +85,19 @@ profile and makes synthetic requests, not an ARC benchmark. See the
 [DeepSeek guide](../docs/deepseek-provider-adapter.md) for setup and protocol
 details.
 
+Generic open-source Provider Adapter tests use the real OpenAI SDK with mocked
+HTTP and make no paid calls:
+
+```bash
+uv run pytest -q tests/unit/test_open_source_runtime.py
+```
+
+The optional replay/compaction smoke test requires
+`RUN_OPEN_SOURCE_LIVE_TESTS=1` and `OPEN_SOURCE_LIVE_CONFIG`. It makes synthetic
+requests, not an ARC benchmark. See the
+[open-source guide](../docs/open-source-provider-adapter.md) for GLM-5.3-Flash
+and Qwen3.8-27B setup.
+
 Paid xAI tests are skipped by default and require `XAI_API_KEY`. These exercise
 synthetic native replay and recall through two separate native compactions,
 respectively; they do not launch ARC benchmarks:
