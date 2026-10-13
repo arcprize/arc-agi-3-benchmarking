@@ -149,6 +149,17 @@ def _validate_continuous_conversation_config(
             validate_deepseek_request(request)
         except ValueError as exc:
             raise ValueError(f"Model config '{config_id}': {exc}") from exc
+    elif adapter_id == "open_source.chat_completions.v1":
+        from .open_source_runtime import (
+            validate_open_source_request,
+            validate_reasoning_replay,
+        )
+
+        try:
+            validate_open_source_request(request)
+            validate_reasoning_replay(runtime.get("reasoning_replay"))
+        except ValueError as exc:
+            raise ValueError(f"Model config '{config_id}': {exc}") from exc
     elif adapter_id == "google.generate_content.v1":
         from .google_content_runtime import validate_content_request
 
@@ -361,6 +372,15 @@ def _validate_model_config_entry(
 
         resolve_adapter_id(runtime, config_id)
     runtime_state = runtime.get("state")
+    if "reasoning_replay" in runtime and (
+        runtime_pair != ("openai-python", "chat_completions")
+        or runtime_state != CONTINUOUS_CONVERSATION_RUNTIME_STATE
+        or runtime.get("adapter_id") != "open_source.chat_completions.v1"
+    ):
+        raise ValueError(
+            f"Model config '{config_id}' runtime.reasoning_replay requires "
+            "the open-source continuous Chat Completions adapter."
+        )
     if runtime_state not in SUPPORTED_RUNTIME_STATES:
         supported = ", ".join(repr(s) for s in sorted(SUPPORTED_RUNTIME_STATES))
         raise ValueError(

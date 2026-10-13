@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Protocol
 
+import httpx
 from google.genai import types as google_genai_types
 
 from .anthropic_runtime import (
@@ -21,6 +22,10 @@ from .exceptions import (
 )
 from .google_continuation import generate_with_continuation
 from .google_interactions_continuation import create_with_continuation
+from .open_source_runtime import (
+    OPEN_SOURCE_ADAPTER_ID,
+    OpenSourceChatCompletionsAdapter,
+)
 from .runtime_models import (
     ModelRequest,
     ModelResponse,
@@ -77,6 +82,8 @@ def _is_google_context_overflow(error: Exception) -> bool:
 
 
 def _is_google_transient_error(error: Exception) -> bool:
+    if isinstance(error, (httpx.TimeoutException, httpx.NetworkError)):
+        return True
     error_type = type(error)
     if error_type.__module__.startswith("google.genai") and error_type.__name__ in {
         "APIConnectionError",
@@ -84,6 +91,8 @@ def _is_google_transient_error(error: Exception) -> bool:
     }:
         return True
     status_code = getattr(error, "status_code", None)
+    if status_code is None:
+        status_code = getattr(error, "code", None)
     return isinstance(status_code, int) and (
         status_code in {408, 409, 429} or status_code >= 500
     )
@@ -547,6 +556,11 @@ def build_model_runtime_adapter(
         if runtime_key == ("openai-python", "responses"):
             return OpenAIResponsesAdapter(client)
         if runtime_key == ("openai-python", "chat_completions"):
+            from .runtime_registry import resolve_adapter_id
+
+            adapter_id = resolve_adapter_id(runtime_config, config_id)
+            if adapter_id == OPEN_SOURCE_ADAPTER_ID:
+                return OpenSourceChatCompletionsAdapter(client)
             return DeepSeekChatCompletionsAdapter(client)
         if runtime_key == ("google-genai", "generate_content"):
             return GoogleGenAIGenerateContentAdapter(client)
