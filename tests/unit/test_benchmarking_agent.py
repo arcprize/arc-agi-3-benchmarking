@@ -1,5 +1,6 @@
 import json
 import logging
+import tempfile
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -97,6 +98,8 @@ def _agent_for_request_kwargs(request_kwargs: dict) -> BenchmarkingAgent:
     agent.MAX_RETRIES = 2
     agent.analysis_mode = False
     agent.token_counter = 0
+    agent.step_counter = 0
+    agent.run_dir = tempfile.mkdtemp()
     agent._server_state = False
     agent._previous_response_id = None
     agent._pending_user_messages = []
@@ -879,6 +882,83 @@ class TestBenchmarkingAgentRetries:
             {"role": "user", "content": "frame"},
         ]
         assert agent.token_counter == 10
+
+    def test_parse_failure_saves_raw_response_diagnostic(self):
+        agent = _agent_for_request_kwargs(
+            {"model": "gpt-5.4", "max_completion_tokens": 128}
+        )
+        agent.MAX_RETRIES = 0
+        agent.conversation = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "frame"},
+        ]
+        raw_response = {
+            "id": "resp_raw",
+            "content": [{"type": "text", "text": "not an action"}],
+        }
+
+        agent._call_api = lambda _request: ModelResponse(
+            output_text="not an action",
+            usage=NormalizedUsage(total_tokens=4),
+            raw_response=raw_response,
+        )
+
+        with pytest.raises(RuntimeError, match="Failed to get a valid action"):
+            agent._request_with_retries([GameAction.ACTION1])
+
+        diagnostics = list(Path(agent.run_dir).glob("diagnostic_parse_failure_*.json"))
+        assert len(diagnostics) == 1
+        diagnostic = json.loads(diagnostics[0].read_text())
+        assert diagnostic["diagnostic_type"] == "parse_failure"
+        assert diagnostic["step"] == 1
+        assert diagnostic["attempt"] == 1
+        assert diagnostic["max_attempts"] == 1
+        assert diagnostic["available_actions"] == ["ACTION1"]
+        assert diagnostic["response_source"] == "raw_response"
+        assert diagnostic["response"] == raw_response
+
+    def test_parse_failure_saves_normalized_diagnostic_without_raw_response(self):
+        agent = _agent_for_request_kwargs(
+            {"model": "gpt-5.4", "max_completion_tokens": 128}
+        )
+        agent.MAX_RETRIES = 0
+        agent.conversation = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "frame"},
+        ]
+
+        agent._call_api = lambda _request: ModelResponse(
+            output_text="I cannot decide.",
+            reasoning_text="No valid action was selected.",
+            usage=NormalizedUsage(input_tokens=3, output_tokens=5, total_tokens=8),
+            response_status="completed",
+            response_id="resp_normalized",
+        )
+
+        with pytest.raises(RuntimeError, match="Failed to get a valid action"):
+            agent._request_with_retries([GameAction.ACTION1])
+
+        diagnostics = list(Path(agent.run_dir).glob("diagnostic_parse_failure_*.json"))
+        assert len(diagnostics) == 1
+        diagnostic = json.loads(diagnostics[0].read_text())
+        assert diagnostic["diagnostic_type"] == "parse_failure"
+        assert diagnostic["response_source"] == "normalized_response"
+        assert diagnostic["response"] == {
+            "output_text": "I cannot decide.",
+            "reasoning_text": "No valid action was selected.",
+            "usage": {
+                "input_tokens": 3,
+                "output_tokens": 5,
+                "total_tokens": 8,
+                "reasoning_tokens": 0,
+                "cached_tokens": 0,
+                "cache_write_tokens": 0,
+                "cost": 0.0,
+                "cost_details": {},
+            },
+            "response_status": "completed",
+            "response_id": "resp_normalized",
+        }
 
     def test_empty_response_usage_is_counted_before_retry(self):
         agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
