@@ -578,6 +578,69 @@ class BenchmarkingAgent(Agent):
                     )
         logger.warning(f"Saved diagnostic response to {filename}")
 
+    @staticmethod
+    def _safe_diagnostic_payload(response: Any) -> Any:
+        if hasattr(response, "model_dump"):
+            raw = response.model_dump()
+        elif isinstance(response, dict):
+            raw = dict(response)
+        else:
+            raw = {"response_type": type(response).__name__, "repr": repr(response)}
+        return sanitize_settings(raw)
+
+    def _save_parse_failure_diagnostic(
+        self,
+        model_response: ModelResponse,
+        *,
+        attempt: int,
+        max_attempts: int,
+        actions: list[GameAction],
+    ) -> None:
+        """Persist the response that could not be converted into a game action."""
+        run_dir = getattr(self, "run_dir", None)
+        if not run_dir:
+            logger.warning("Could not save parse failure diagnostic: missing run_dir.")
+            return
+        filename = os.path.join(
+            run_dir,
+            f"diagnostic_parse_failure_step_{self.step_counter + 1}_"
+            f"attempt_{attempt}_{uuid.uuid4().hex}.json",
+        )
+        response_source = (
+            "raw_response"
+            if model_response.raw_response is not None
+            else "normalized_response"
+        )
+        if model_response.raw_response is not None:
+            response = self._safe_diagnostic_payload(model_response.raw_response)
+        else:
+            response = {
+                "output_text": model_response.output_text,
+                "reasoning_text": model_response.reasoning_text,
+                "usage": model_response.usage.model_dump(),
+                "response_status": model_response.response_status,
+                "response_id": model_response.response_id,
+            }
+        payload = {
+            "diagnostic_type": "parse_failure",
+            "step": self.step_counter + 1,
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "available_actions": [action.name for action in actions],
+            "response_source": response_source,
+            "response": response,
+        }
+        try:
+            with open(filename, "w") as f:
+                json.dump(payload, f, indent=2, default=str)
+        except Exception as exc:
+            with open(filename, "w") as f:
+                f.write(
+                    "Failed to serialize parse failure diagnostic: "
+                    f"{type(exc).__name__}"
+                )
+        logger.warning("Saved parse failure diagnostic to %s", filename)
+
     def _save_step(self, step: StepRecord) -> None:
         self.step_counter += 1
         self.run_record.total_usage = self.run_record.total_usage + step.usage
@@ -1340,8 +1403,12 @@ class BenchmarkingAgent(Agent):
                 f"Could not parse action from response "
                 f"(attempt {attempt + 1}/{max_attempts})."
             )
-            if model_response.raw_response is not None:
-                self._save_diagnostic(model_response.raw_response)
+            self._save_parse_failure_diagnostic(
+                model_response,
+                attempt=attempt + 1,
+                max_attempts=max_attempts,
+                actions=actions,
+            )
             attempt += 1
             if attempt < max_attempts:
                 self._retry_backoff(attempt)
