@@ -9,6 +9,7 @@ import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Optional
+from xml.etree import ElementTree
 
 from arcengine import FrameData, GameAction, GameState
 
@@ -67,6 +68,10 @@ from .runtime_state import (
 )
 
 logger = logging.getLogger()
+INVOKE_BLOCK_PATTERN = re.compile(
+    r"<invoke\b[^>]*>.*?</invoke>",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 class BenchmarkingAgent(Agent):
@@ -472,6 +477,56 @@ class BenchmarkingAgent(Agent):
         parsed.set_data({"x": x, "y": y})
         return parsed
 
+    @staticmethod
+    def _parse_xml_action(
+        text: str,
+        available_actions: list[GameAction],
+    ) -> tuple[Optional[GameAction], bool]:
+        """Parse complete invoke XML blocks into the structured action schema."""
+        matches = list(INVOKE_BLOCK_PATTERN.finditer(text))
+        if not matches:
+            return None, False
+
+        parsed_actions: list[GameAction] = []
+        for match in matches:
+            try:
+                root = ElementTree.fromstring(match.group(0))
+            except ElementTree.ParseError:
+                continue
+            if root.tag != "invoke":
+                continue
+
+            action_type = root.attrib.get("name")
+            if not isinstance(action_type, str):
+                continue
+            entry: dict[str, Any] = {"action_type": action_type.strip().upper()}
+            for child in list(root):
+                if child.tag != "parameter":
+                    entry = {}
+                    break
+                name = child.attrib.get("name")
+                if name not in {"x", "y"}:
+                    entry = {}
+                    break
+                value = (child.text or "").strip()
+                if not re.fullmatch(r"\d+", value):
+                    entry = {}
+                    break
+                entry[name] = int(value)
+            if not entry:
+                continue
+
+            action = BenchmarkingAgent._parse_structured_action(
+                {"actions": [entry]},
+                available_actions,
+            )
+            if action is not None:
+                parsed_actions.append(action)
+
+        if not parsed_actions:
+            return None, True
+        return parsed_actions[-1], True
+
     def _parse_action(
         self, text: str, available_actions: list[GameAction]
     ) -> Optional[GameAction]:
@@ -485,6 +540,10 @@ class BenchmarkingAgent(Agent):
         # strictly; invalid structured responses must not fall through to regex.
         if isinstance(payload, dict) and "actions" in payload:
             return self._parse_structured_action(payload, available_actions)
+
+        xml_action, saw_xml_action = self._parse_xml_action(text, available_actions)
+        if saw_xml_action:
+            return xml_action
 
         # Legacy free-text responses execute the last valid action mentioned.
         text_upper = text.upper()
