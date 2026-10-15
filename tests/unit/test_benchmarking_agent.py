@@ -693,6 +693,98 @@ class TestBenchmarkingAgentActionParsing:
 
         assert action == GameAction.ACTION5
 
+    def test_parses_complex_action_xml_invoke_block(self):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+
+        action = agent._parse_action(
+            (
+                '<invoke name="ACTION6">\n'
+                '  <parameter name="x">30</parameter>\n'
+                '  <parameter name="y">51</parameter>\n'
+                "</invoke>"
+            ),
+            [GameAction.ACTION6],
+        )
+
+        assert action is not None
+        assert action.name == "ACTION6"
+        assert action.action_data.x == 30
+        assert action.action_data.y == 51
+
+    def test_parses_xml_invoke_block_with_trailing_text(self):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+
+        action = agent._parse_action(
+            (
+                '<invoke name="ACTION6">\n'
+                '<parameter name="x">45</parameter>\n'
+                '<parameter name="y">27</parameter>\n'
+                "</invoke>\n"
+                "extra text"
+            ),
+            [GameAction.ACTION6],
+        )
+
+        assert action is not None
+        assert action.name == "ACTION6"
+        assert action.action_data.x == 45
+        assert action.action_data.y == 27
+
+    def test_parses_simple_action_xml_invoke_block(self):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+
+        action = agent._parse_action(
+            '<invoke name="ACTION3">\n</invoke>',
+            [GameAction.ACTION3],
+        )
+
+        assert action == GameAction.ACTION3
+
+    def test_parses_xml_invoke_block_with_internal_whitespace(self):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+
+        action = agent._parse_action(
+            (
+                '  <invoke name="ACTION6">\n'
+                '    \n'
+                '      <parameter name="x">\n'
+                "        30\n"
+                "      </parameter>\n"
+                '      <parameter name="y"> 51 </parameter>\n'
+                "  </invoke>  "
+            ),
+            [GameAction.ACTION6],
+        )
+
+        assert action is not None
+        assert action.name == "ACTION6"
+        assert action.action_data.x == 30
+        assert action.action_data.y == 51
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            '<invoke name="ACTION6"><parameter name="x">30</parameter></invoke>',
+            (
+                '<invoke name="ACTION6">'
+                '<parameter name="x">30</parameter>'
+                '<parameter name="y">64</parameter>'
+                "</invoke>"
+            ),
+            (
+                '<invoke name="ACTION6">'
+                '<parameter name="x">30</parameter>'
+                '<parameter name="y">51</parameter>'
+                '<parameter name="note">ACTION6 30 51</parameter>'
+                "</invoke>"
+            ),
+        ],
+    )
+    def test_rejects_invalid_xml_invoke_blocks(self, response):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+
+        assert agent._parse_action(response, [GameAction.ACTION6]) is None
+
     @pytest.mark.parametrize(
         "response",
         [
