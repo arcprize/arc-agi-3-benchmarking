@@ -20,6 +20,9 @@ dependencies = [
     "smolagents>=1.20.0",
 ]
 
+[project.scripts]
+arc-agi-3 = "main:cli"
+
 [dependency-groups]
 dev = [
     "mypy>=1.15.0",
@@ -43,3 +46,7 @@ extend-select = ["I"]
 
 [tool.setuptools]
 packages = ["benchmarking"]
+py-modules = ["main"]
+
+[tool.setuptools.package-data]
+benchmarking = ["model_configs.yaml"]
