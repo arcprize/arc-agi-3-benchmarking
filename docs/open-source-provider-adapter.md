@@ -84,6 +84,7 @@ The adapter reuses `SummaryCompactor`. Before the configured trigger, each
 accepted assistant answer and exact native reasoning field is replayed. At the
 trigger, the same model summarizes completed history. Only after a completed,
 nonempty summary does the adapter replace the old prefix with a text bridge.
+The summary request uses the model's normal output-token limit.
 
 Pending observations are excluded from the summary and restored unchanged.
 When a summary request exceeds context, complete recent accepted turns are

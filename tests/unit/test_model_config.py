@@ -781,7 +781,6 @@ class TestModelConfig:
             "compaction": {
                 "strategy": "harness_summary",
                 "trigger_tokens": 175_000,
-                "summary_max_output_tokens": 8_192,
                 "summary_input_headroom_tokens": 8_192,
             },
         }
@@ -816,12 +815,12 @@ class TestModelConfig:
                     "compaction": {
                         "strategy": "harness_summary",
                         "trigger_tokens": 175_000,
-                        "summary_max_output_tokens": 175_000,
+                        "summary_max_output_tokens": 8_192,
                         "summary_input_headroom_tokens": 8_192,
                     }
                 },
                 {},
-                "must total less than agent.MAX_CONTEXT_LENGTH",
+                "summary_max_output_tokens is no longer supported",
             ),
         ],
     )
@@ -841,7 +840,6 @@ class TestModelConfig:
             "compaction": {
                 "strategy": "harness_summary",
                 "trigger_tokens": 100_000,
-                "summary_max_output_tokens": 8_192,
                 "summary_input_headroom_tokens": 8_192,
             },
             **runtime_update,
@@ -867,6 +865,41 @@ class TestModelConfig:
         _write_model_configs(tmp_path, monkeypatch, [config])
 
         with pytest.raises(ValueError, match=message):
+            model_config.load_model_configs()
+
+    def test_harness_compaction_validates_inherited_output_limit(
+        self, tmp_path, monkeypatch
+    ):
+        config = _valid_config(
+            "google-provider-adapter",
+            runtime_sdk="google-genai",
+            runtime_api="interactions",
+            runtime={
+                "adapter_id": "google.interactions.v1",
+                "sdk": "google-genai",
+                "api": "interactions",
+                "state": "continuous_conversation",
+                "compaction": {
+                    "strategy": "harness_summary",
+                    "trigger_tokens": 100_000,
+                    "summary_input_headroom_tokens": 8_192,
+                },
+            },
+            client={"api_key_env": "GOOGLE_API_KEY"},
+            request={
+                "model": "gemini-3.8-flash",
+                "store": False,
+                "generation_config": {
+                    "max_output_tokens": 65_536,
+                    "thinking_level": "low",
+                    "thinking_summaries": "auto",
+                },
+            },
+            agent={"MAX_CONTEXT_LENGTH": 170_000},
+        )
+        _write_model_configs(tmp_path, monkeypatch, [config])
+
+        with pytest.raises(ValueError, match="must total less than"):
             model_config.load_model_configs()
 
     def test_list_model_config_ids_supports_mixed_chat_and_responses_configs(

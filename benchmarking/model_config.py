@@ -126,7 +126,7 @@ def _validate_continuous_conversation_config(
                     type(capacity) is not int
                     or capacity
                     <= native_policy.trigger_tokens
-                    + native_policy.summary_max_output_tokens
+                    + request["max_tokens"]
                 ):
                     raise ValueError(
                         "Anthropic compaction trigger and summary output must fit agent.MAX_CONTEXT_LENGTH."
@@ -263,7 +263,7 @@ def _validate_continuous_conversation_config(
             raise ValueError(
                 f"Model config '{config_id}' runtime.compaction must be a mapping."
             )
-        from .compaction import SummaryCompactionPolicy
+        from .compaction import SummaryCompactionPolicy, request_config_output_limit
 
         try:
             policy = SummaryCompactionPolicy.model_validate(compaction)
@@ -283,7 +283,7 @@ def _validate_continuous_conversation_config(
             )
         reserved_tokens = (
             policy.trigger_tokens
-            + policy.summary_max_output_tokens
+            + request_config_output_limit(request)
             + policy.summary_input_headroom_tokens
         )
         if reserved_tokens >= max_context_length:

@@ -302,11 +302,10 @@ class TestBenchmarkingAgentRuntimeClient:
             }
         assert ("compaction_count" in metadata["runtime"]) is uses_summary
 
-    def test_native_compaction_metadata_includes_validated_defaults(
+    def test_native_compaction_metadata_omits_inherited_output_limit(
         self, monkeypatch, tmp_path
     ):
         config = deepcopy(get_model_config("anthropic-opus-5-low-provider-adapter"))
-        config["runtime"]["compaction"].pop("summary_max_output_tokens")
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr("benchmarking.agent.get_model_config", lambda _id: config)
         monkeypatch.setattr(
@@ -325,7 +324,6 @@ class TestBenchmarkingAgentRuntimeClient:
         assert metadata["runtime"]["compaction"] == {
             "strategy": "native",
             "trigger_tokens": 175_000,
-            "summary_max_output_tokens": 8_192,
             "context_limit_tokens": 1_000_000,
         }
         assert agent._summary_compactor is None
@@ -1896,7 +1894,6 @@ class TestBenchmarkingAgentContinuousConversationState:
             SummaryCompactionPolicy(
                 strategy="harness_summary",
                 trigger_tokens=700,
-                summary_max_output_tokens=100,
                 summary_input_headroom_tokens=20,
             )
         )
