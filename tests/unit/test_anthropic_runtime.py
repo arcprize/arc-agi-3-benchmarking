@@ -87,16 +87,10 @@ class _FakeModelAdapter:
         return normalize_native_response(raw, request.request_config)
 
 
-def _adapter(
-    responses, *, trigger_tokens=175_000, summary_max_output_tokens=None
-):
+def _adapter(responses, *, trigger_tokens=175_000):
     low_level = _FakeModelAdapter(responses)
     runtime = deepcopy(get_model_config(CONFIG_ID)["runtime"])
     runtime["compaction"]["trigger_tokens"] = trigger_tokens
-    if summary_max_output_tokens is not None:
-        runtime["compaction"]["summary_max_output_tokens"] = (
-            summary_max_output_tokens
-        )
     adapter = build_stateful_runtime_adapter(
         model_adapter=low_level,
         runtime_config=runtime,
@@ -448,7 +442,7 @@ class TestAnthropicConfiguration:
             {
                 "strategy": "native",
                 "trigger_tokens": 175_000,
-                "summary_max_output_tokens": 0,
+                "summary_max_output_tokens": 8_192,
             },
             {
                 "strategy": "native",
@@ -868,18 +862,6 @@ class TestAnthropicOnDemandCompaction:
         assert low_level.requests[2].request_config == snapshot
         assert config == snapshot
         assert result.state.payload["context_tokens"] == 15
-
-    def test_summary_output_limit_can_be_overridden(self):
-        adapter, low_level = _adapter(
-            [_raw_response(), _compaction_response(), _raw_response()],
-            trigger_tokens=15,
-            summary_max_output_tokens=8_192,
-        )
-        state = _turn(adapter, adapter.initial_state()).state
-
-        _turn(adapter, state, "latest")
-
-        assert low_level.requests[1].request_config["max_tokens"] == 8_192
 
     @pytest.mark.parametrize("placement", ["misplaced", "duplicate", "unsigned"])
     def test_invalid_summary_replay_is_rejected_locally(self, placement):

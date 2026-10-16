@@ -13,7 +13,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .exceptions import (
     CompactionContextOverflowError,
@@ -50,9 +50,10 @@ SUMMARY_BRIDGE_TEMPLATE = """Earlier conversation history was compacted. Use the
 
 
 class SummaryCompactionPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     strategy: Literal["harness_summary"]
     trigger_tokens: int = Field(strict=True, gt=0)
-    summary_max_output_tokens: int | None = Field(default=None, strict=True, gt=0)
     summary_input_headroom_tokens: int = Field(default=8_192, strict=True, ge=0)
 
 
@@ -73,22 +74,6 @@ def runtime_state_item_count(state: RuntimeState) -> int:
     return sum(
         len(value) for value in state.payload.values() if isinstance(value, list)
     )
-
-
-def request_config_with_output_limit(
-    request_config: dict[str, Any], limit: int
-) -> dict[str, Any]:
-    updated = deepcopy(request_config)
-    generation_config = updated.get("generation_config")
-    if isinstance(generation_config, dict):
-        generation_config["max_output_tokens"] = limit
-        return updated
-    for field in ("max_output_tokens", "max_completion_tokens", "max_tokens"):
-        if field in updated:
-            updated[field] = limit
-            return updated
-    updated["max_output_tokens"] = limit
-    return updated
 
 
 def request_config_output_limit(request_config: dict[str, Any]) -> int:
@@ -169,11 +154,6 @@ class SummaryCompactor:
             state, pending_inputs = adapter.split_pending_inputs(state)
         history_items_to_compact = runtime_state_item_count(state)
         summary_request_config = deepcopy(request_config)
-        if self.policy.summary_max_output_tokens is not None:
-            summary_request_config = request_config_with_output_limit(
-                request_config,
-                self.policy.summary_max_output_tokens,
-            )
         accumulated_usage = NormalizedUsage()
         candidate_state = state
         excluded_turns: list[CompactionUnwindResult] = []

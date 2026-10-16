@@ -86,9 +86,7 @@ The checked-in profile is:
       summary_input_headroom_tokens: 8_192
 ```
 
-When `summary_max_output_tokens` is omitted, compaction inherits the normal
-request output-token limit. Set it only when a lower compaction-specific limit
-is required.
+Compaction uses the normal request output-token limit.
 
 The adapter rejects config-supplied tools, tool choices, custom history,
 structured-output constraints, stop sequences, and provider-native compaction.

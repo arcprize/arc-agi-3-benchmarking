@@ -81,7 +81,6 @@ def test_deepseek_replay_and_compaction_live():
             SummaryCompactionPolicy(
                 strategy="harness_summary",
                 trigger_tokens=1,
-                summary_max_output_tokens=4_096,
             )
         ).compact(
             adapter=adapter,

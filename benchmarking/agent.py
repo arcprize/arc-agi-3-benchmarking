@@ -261,14 +261,14 @@ class BenchmarkingAgent(Agent):
                 runtime_metadata["reasoning_replay"] = runtime_cfg["reasoning_replay"]
             if self._summary_compactor is not None:
                 runtime_metadata["compaction"] = {
-                    **self._summary_compactor.policy.model_dump(exclude_none=True),
+                    **self._summary_compactor.policy.model_dump(),
                     "context_limit_tokens": self.MAX_CONTEXT_LENGTH,
                 }
                 runtime_metadata["compaction_count"] = 0
             native_policy = getattr(self._stateful_adapter, "compaction_policy", None)
             if native_policy is not None:
                 runtime_metadata["compaction"] = {
-                    **native_policy.model_dump(exclude_none=True),
+                    **native_policy.model_dump(),
                     "context_limit_tokens": self.MAX_CONTEXT_LENGTH,
                 }
         self.run_record = RunRecord(

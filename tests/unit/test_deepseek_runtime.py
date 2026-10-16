@@ -112,7 +112,6 @@ def _config():
             "compaction": {
                 "strategy": "harness_summary",
                 "trigger_tokens": 1_000,
-                "summary_max_output_tokens": 128,
                 "summary_input_headroom_tokens": 128,
             },
         },
@@ -749,7 +748,7 @@ def test_agent_retries_invalid_tool_action_from_last_accepted_state(tmp_path):
     assert len(agent._runtime_state.accepted_turns) == 1
 
 
-def test_summary_preserves_deepseek_settings_and_replaces_output_limit():
+def test_summary_preserves_deepseek_settings_and_output_limit():
     request = deepcopy(_config()["request"])
     adapter, calls = _adapter(
         [
@@ -760,7 +759,7 @@ def test_summary_preserves_deepseek_settings_and_replaces_output_limit():
     accepted = _turn(adapter, request_config=request).state
     _compact(adapter, accepted, request_config=request)
     assert calls[0]["max_tokens"] == 256
-    assert calls[1]["max_tokens"] == 128
+    assert calls[1]["max_tokens"] == 256
     assert (
         calls[1]["chat_template_kwargs"]
         == request["extra_body"]["chat_template_kwargs"]

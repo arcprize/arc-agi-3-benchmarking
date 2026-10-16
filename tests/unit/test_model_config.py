@@ -815,12 +815,12 @@ class TestModelConfig:
                     "compaction": {
                         "strategy": "harness_summary",
                         "trigger_tokens": 175_000,
-                        "summary_max_output_tokens": 175_000,
+                        "summary_max_output_tokens": 8_192,
                         "summary_input_headroom_tokens": 8_192,
                     }
                 },
                 {},
-                "must total less than agent.MAX_CONTEXT_LENGTH",
+                "summary_max_output_tokens",
             ),
         ],
     )
@@ -840,7 +840,6 @@ class TestModelConfig:
             "compaction": {
                 "strategy": "harness_summary",
                 "trigger_tokens": 100_000,
-                "summary_max_output_tokens": 8_192,
                 "summary_input_headroom_tokens": 8_192,
             },
             **runtime_update,

@@ -287,12 +287,10 @@ requests for Anthropic before making a provider call.
 Providers without native compaction can select `runtime.compaction.strategy:
 harness_summary`. `runtime.compaction.trigger_tokens` controls when the harness
 schedules compaction, while `agent.MAX_CONTEXT_LENGTH` records the provider's
-hard context capacity. Configuration validation reserves the requested summary
-output plus `summary_input_headroom_tokens` between those values. By default,
-compaction inherits the normal request output-token limit so reasoning models
-have the same completion budget they receive during action turns. An optional
-`summary_max_output_tokens` value can impose a lower compaction-specific limit.
-The supplied
+hard context capacity. Configuration validation reserves the normal request
+output limit plus `summary_input_headroom_tokens` between those values.
+Compaction uses the same completion budget that the model receives during action
+turns. The supplied
 Gemini 3.8 Flash profile triggers at 175k against the model's
 [documented 1,048,576-token input limit](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash).
 The selected model receives a separate, domain-neutral request to summarize the

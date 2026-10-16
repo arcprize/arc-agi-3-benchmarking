@@ -92,7 +92,6 @@ def _config(replay="reasoning_content"):
             "compaction": {
                 "strategy": "harness_summary",
                 "trigger_tokens": 1_000,
-                "summary_max_output_tokens": 128,
                 "summary_input_headroom_tokens": 128,
             },
         },
@@ -482,7 +481,7 @@ def test_summary_sees_reasoning_but_not_pending_observations(replay):
     assert "GAME_OVER" not in json.dumps(calls[1])
     assert "GAME_OVER" not in json.dumps(result.prompt)
     assert calls[1]["messages"][-1]["content"] == SUMMARY_REQUEST_PROMPT
-    assert calls[1]["max_tokens"] == 128
+    assert calls[1]["max_tokens"] == 256
     assert result.history_items_to_compact == 2
     assert result.state.payload["messages"][0]["content"].endswith(result.summary)
     assert state.model_dump() == snapshot
@@ -801,9 +800,7 @@ def test_checked_in_open_source_low_profiles_use_generic_adapter():
 
 
 @pytest.mark.parametrize("output_key", ["max_tokens", "max_completion_tokens"])
-def test_summary_preserves_provider_toggles_and_replaces_correct_output_limit(
-    output_key,
-):
+def test_summary_preserves_provider_toggles_and_output_limit(output_key):
     request = {
         "model": "test-model",
         output_key: 256,
@@ -815,7 +812,7 @@ def test_summary_preserves_provider_toggles_and_replaces_correct_output_limit(
     accepted = _turn(adapter, request_config=request).state
     _compact(adapter, accepted, request_config=request)
     assert calls[0][output_key] == 256
-    assert calls[1][output_key] == 128
+    assert calls[1][output_key] == 256
     assert "max_output_tokens" not in calls[1]
     assert calls[1]["thinking"] == request["extra_body"]["thinking"]
     assert request[output_key] == 256

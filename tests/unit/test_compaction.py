@@ -12,7 +12,6 @@ from benchmarking.compaction import (
     SummaryCompactionPolicy,
     SummaryCompactor,
     build_summary_prompt_record,
-    request_config_with_output_limit,
 )
 from benchmarking.exceptions import (
     CompactionContextOverflowError,
@@ -177,7 +176,6 @@ class TestSummaryCompactor:
             SummaryCompactionPolicy(
                 strategy="harness_summary",
                 trigger_tokens=175_000,
-                summary_max_output_tokens=8_192,
             )
         )
 
@@ -231,7 +229,7 @@ class TestSummaryCompactor:
             summary_request.request_config["generation_config"][
                 "max_output_tokens"
             ]
-            == 8_192
+            == 65_536
         )
 
     def test_preserves_rich_fixed_summary_verbatim_for_continuation(self):
@@ -840,15 +838,7 @@ class TestSummaryCompactor:
             NormalizedUsage(total_tokens=174_999)
         )
 
-    def test_output_limit_override_does_not_mutate_request(self):
-        request = _request_config()
-
-        updated = request_config_with_output_limit(request, 8_192)
-
-        assert updated["generation_config"]["max_output_tokens"] == 8_192
-        assert request["generation_config"]["max_output_tokens"] == 65_536
-
-    def test_omitted_output_limit_inherits_request_budget(self):
+    def test_summary_inherits_request_budget(self):
         adapter, low_level = _google_adapter([_summary_response("Continue here.")])
         request = _request_config()
         compactor = SummaryCompactor(_policy(trigger_tokens=10))

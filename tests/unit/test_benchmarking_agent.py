@@ -1894,7 +1894,6 @@ class TestBenchmarkingAgentContinuousConversationState:
             SummaryCompactionPolicy(
                 strategy="harness_summary",
                 trigger_tokens=700,
-                summary_max_output_tokens=100,
                 summary_input_headroom_tokens=20,
             )
         )
