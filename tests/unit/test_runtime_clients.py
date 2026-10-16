@@ -1,6 +1,7 @@
 import pytest
 
 from benchmarking import runtime_clients
+from google import genai as google_genai
 
 
 class _FakeOpenAIClient:
@@ -21,6 +22,7 @@ class _FakeGoogleGenAIClient:
 class _FakeGoogleGenAIModule:
     def __init__(self) -> None:
         self.Client = _FakeGoogleGenAIClient
+        self.types = google_genai.types
 
 
 @pytest.mark.unit
@@ -162,7 +164,7 @@ class TestBuildModelRuntimeClient:
         )
 
         assert isinstance(client, _FakeGoogleGenAIClient)
-        assert client.kwargs == {"api_key": "test-google-key"}
+        assert client.kwargs == {"api_key": "test-google-key", "http_options": None}
 
     def test_google_genai_client_uses_default_google_api_key_env(self, monkeypatch):
         monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
@@ -178,7 +180,25 @@ class TestBuildModelRuntimeClient:
             config_id="google-config",
         )
 
-        assert client.kwargs == {"api_key": "test-google-key"}
+        assert client.kwargs == {"api_key": "test-google-key", "http_options": None}
+
+    def test_google_genai_client_uses_http_options(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
+        monkeypatch.setattr(
+            runtime_clients,
+            "google_genai",
+            _FakeGoogleGenAIModule(),
+        )
+
+        client = runtime_clients.build_model_runtime_client(
+            runtime_config={"sdk": "google-genai"},
+            client_config={"api_version": "v1alpha", "base_url": "https://test-api-gateway-proxy.com"},
+            config_id="google-config",
+        )
+
+        assert (http_options := client.kwargs["http_options"]) is not None
+        assert http_options.api_version == "v1alpha"
+        assert http_options.base_url == "https://test-api-gateway-proxy.com"
 
     def test_missing_google_api_key_raises_config_specific_error(self, monkeypatch):
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
