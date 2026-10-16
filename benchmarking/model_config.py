@@ -122,11 +122,16 @@ def _validate_continuous_conversation_config(
                         f"Anthropic native compaction requires beta {COMPACTION_BETA}."
                     )
                 capacity = entry.get("agent", {}).get("MAX_CONTEXT_LENGTH")
+                summary_output_tokens = (
+                    native_policy.summary_max_output_tokens
+                    if native_policy.summary_max_output_tokens is not None
+                    else request["max_tokens"]
+                )
                 if (
                     type(capacity) is not int
                     or capacity
                     <= native_policy.trigger_tokens
-                    + native_policy.summary_max_output_tokens
+                    + summary_output_tokens
                 ):
                     raise ValueError(
                         "Anthropic compaction trigger and summary output must fit agent.MAX_CONTEXT_LENGTH."
@@ -263,7 +268,10 @@ def _validate_continuous_conversation_config(
             raise ValueError(
                 f"Model config '{config_id}' runtime.compaction must be a mapping."
             )
-        from .compaction import SummaryCompactionPolicy
+        from .compaction import (
+            SummaryCompactionPolicy,
+            request_config_output_limit,
+        )
 
         try:
             policy = SummaryCompactionPolicy.model_validate(compaction)
@@ -281,9 +289,14 @@ def _validate_continuous_conversation_config(
                 f"Model config '{config_id}' uses harness summary compaction and "
                 "must set agent.MAX_CONTEXT_LENGTH to a positive integer."
             )
+        summary_output_tokens = (
+            policy.summary_max_output_tokens
+            if policy.summary_max_output_tokens is not None
+            else request_config_output_limit(request)
+        )
         reserved_tokens = (
             policy.trigger_tokens
-            + policy.summary_max_output_tokens
+            + summary_output_tokens
             + policy.summary_input_headroom_tokens
         )
         if reserved_tokens >= max_context_length:

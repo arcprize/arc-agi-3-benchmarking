@@ -31,7 +31,7 @@ class AnthropicCompactionPolicy(BaseModel):
 
     strategy: Literal["native"]
     trigger_tokens: int = Field(strict=True, gt=0)
-    summary_max_output_tokens: int = Field(default=8_192, strict=True, gt=0)
+    summary_max_output_tokens: int | None = Field(default=None, strict=True, gt=0)
 
 
 def safe_provider_error_metadata(exc: Exception) -> dict[str, Any]:
@@ -431,9 +431,10 @@ class AnthropicContinuousConversationRuntimeAdapter:
             ):
                 config = deepcopy(request.request_config)
                 config["compaction"] = {"type": "summarize"}
-                config["max_tokens"] = (
-                    self.compaction_policy.summary_max_output_tokens
-                )
+                if self.compaction_policy.summary_max_output_tokens is not None:
+                    config["max_tokens"] = (
+                        self.compaction_policy.summary_max_output_tokens
+                    )
                 config.pop("stop_sequences", None)
                 config.get("output_config", {}).pop("format", None)
                 compacted = self._invoke(

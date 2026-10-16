@@ -52,7 +52,7 @@ SUMMARY_BRIDGE_TEMPLATE = """Earlier conversation history was compacted. Use the
 class SummaryCompactionPolicy(BaseModel):
     strategy: Literal["harness_summary"]
     trigger_tokens: int = Field(strict=True, gt=0)
-    summary_max_output_tokens: int = Field(default=8_192, strict=True, gt=0)
+    summary_max_output_tokens: int | None = Field(default=None, strict=True, gt=0)
     summary_input_headroom_tokens: int = Field(default=8_192, strict=True, ge=0)
 
 
@@ -89,6 +89,21 @@ def request_config_with_output_limit(
             return updated
     updated["max_output_tokens"] = limit
     return updated
+
+
+def request_config_output_limit(request_config: dict[str, Any]) -> int:
+    generation_config = request_config.get("generation_config")
+    if isinstance(generation_config, dict):
+        limit = generation_config.get("max_output_tokens")
+        if type(limit) is int and limit > 0:
+            return limit
+    for field in ("max_output_tokens", "max_completion_tokens", "max_tokens"):
+        limit = request_config.get(field)
+        if type(limit) is int and limit > 0:
+            return limit
+    raise ValueError(
+        "Harness summary compaction requires a positive request output-token limit."
+    )
 
 
 def build_summary_bridge(summary: str) -> str:
@@ -153,10 +168,12 @@ class SummaryCompactor:
         if isinstance(adapter, PendingCompactionInputs):
             state, pending_inputs = adapter.split_pending_inputs(state)
         history_items_to_compact = runtime_state_item_count(state)
-        summary_request_config = request_config_with_output_limit(
-            request_config,
-            self.policy.summary_max_output_tokens,
-        )
+        summary_request_config = deepcopy(request_config)
+        if self.policy.summary_max_output_tokens is not None:
+            summary_request_config = request_config_with_output_limit(
+                request_config,
+                self.policy.summary_max_output_tokens,
+            )
         accumulated_usage = NormalizedUsage()
         candidate_state = state
         excluded_turns: list[CompactionUnwindResult] = []

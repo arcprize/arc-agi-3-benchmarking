@@ -83,9 +83,12 @@ The checked-in profile is:
     compaction:
       strategy: "harness_summary"
       trigger_tokens: 175_000
-      summary_max_output_tokens: 8_192
       summary_input_headroom_tokens: 8_192
 ```
+
+When `summary_max_output_tokens` is omitted, compaction inherits the normal
+request output-token limit. Set it only when a lower compaction-specific limit
+is required.
 
 The adapter rejects config-supplied tools, tool choices, custom history,
 structured-output constraints, stop sequences, and provider-native compaction.

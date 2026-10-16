@@ -38,7 +38,6 @@
     compaction:
       strategy: "harness_summary"
       trigger_tokens: 175_000
-      summary_max_output_tokens: 8_192
       summary_input_headroom_tokens: 8_192
   client:
     base_url: "https://inference.baseten.co/v1"
@@ -68,7 +67,6 @@
     compaction:
       strategy: "harness_summary"
       trigger_tokens: 175_000
-      summary_max_output_tokens: 8_192
       summary_input_headroom_tokens: 8_192
   client:
     base_url: "https://inference.baseten.co/v1"
@@ -98,7 +96,6 @@
     compaction:
       strategy: "harness_summary"
       trigger_tokens: 100_000
-      summary_max_output_tokens: 8_192
       summary_input_headroom_tokens: 8_192
   client:
     base_url: "https://model-wglyjv63.api.baseten.co/environments/production/sync/v1"
@@ -334,7 +331,6 @@
     compaction:
       strategy: "native"
       trigger_tokens: 175_000
-      summary_max_output_tokens: 8_192
   client:
     api_key_env: "ANTHROPIC_API_KEY"
   request:
@@ -365,7 +361,6 @@
     compaction:
       strategy: "harness_summary"
       trigger_tokens: 175_000
-      summary_max_output_tokens: 8_192
       summary_input_headroom_tokens: 8_192
   client:
     api_key_env: "GOOGLE_API_KEY"

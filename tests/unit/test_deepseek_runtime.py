@@ -785,7 +785,7 @@ def test_summary_failure_diagnostic_retains_protocol_reason_and_usage():
         )
     assert state == original
     assert error.value.usage.total_tokens == 120
-    assert events[0]["request_settings"]["max_tokens"] == 8192
+    assert events[0]["request_settings"]["max_tokens"] == 256
     assert events[0]["response"]["validation_error"] == "DeepSeek did not finish with a tool call."
     assert events[0]["response"]["choices"][0]["finish_reason"] == "stop"
     assert events[0]["response"]["choices"][0]["tool_call_count"] == 0

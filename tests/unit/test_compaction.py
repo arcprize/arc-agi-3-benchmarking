@@ -848,6 +848,28 @@ class TestSummaryCompactor:
         assert updated["generation_config"]["max_output_tokens"] == 8_192
         assert request["generation_config"]["max_output_tokens"] == 65_536
 
+    def test_omitted_output_limit_inherits_request_budget(self):
+        adapter, low_level = _google_adapter([_summary_response("Continue here.")])
+        request = _request_config()
+        compactor = SummaryCompactor(_policy(trigger_tokens=10))
+
+        compactor.compact(
+            adapter=adapter,
+            state=adapter.initial_state(),
+            request_config=request,
+            trigger_tokens=20,
+            max_context_length=1_048_576,
+            max_retries=1,
+        )
+
+        assert (
+            low_level.requests[0].request_config["generation_config"][
+                "max_output_tokens"
+            ]
+            == 65_536
+        )
+        assert request == _request_config()
+
     def test_prompts_are_domain_neutral(self):
         prompt = (
             f"{SUMMARY_SYSTEM_PROMPT}\n{SUMMARY_REQUEST_PROMPT}\n"
