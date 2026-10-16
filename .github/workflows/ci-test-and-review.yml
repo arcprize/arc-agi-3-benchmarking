@@ -130,6 +130,8 @@ jobs:
       && github.event.pull_request.head.repo.full_name == github.repository
       && !github.event.pull_request.draft }}
     timeout-minutes: 15
+    permissions:
+      contents: read
     outputs:
       final_message: ${{ steps.run_codex.outputs.final-message }}
     steps:
