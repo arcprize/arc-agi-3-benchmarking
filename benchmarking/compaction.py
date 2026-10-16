@@ -13,7 +13,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .exceptions import (
     CompactionContextOverflowError,
@@ -55,6 +55,16 @@ class SummaryCompactionPolicy(BaseModel):
     strategy: Literal["harness_summary"]
     trigger_tokens: int = Field(strict=True, gt=0)
     summary_input_headroom_tokens: int = Field(default=8_192, strict=True, ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_retired_output_limit(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "summary_max_output_tokens" in value:
+            raise ValueError(
+                "summary_max_output_tokens is no longer supported; compaction "
+                "uses the normal request output-token limit."
+            )
+        return value
 
 
 class SummaryCompactionResult(BaseModel):

@@ -820,7 +820,7 @@ class TestModelConfig:
                     }
                 },
                 {},
-                "summary_max_output_tokens",
+                "summary_max_output_tokens is no longer supported",
             ),
         ],
     )

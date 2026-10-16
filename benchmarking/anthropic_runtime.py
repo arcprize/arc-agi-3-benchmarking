@@ -7,7 +7,7 @@ from copy import deepcopy
 from typing import Any, Literal
 
 from anthropic import APIError
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .exceptions import EmptyResponseError, InvalidProviderResponseError
 from .runtime_models import Message, ModelRequest, ModelResponse, NormalizedUsage
@@ -31,6 +31,16 @@ class AnthropicCompactionPolicy(BaseModel):
 
     strategy: Literal["native"]
     trigger_tokens: int = Field(strict=True, gt=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_retired_output_limit(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "summary_max_output_tokens" in value:
+            raise ValueError(
+                "summary_max_output_tokens is no longer supported; compaction "
+                "uses the normal request output-token limit."
+            )
+        return value
 
 
 def safe_provider_error_metadata(exc: Exception) -> dict[str, Any]:
