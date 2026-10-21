@@ -121,7 +121,8 @@ jobs:
 
   codex:
     name: Codex Review
-    runs-on: ubuntu-latest
+    # Pin to 24.04 because "latest" is moving to 26.04. Codex issue: https://github.com/openai/codex-action/issues/188
+    runs-on: ubuntu-24.04
     needs: checks
     # Runs even when checks fail so Codex can explain the failures. Skips drafts
     # to save tokens; marking a PR ready for review triggers it.
