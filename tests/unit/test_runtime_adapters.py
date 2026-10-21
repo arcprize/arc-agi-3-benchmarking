@@ -1,9 +1,11 @@
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import anthropic
 import httpx
 import pytest
 from google import genai as google_genai
@@ -1008,6 +1010,180 @@ class TestOpenAIResponsesServerStateAdapter:
 
 @pytest.mark.unit
 class TestAnthropicMessagesAdapter:
+    @pytest.mark.parametrize("streaming", [False, True])
+    @pytest.mark.parametrize("thinking_tokens", [None, 0, 11])
+    def test_sdk_thinking_usage_reaches_action_metadata(
+        self, streaming, thinking_tokens
+    ):
+        from benchmarking.recording import StepUsage
+        from benchmarking.runtime_models import action_metadata_from_model_response
+
+        usage = {
+            "input_tokens": 27,
+            "output_tokens": 48,
+            "cache_creation_input_tokens": 3,
+            "cache_read_input_tokens": 7,
+        }
+        if thinking_tokens is not None:
+            usage["output_tokens_details"] = {"thinking_tokens": thinking_tokens}
+        message = {
+            "id": "msg_thinking_usage",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-opus-4-7",
+            "content": [{"type": "text", "text": "ACTION1"}],
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": usage,
+        }
+
+        def handle(request):
+            assert json.loads(request.content).get("stream", False) is streaming
+            if not streaming:
+                return httpx.Response(200, json=message)
+            events = [
+                {
+                    "type": "message_start",
+                    "message": {
+                        **message,
+                        "content": [],
+                        "stop_reason": None,
+                        "usage": {"input_tokens": 27, "output_tokens": 0},
+                    },
+                },
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "ACTION1"},
+                },
+                {"type": "content_block_stop", "index": 0},
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                    "usage": usage,
+                },
+                {"type": "message_stop"},
+            ]
+            body = "".join(
+                f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+                for event in events
+            )
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, text=body
+            )
+
+        with anthropic.Anthropic(
+            api_key="test-key",
+            max_retries=0,
+            http_client=httpx.Client(transport=httpx.MockTransport(handle)),
+        ) as client:
+            response = AnthropicMessagesAdapter(client).invoke(
+                ModelRequest(
+                    messages=[Message(role="user", content="frame")],
+                    request_config={
+                        "model": "claude-opus-4-7",
+                        "max_tokens": 128,
+                        "stream": streaming,
+                        "extra_headers": {
+                            "anthropic-beta": "thinking-token-count-2026-05-13"
+                        },
+                    },
+                )
+            )
+
+        assert response.output_text == "ACTION1"
+        assert response.reasoning_text is None
+        assert response.usage.input_tokens == 27
+        assert response.usage.output_tokens == 48
+        assert response.usage.total_tokens == 75
+        assert response.usage.reasoning_tokens == (thinking_tokens or 0)
+        assert response.usage.cached_tokens == 7
+        assert response.usage.cache_write_tokens == 3
+        saved = StepUsage.from_normalized_usage(response.usage)
+        metadata = action_metadata_from_model_response(
+            response, pricing={"input": 5.0, "output": 25.0}
+        )
+        assert saved.reasoning_tokens == (thinking_tokens or 0)
+        assert metadata.usage.output_tokens_details.reasoning_tokens == (
+            thinking_tokens or 0
+        )
+        assert metadata.usage.total_tokens == 75
+        assert metadata.cost.total_cost == pytest.approx((27 * 5 + 48 * 25) / 1e6)
+
+    @pytest.mark.parametrize("text_delta", [False, True])
+    @pytest.mark.parametrize(
+        ("final_details", "expected_thinking"),
+        [
+            (None, 11),
+            ({}, 11),
+            ({"thinking_tokens": None}, 11),
+            ({"thinking_tokens": 0}, 0),
+            ({"thinking_tokens": 5}, 5),
+        ],
+    )
+    def test_streaming_merges_missing_thinking_without_replacing_final_totals(
+        self, text_delta, final_details, expected_thinking
+    ):
+        final_message = _anthropic_response(
+            text="ACTION1",
+            input_tokens=101,
+            output_tokens=13,
+            cache_creation_input_tokens=5,
+            cache_read_input_tokens=7,
+        )
+        final_message.usage.output_tokens_details = final_details
+        event_usage = SimpleNamespace(
+            input_tokens=1,
+            output_tokens=12,
+            output_tokens_details=SimpleNamespace(thinking_tokens=11),
+        )
+        events = [SimpleNamespace(type="message_delta", usage=event_usage)]
+        # A later partial usage event must not erase the thinking breakdown.
+        events.append(
+            SimpleNamespace(
+                type="message_delta",
+                usage=SimpleNamespace(output_tokens=13, output_tokens_details=None),
+            )
+        )
+        if text_delta:
+            events.append(
+                SimpleNamespace(
+                    type="content_block_delta",
+                    delta=SimpleNamespace(type="text_delta", text="ACTION1"),
+                )
+            )
+        client = _FakeAnthropicClient(
+            _anthropic_response(),
+            stream_response=_anthropic_stream(
+                events=events, final_message=final_message
+            ),
+        )
+        response = AnthropicMessagesAdapter(client).invoke(
+            ModelRequest(
+                messages=[Message(role="user", content="frame")],
+                request_config={
+                    "model": "claude-opus-4-7",
+                    "max_tokens": 128,
+                    "stream": True,
+                },
+            )
+        )
+
+        assert response.output_text == "ACTION1"
+        assert response.usage.input_tokens == 101
+        assert response.usage.output_tokens == 13
+        assert response.usage.total_tokens == 114
+        assert response.usage.cached_tokens == 7
+        assert response.usage.cache_write_tokens == 5
+        assert response.usage.reasoning_tokens == expected_thinking
+        assert final_message.usage.output_tokens_details == final_details
+        assert event_usage.output_tokens_details.thinking_tokens == 11
+
     def test_invokes_messages_create_and_returns_normalized_response(self):
         client = _FakeAnthropicClient(
             _anthropic_response(

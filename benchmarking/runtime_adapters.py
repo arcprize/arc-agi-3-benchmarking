@@ -265,29 +265,50 @@ class AnthropicMessagesAdapter:
         return getattr(delta, "usage", None)
 
     @staticmethod
+    def _merge_stream_usage(primary: Any, fallback: Any) -> dict[str, Any]:
+        """Fill missing usage fields without replacing explicit values, including zero."""
+        merged: dict[str, Any] = {}
+        for source in (fallback, primary):
+            if source is None:
+                continue
+            for key, value in native_mapping(source).items():
+                if value is None:
+                    continue
+                if key == "output_tokens_details":
+                    value = {
+                        **merged.get(key, {}),
+                        **{
+                            name: count
+                            for name, count in native_mapping(value).items()
+                            if count is not None
+                        },
+                    }
+                merged[key] = value
+        return merged
+
+    @staticmethod
     def _stream_response(
         *,
         final_message: Any,
         text_parts: list[str],
         fallback_usage: Any | None,
     ) -> Any:
-        usage = getattr(final_message, "usage", None) or fallback_usage
-        if text_parts:
+        # The SDK's final usage can omit thinking-token details present in
+        # message_delta. Keep final totals authoritative and fill those gaps.
+        usage = AnthropicMessagesAdapter._merge_stream_usage(
+            getattr(final_message, "usage", None), fallback_usage
+        )
+        if text_parts or fallback_usage is not None:
             return {
                 "content": [
                     {
                         "type": "text",
                         "text": "".join(text_parts),
                     }
-                ],
+                ]
+                if text_parts
+                else getattr(final_message, "content", []),
                 "usage": usage,
-                "stream_final_message": final_message,
-            }
-
-        if fallback_usage is not None and getattr(final_message, "usage", None) is None:
-            return {
-                "content": getattr(final_message, "content", []),
-                "usage": fallback_usage,
                 "stream_final_message": final_message,
             }
 
@@ -305,7 +326,7 @@ class AnthropicMessagesAdapter:
 
                 event_usage = self._stream_usage(event)
                 if event_usage is not None:
-                    latest_usage = event_usage
+                    latest_usage = self._merge_stream_usage(event_usage, latest_usage)
 
             final_message = stream.get_final_message()
 
