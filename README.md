@@ -91,11 +91,9 @@ uv run main.py --game=ls20 --config=anthropic-opus-4-7-medium
 uv run main.py --game=ls20 --config=anthropic-opus-4-7-low-thinking
 ```
 
-The standard Anthropic profiles request thinking-token usage with the
-`thinking-token-count-2026-05-13` beta header. Custom standard profiles can add
-`request.extra_headers.anthropic-beta` with the same value. Both streaming and
-non-streaming responses preserve the reported thinking count as a breakdown of
-output tokens, without adding it again to token totals or costs.
+Anthropic responses preserve the reported thinking-token count as a breakdown of
+output tokens in both streaming and non-streaming runs, without adding it again
+to token totals or costs.
 
 6. Or on all games:
 

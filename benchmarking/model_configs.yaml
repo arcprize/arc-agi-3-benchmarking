@@ -139,8 +139,6 @@
     model: "claude-opus-4-7"
     max_tokens: 120000
     stream: true
-    extra_headers:
-      anthropic-beta: "thinking-token-count-2026-05-13"
     thinking:
       type: "adaptive"
     output_config:
@@ -162,8 +160,6 @@
   request:
     model: "claude-opus-4-7"
     max_tokens: 128_000
-    extra_headers:
-      anthropic-beta: "thinking-token-count-2026-05-13"
     thinking:
       type: "adaptive"
     output_config:

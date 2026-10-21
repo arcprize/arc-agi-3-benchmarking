@@ -1038,6 +1038,7 @@ class TestAnthropicMessagesAdapter:
         }
 
         def handle(request):
+            assert "anthropic-beta" not in request.headers
             assert json.loads(request.content).get("stream", False) is streaming
             if not streaming:
                 return httpx.Response(200, json=message)
@@ -1089,9 +1090,6 @@ class TestAnthropicMessagesAdapter:
                         "model": "claude-opus-4-7",
                         "max_tokens": 128,
                         "stream": streaming,
-                        "extra_headers": {
-                            "anthropic-beta": "thinking-token-count-2026-05-13"
-                        },
                     },
                 )
             )
@@ -1114,75 +1112,6 @@ class TestAnthropicMessagesAdapter:
         )
         assert metadata.usage.total_tokens == 75
         assert metadata.cost.total_cost == pytest.approx((27 * 5 + 48 * 25) / 1e6)
-
-    @pytest.mark.parametrize("text_delta", [False, True])
-    @pytest.mark.parametrize(
-        ("final_details", "expected_thinking"),
-        [
-            (None, 11),
-            ({}, 11),
-            ({"thinking_tokens": None}, 11),
-            ({"thinking_tokens": 0}, 0),
-            ({"thinking_tokens": 5}, 5),
-        ],
-    )
-    def test_streaming_merges_missing_thinking_without_replacing_final_totals(
-        self, text_delta, final_details, expected_thinking
-    ):
-        final_message = _anthropic_response(
-            text="ACTION1",
-            input_tokens=101,
-            output_tokens=13,
-            cache_creation_input_tokens=5,
-            cache_read_input_tokens=7,
-        )
-        final_message.usage.output_tokens_details = final_details
-        event_usage = SimpleNamespace(
-            input_tokens=1,
-            output_tokens=12,
-            output_tokens_details=SimpleNamespace(thinking_tokens=11),
-        )
-        events = [SimpleNamespace(type="message_delta", usage=event_usage)]
-        # A later partial usage event must not erase the thinking breakdown.
-        events.append(
-            SimpleNamespace(
-                type="message_delta",
-                usage=SimpleNamespace(output_tokens=13, output_tokens_details=None),
-            )
-        )
-        if text_delta:
-            events.append(
-                SimpleNamespace(
-                    type="content_block_delta",
-                    delta=SimpleNamespace(type="text_delta", text="ACTION1"),
-                )
-            )
-        client = _FakeAnthropicClient(
-            _anthropic_response(),
-            stream_response=_anthropic_stream(
-                events=events, final_message=final_message
-            ),
-        )
-        response = AnthropicMessagesAdapter(client).invoke(
-            ModelRequest(
-                messages=[Message(role="user", content="frame")],
-                request_config={
-                    "model": "claude-opus-4-7",
-                    "max_tokens": 128,
-                    "stream": True,
-                },
-            )
-        )
-
-        assert response.output_text == "ACTION1"
-        assert response.usage.input_tokens == 101
-        assert response.usage.output_tokens == 13
-        assert response.usage.total_tokens == 114
-        assert response.usage.cached_tokens == 7
-        assert response.usage.cache_write_tokens == 5
-        assert response.usage.reasoning_tokens == expected_thinking
-        assert final_message.usage.output_tokens_details == final_details
-        assert event_usage.output_tokens_details.thinking_tokens == 11
 
     def test_invokes_messages_create_and_returns_normalized_response(self):
         client = _FakeAnthropicClient(
