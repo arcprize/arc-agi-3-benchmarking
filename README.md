@@ -87,9 +87,13 @@ uv run main.py --game=ls20 --config=openai-gpt-5-4-2026-03-05
 Native Anthropic configs are also available:
 
 ```bash
-uv run main.py --game=ls20 --config=anthropic-opus-4-7-low
+uv run main.py --game=ls20 --config=anthropic-opus-4-7-medium
 uv run main.py --game=ls20 --config=anthropic-opus-4-7-low-thinking
 ```
+
+Anthropic responses preserve the reported thinking-token count as a breakdown of
+output tokens in both streaming and non-streaming runs, without adding it again
+to token totals or costs.
 
 6. Or on all games:
 
