@@ -31,6 +31,11 @@ from benchmarking.open_source_runtime import (
     normalize_open_source_response,
     validate_open_source_request,
 )
+from benchmarking.provider_requests import (
+    CLIENT_REQUEST_HEADER,
+    LEDGER_FILENAME,
+    provider_request_context,
+)
 from benchmarking.recording import RunRecord
 from benchmarking.runtime_adapters import (
     OpenAIChatCompletionsAdapter,
@@ -599,7 +604,7 @@ def test_agent_retries_from_accepted_state_and_parses_only_final_answer(tmp_path
         ]
     )
     agent = _agent(adapter, tmp_path)
-    response, action, retries, _ = agent._request_with_retries(
+    response, action, retries, _, _ = agent._request_with_retries(
         [GameAction.ACTION1, GameAction.ACTION7]
     )
     assert action == GameAction.ACTION1
@@ -618,7 +623,7 @@ def test_agent_action_overflow_compacts_before_retrying_fresh_frame(tmp_path):
     agent._runtime_state = adapter.buffer_inputs(
         agent._runtime_state, [Message(role="user", content="buffered reset")]
     )
-    response, action, _, _ = agent._request_with_retries([GameAction.ACTION1])
+    response, action, _, _, _ = agent._request_with_retries([GameAction.ACTION1])
     assert action == GameAction.ACTION1
     assert "newest frame" not in json.dumps(calls[2])
     assert "buffered reset" not in json.dumps(calls[2])
@@ -761,6 +766,47 @@ def test_input_mutation_cannot_modify_accepted_state():
     snapshot = first.model_dump()
     _turn(adapter, first)
     assert first.model_dump() == snapshot
+
+
+def test_provider_request_ledger_records_open_source_calls(tmp_path):
+    headers = []
+
+    def handle(request):
+        headers.append(dict(request.headers))
+        return httpx.Response(200, json=_raw())
+
+    client = OpenAI(
+        api_key="test",
+        base_url="https://example.test/v1",
+        max_retries=0,
+        http_client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    runtime = _config()["runtime"]
+    transport = build_model_runtime_adapter(
+        client=client, runtime_config=runtime, config_id="test"
+    )
+    adapter = build_stateful_runtime_adapter(
+        model_adapter=transport, runtime_config=runtime, config_id="test"
+    )
+    with provider_request_context(
+        run_dir=str(tmp_path),
+        step=3,
+        attempt=1,
+        operation="action",
+    ):
+        result = _turn(adapter)
+
+    assert result.response.output_text == "ACTION1"
+    assert headers[0][CLIENT_REQUEST_HEADER.lower()]
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / LEDGER_FILENAME).read_text().splitlines()
+    ]
+    assert len(rows) == 1
+    assert rows[0]["provider"] == "open_source"
+    assert rows[0]["api_surface"] == "chat_completions"
+    assert rows[0]["outcome"] == "success"
+    assert rows[0]["usage"]["total_tokens"] == 120
 
 
 def test_checked_in_open_source_low_profiles_use_generic_adapter():

@@ -726,7 +726,7 @@ class TestXAIAgentIntegration:
         )
         first = _turn(adapter)
         agent = _agent(adapter, first.state)
-        response, action, retries, _ = agent._request_with_retries([GameAction.ACTION1])
+        response, action, retries, _, _ = agent._request_with_retries([GameAction.ACTION1])
         assert action == GameAction.ACTION1
         assert retries == 1
         assert response.usage.total_tokens == 280
@@ -746,7 +746,7 @@ class TestXAIAgentIntegration:
         failed["status"] = "incomplete"
         adapter, calls = _adapter([failed, _response(2)])
         agent = _agent(adapter)
-        response, _, retries, _ = agent._request_with_retries([GameAction.ACTION1])
+        response, _, retries, _, _ = agent._request_with_retries([GameAction.ACTION1])
         assert retries == 1
         assert calls[0] == calls[1]
         assert response.usage.total_tokens == 200
@@ -1021,7 +1021,7 @@ class TestXAIAccounting:
         initial = _turn(adapter)
         original_state = initial.state.model_dump()
         agent = _agent(adapter, initial.state)
-        response, action, retries, _ = agent._request_with_retries([GameAction.ACTION1])
+        response, action, retries, _, _ = agent._request_with_retries([GameAction.ACTION1])
         assert action == GameAction.ACTION1
         assert retries == 1
         assert response.usage.total_tokens == expected_tokens
@@ -1066,7 +1066,7 @@ class TestXAIAccounting:
         agent = _agent(adapter, _turn(adapter).state)
         agent._request_with_retries([GameAction.ACTION1])
         first = agent._last_turn_result
-        response, _, retries, _ = agent._request_with_retries([GameAction.ACTION1])
+        response, _, retries, _, _ = agent._request_with_retries([GameAction.ACTION1])
         assert retries == 0
         assert response.usage.total_tokens == 140_000
         assert response.usage.cost == pytest.approx(0.01)

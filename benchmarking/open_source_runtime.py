@@ -12,6 +12,7 @@ from .exceptions import (
     InvalidProviderResponseError,
     TransientProviderError,
 )
+from .provider_requests import begin_provider_request
 from .runtime_models import Message, ModelRequest, ModelResponse, NormalizedUsage
 from .runtime_state import (
     CONTINUOUS_CONVERSATION_RUNTIME_STATE,
@@ -293,16 +294,34 @@ class OpenSourceChatCompletionsAdapter:
                 **(kwargs.get("stream_options") or {}),
                 "include_usage": True,
             }
+        attempt = begin_provider_request(
+            provider="open_source",
+            api_surface="chat_completions",
+            request_payload=kwargs,
+            model=kwargs.get("model"),
+        )
         try:
-            raw = self._client.chat.completions.create(**kwargs)
-            if kwargs.get("stream"):
-                return self._consume_stream(raw)
-            return normalize_open_source_response(_mapping(raw))
+            raw = self._client.chat.completions.create(**attempt.request_payload)
+            response = (
+                self._consume_stream(raw)
+                if attempt.request_payload.get("stream")
+                else normalize_open_source_response(_mapping(raw))
+            )
         except APIError as exc:
+            attempt.record_exception(exc, response=getattr(exc, "response", None))
             classified = _classified_provider_error(exc)
             if classified is not None:
                 raise classified from exc
             raise
+        except Exception as exc:
+            attempt.record_exception(
+                exc,
+                response=getattr(exc, "response", None),
+                usage=getattr(exc, "usage", None),
+            )
+            raise
+        attempt.record_success(response.raw_response, usage=response.usage)
+        return response
 
     @staticmethod
     def _consume_stream(stream: Any) -> ModelResponse:
