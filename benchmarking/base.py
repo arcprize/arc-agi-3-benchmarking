@@ -16,13 +16,14 @@ from .recorder import Recorder
 logger = logging.getLogger()
 
 class ExitReason(str, Enum):
-    UNKNOWN          = "UNKNOWN"
-    GAME_WIN         = "GAME_WIN"
-    ACTION_BUDGET    = "ACTION_BUDGET"
-    TIME_BUDGET      = "TIME_BUDGET"
-    SCORECARD_CLOSED = "SCORECARD_CLOSED"
-    API_ERROR        = "API_ERROR"
-    AGENT_ERROR      = "AGENT_ERROR"
+    UNKNOWN           = "UNKNOWN"
+    GAME_WIN          = "GAME_WIN"
+    ACTION_BUDGET     = "ACTION_BUDGET"
+    TIME_BUDGET       = "TIME_BUDGET"
+    SCORECARD_CLOSED  = "SCORECARD_CLOSED"
+    API_ERROR         = "API_ERROR"
+    AGENT_ERROR       = "AGENT_ERROR"
+    REHYDRATION_ERROR = "REHYDRATION_ERROR"
 
 class Agent(ABC):
     """Interface for an agent that plays one ARC-AGI-3 game."""
@@ -37,6 +38,8 @@ class Agent(ABC):
     _timed_out: bool = False
 
     timer: float = 0
+    # Wall-clock seconds already spent in a prior session (rehydration).
+    _elapsed_offset_seconds: float = 0.0
     agent_name: str
     card_id: str
     game_id: str
@@ -80,7 +83,7 @@ class Agent(ABC):
 
     def main(self) -> None:
         """The main agent loop. Play the game_id until finished, then exits."""
-        self.timer = time.time()
+        self.timer = time.time() - self._elapsed_offset_seconds
         taking_action = False
         try:
             while (
@@ -108,6 +111,7 @@ class Agent(ABC):
                     )
                 taking_action = False
                 self.action_counter += 1
+                self._after_action(frame)
 
         except Exception:
             self.exit_reason = ExitReason.API_ERROR if taking_action else ExitReason.AGENT_ERROR
@@ -181,6 +185,13 @@ class Agent(ABC):
         latest_frame: FrameData,
         forced_action: GameAction,
     ) -> None:
+        return None
+
+    def _after_action(self, frame: Optional[FrameData]) -> None:
+        """Called once per loop iteration after the action is counted.
+
+        ``frame`` is None when the action produced no valid frame.
+        """
         return None
 
     def do_action_request(self, action: GameAction) -> FrameData:

@@ -206,3 +206,41 @@ def test_existing_path(make_adapter):
     adapter, calls = make_adapter([reply("STOP", [{"text": "ACTION1"}])])
     assert adapter.invoke(request()).output_text == "ACTION1"
     assert len(calls) == 1
+
+@pytest.mark.parametrize('status', [500, 503])
+def test_real_sdk_server_errors_are_transient(status):
+    from benchmarking.exceptions import TransientProviderError
+
+    def handle(req):
+        return httpx.Response(status, json={
+            'error': {'code': status, 'message': 'Temporary failure', 'status': 'INTERNAL'}
+        })
+
+    with genai.Client(api_key='test-key', http_options=types.HttpOptions(
+        httpx_client=httpx.Client(transport=httpx.MockTransport(handle))
+    )) as client:
+        with pytest.raises(TransientProviderError) as caught:
+            GoogleGenAIGenerateContentAdapter(client).invoke(request())
+        assert caught.value.__cause__.code == status
+
+
+def test_transport_timeout_is_transient(make_adapter):
+    from benchmarking.exceptions import TransientProviderError
+    adapter, _ = make_adapter([httpx.ReadTimeout('timeout')])
+    with pytest.raises(TransientProviderError):
+        adapter.invoke(request())
+
+
+def test_permanent_google_error_is_not_transient():
+    from google.genai.errors import ClientError
+
+    def handle(req):
+        return httpx.Response(403, json={
+            'error': {'code': 403, 'message': 'Denied', 'status': 'PERMISSION_DENIED'}
+        })
+
+    with genai.Client(api_key='test-key', http_options=types.HttpOptions(
+        httpx_client=httpx.Client(transport=httpx.MockTransport(handle))
+    )) as client:
+        with pytest.raises(ClientError):
+            GoogleGenAIGenerateContentAdapter(client).invoke(request())

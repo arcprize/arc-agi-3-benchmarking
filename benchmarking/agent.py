@@ -6,8 +6,10 @@ import re
 import textwrap
 import time
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Optional
+from xml.etree import ElementTree
 
 from arcengine import FrameData, GameAction, GameState
 
@@ -24,6 +26,7 @@ from .exceptions import (
     CompactionFailureError,
     ContextOverflowError,
     EmptyResponseError,
+    TransientProviderError,
 )
 from .model_config import get_model_config
 from .provider_requests import current_provider_request_ids, provider_request_context
@@ -33,6 +36,17 @@ from .recording import (
     RunRecord,
     StepRecord,
     StepUsage,
+)
+from .rehydration import (
+    AgentFields,
+    AgentSnapshot,
+    LineageEntry,
+    PreparedRehydration,
+    RehydrationError,
+    SnapshotSource,
+    config_sha256,
+    frame_fingerprint,
+    write_snapshot_atomic,
 )
 from .runtime_adapters import build_model_runtime_adapter
 from .runtime_clients import build_model_runtime_client
@@ -55,6 +69,10 @@ from .runtime_state import (
 )
 
 logger = logging.getLogger()
+INVOKE_BLOCK_PATTERN = re.compile(
+    r"<invoke\b[^>]*>.*?</invoke>",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 class BenchmarkingAgent(Agent):
@@ -68,6 +86,9 @@ class BenchmarkingAgent(Agent):
     MODEL_CONFIG_ID: str = ""
     MAX_ACTIONS: int = 10  # Fallback only when baseline_actions are unavailable.
     MAX_ACTIONS_BASELINE_MULTIPLIER: float = 2.0
+    TRANSIENT_MAX_ATTEMPTS: int = 10
+    RETRY_BASE_SECONDS: float = 0.25
+    RETRY_MAX_SECONDS: float = 30.0
     MAX_RETRIES: int = 3
     MAX_CONTEXT_LENGTH: int = 100000
     MAX_ANIMATION_FRAMES: int = 7
@@ -77,14 +98,24 @@ class BenchmarkingAgent(Agent):
     # Using 1.0 is intentionally conservative relative to observed runs.
     ESTIMATED_CHARS_PER_TOKEN: float = 1.0
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        rehydration: PreparedRehydration | None = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
+        self._rehydration = rehydration
+        self._lineage: list[LineageEntry] = []
         if not self.config:
             raise ValueError(
                 "No model config specified. Pass --config=<config_id> when running main.py. "
                 "Use --list-configs to see available options."
             )
         self.MODEL_CONFIG_ID = self.config
+        # Message transcript for manual_rolling and previous_response_id configs.
+        # Continuous configs leave it empty: `self._runtime_state` holds their
+        # transcript, and compaction keeps that bounded.
         self.conversation: list[dict[str, Any]] = []
         self.token_counter: int = 0
 
@@ -92,6 +123,9 @@ class BenchmarkingAgent(Agent):
             self._load_model_config()
         )
         self._pricing: dict[str, float] = pricing_cfg
+        self._model_config_sha256 = config_sha256(
+            get_model_config(self.MODEL_CONFIG_ID)
+        )
 
         # Server-managed conversation state (OpenAI Responses previous_response_id
         # + compaction). When enabled, we send only the new message(s) each turn
@@ -160,6 +194,9 @@ class BenchmarkingAgent(Agent):
                 f"{self.game_id} - No baseline_actions available, "
                 f"using MAX_ACTIONS={self.MAX_ACTIONS}"
             )
+        # Testing/development only: a total action cap across all levels.
+        hard_cap = os.environ.get("MAX_ACTIONS_HARD_CAP")
+        self._max_actions_hard_cap = int(hard_cap) if hard_cap else None
         self._level_action_counter: int = 0
         self._last_levels_completed: int = 0
         self._level_just_advanced: bool = False
@@ -190,9 +227,14 @@ class BenchmarkingAgent(Agent):
             self._pending_turn_messages: list[Message] = []
         # Per-step recording
         self.step_counter: int = 0
-        run_id = uuid.uuid4()
+        # Name the run after the game session (set by make()'s reset) so its
+        # files can be found from the session guid alone.
+        session_guid = getattr(
+            getattr(self.arc_env, "observation_space", None), "guid", None
+        )
+        run_id = session_guid or str(uuid.uuid4())
         self.run_dir = os.path.join("recordings", f"{self.name}.{run_id}")
-        os.makedirs(self.run_dir, exist_ok=True)
+        os.makedirs(self.run_dir)
         runtime_metadata = None
         if self._continuous_conversation:
             commit_sha = harness_commit_sha()
@@ -216,6 +258,8 @@ class BenchmarkingAgent(Agent):
                     commit_sha=commit_sha,
                 ),
             }
+            if descriptor.adapter_id == "open_source.chat_completions.v1":
+                runtime_metadata["reasoning_replay"] = runtime_cfg["reasoning_replay"]
             if self._summary_compactor is not None:
                 runtime_metadata["compaction"] = {
                     **self._summary_compactor.policy.model_dump(),
@@ -229,8 +273,10 @@ class BenchmarkingAgent(Agent):
                     "context_limit_tokens": self.MAX_CONTEXT_LENGTH,
                 }
         self.run_record = RunRecord(
-            run_id=str(run_id),
+            run_id=run_id,
             game_id=self.game_id,
+            guid=session_guid,
+            card_id=self.card_id,
             agent_name=self.name,
             model=self.MODEL,
             started_at=datetime.now(timezone.utc),
@@ -432,6 +478,56 @@ class BenchmarkingAgent(Agent):
         parsed.set_data({"x": x, "y": y})
         return parsed
 
+    @staticmethod
+    def _parse_xml_action(
+        text: str,
+        available_actions: list[GameAction],
+    ) -> tuple[Optional[GameAction], bool]:
+        """Parse complete invoke XML blocks into the structured action schema."""
+        matches = list(INVOKE_BLOCK_PATTERN.finditer(text))
+        if not matches:
+            return None, False
+
+        parsed_actions: list[GameAction] = []
+        for match in matches:
+            try:
+                root = ElementTree.fromstring(match.group(0))
+            except ElementTree.ParseError:
+                continue
+            if root.tag != "invoke":
+                continue
+
+            action_type = root.attrib.get("name")
+            if not isinstance(action_type, str):
+                continue
+            entry: dict[str, Any] = {"action_type": action_type.strip().upper()}
+            for child in list(root):
+                if child.tag != "parameter":
+                    entry = {}
+                    break
+                name = child.attrib.get("name")
+                if name not in {"x", "y"}:
+                    entry = {}
+                    break
+                value = (child.text or "").strip()
+                if not re.fullmatch(r"\d+", value):
+                    entry = {}
+                    break
+                entry[name] = int(value)
+            if not entry:
+                continue
+
+            action = BenchmarkingAgent._parse_structured_action(
+                {"actions": [entry]},
+                available_actions,
+            )
+            if action is not None:
+                parsed_actions.append(action)
+
+        if not parsed_actions:
+            return None, True
+        return parsed_actions[-1], True
+
     def _parse_action(
         self, text: str, available_actions: list[GameAction]
     ) -> Optional[GameAction]:
@@ -445,6 +541,10 @@ class BenchmarkingAgent(Agent):
         # strictly; invalid structured responses must not fall through to regex.
         if isinstance(payload, dict) and "actions" in payload:
             return self._parse_structured_action(payload, available_actions)
+
+        xml_action, saw_xml_action = self._parse_xml_action(text, available_actions)
+        if saw_xml_action:
+            return xml_action
 
         # Legacy free-text responses execute the last valid action mentioned.
         text_upper = text.upper()
@@ -494,14 +594,18 @@ class BenchmarkingAgent(Agent):
     def _write_run_meta(self) -> None:
         path = os.path.join(self.run_dir, "run_meta.json")
         with open(path, "w") as f:
-            exclude = {"runtime"} if self.run_record.runtime is None else None
+            exclude = {
+                field
+                for field in ("runtime", "rehydration")
+                if getattr(self.run_record, field) is None
+            }
             f.write(self.run_record.model_dump_json(indent=2, exclude=exclude))
 
     def _save_diagnostic(self, response: Any) -> None:
         """Dump a raw API response to a diagnostic file for post-mortem debugging."""
         filename = os.path.join(
             self.run_dir,
-            f"diagnostic_step_{self.step_counter + 1}_{int(time.time())}.json",
+            f"diagnostic_step_{self.step_counter + 1}_{int(time.time())}_{uuid.uuid4().hex}.json",
         )
         try:
             if self._continuous_conversation:
@@ -533,6 +637,69 @@ class BenchmarkingAgent(Agent):
                         f"Failed to serialize response: {exc}\nrepr: {repr(response)}"
                     )
         logger.warning(f"Saved diagnostic response to {filename}")
+
+    @staticmethod
+    def _safe_diagnostic_payload(response: Any) -> Any:
+        if hasattr(response, "model_dump"):
+            raw = response.model_dump()
+        elif isinstance(response, dict):
+            raw = dict(response)
+        else:
+            raw = {"response_type": type(response).__name__, "repr": repr(response)}
+        return sanitize_settings(raw)
+
+    def _save_parse_failure_diagnostic(
+        self,
+        model_response: ModelResponse,
+        *,
+        attempt: int,
+        max_attempts: int,
+        actions: list[GameAction],
+    ) -> None:
+        """Persist the response that could not be converted into a game action."""
+        run_dir = getattr(self, "run_dir", None)
+        if not run_dir:
+            logger.warning("Could not save parse failure diagnostic: missing run_dir.")
+            return
+        filename = os.path.join(
+            run_dir,
+            f"diagnostic_parse_failure_step_{self.step_counter + 1}_"
+            f"attempt_{attempt}_{uuid.uuid4().hex}.json",
+        )
+        response_source = (
+            "raw_response"
+            if model_response.raw_response is not None
+            else "normalized_response"
+        )
+        if model_response.raw_response is not None:
+            response = self._safe_diagnostic_payload(model_response.raw_response)
+        else:
+            response = {
+                "output_text": model_response.output_text,
+                "reasoning_text": model_response.reasoning_text,
+                "usage": model_response.usage.model_dump(),
+                "response_status": model_response.response_status,
+                "response_id": model_response.response_id,
+            }
+        payload = {
+            "diagnostic_type": "parse_failure",
+            "step": self.step_counter + 1,
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "available_actions": [action.name for action in actions],
+            "response_source": response_source,
+            "response": response,
+        }
+        try:
+            with open(filename, "w") as f:
+                json.dump(payload, f, indent=2, default=str)
+        except Exception as exc:
+            with open(filename, "w") as f:
+                f.write(
+                    "Failed to serialize parse failure diagnostic: "
+                    f"{type(exc).__name__}"
+                )
+        logger.warning("Saved parse failure diagnostic to %s", filename)
 
     def _save_step(self, step: StepRecord) -> None:
         self.step_counter += 1
@@ -582,6 +749,175 @@ class BenchmarkingAgent(Agent):
         with open(filename, "w") as f:
             json.dump(sanitize_settings(event), f, indent=2, default=str)
         logger.warning("Saved harness summary diagnostic to %s", filename)
+
+    def _snapshot(self) -> AgentSnapshot:
+        """Serialize agent state at a clean loop boundary.
+
+        A clean boundary is right after step N: N actions submitted, frame N
+        appended, and no in-flight turn or compaction buffers.
+        """
+        in_flight = {
+            "_pending_turn_messages": getattr(self, "_pending_turn_messages", []),
+            "_pending_action_reasoning": self._pending_action_reasoning,
+            "_pending_compaction_usage": self._pending_compaction_usage,
+            "_pending_compaction_continuation": self._pending_compaction_continuation,
+        }
+        busy = [name for name, value in in_flight.items() if value]
+        if busy:
+            raise RuntimeError(
+                f"Cannot snapshot with in-flight state: {', '.join(busy)}."
+            )
+        if self.step_counter != self.action_counter:
+            raise RuntimeError(
+                f"Cannot snapshot: step_counter={self.step_counter} != "
+                f"action_counter={self.action_counter}."
+            )
+
+        return AgentSnapshot(
+            harness_commit_sha=harness_commit_sha(),
+            created_at=datetime.now(timezone.utc),
+            source=SnapshotSource(
+                run_id=self.run_record.run_id,
+                guid=self.guid,
+                game_id=self.game_id,
+                card_id=self.card_id,
+            ),
+            lineage=self._lineage,
+            model_config_id=self.MODEL_CONFIG_ID,
+            model_config_sha256=self._model_config_sha256,
+            pricing=self._pricing,
+            step=self.step_counter,
+            last_frame=frame_fingerprint(self.frames[-1]),
+            agent=AgentFields(
+                conversation=self.conversation,
+                token_counter=self.token_counter,
+                level_action_counter=self._level_action_counter,
+                last_levels_completed=self._last_levels_completed,
+                level_just_advanced=self._level_just_advanced,
+                compaction_counter=self._compaction_counter,
+                pending_compaction_trigger_tokens=(
+                    self._pending_compaction_trigger_tokens
+                ),
+                elapsed_seconds=time.time() - self.timer,
+                total_usage=self.run_record.total_usage,
+            ),
+            runtime_state=(
+                self._runtime_state if self._continuous_conversation else None
+            ),
+        )
+
+    def _restore(self, snapshot: AgentSnapshot) -> None:
+        """Load snapshot state after replay has rebuilt the game to its step."""
+        if self._continuous_conversation:
+            if snapshot.runtime_state is None:
+                raise RehydrationError("Snapshot has no runtime_state to restore.")
+            self._runtime_state = snapshot.runtime_state
+
+        fields = snapshot.agent
+        self.conversation = deepcopy(fields.conversation)
+        self.token_counter = fields.token_counter
+        self.step_counter = snapshot.step
+        self._level_action_counter = fields.level_action_counter
+        self._last_levels_completed = fields.last_levels_completed
+        self._level_just_advanced = fields.level_just_advanced
+        self._compaction_counter = fields.compaction_counter
+        self._pending_compaction_trigger_tokens = (
+            fields.pending_compaction_trigger_tokens
+        )
+        # base.main() applies the offset when it starts the timer; setting the
+        # timer here too keeps snapshots taken before then consistent.
+        self._elapsed_offset_seconds = fields.elapsed_seconds
+        self.timer = time.time() - fields.elapsed_seconds
+        self._lineage = [
+            *snapshot.lineage,
+            LineageEntry(
+                run_id=snapshot.source.run_id,
+                guid=snapshot.source.guid,
+                rehydrated_at_step=snapshot.step,
+            ),
+        ]
+        self.run_record.total_usage = fields.total_usage
+        self.run_record.total_steps = snapshot.step
+        if self.run_record.runtime and "compaction_count" in self.run_record.runtime:
+            self.run_record.runtime["compaction_count"] = fields.compaction_counter
+        provenance: dict[str, Any] = {
+            "source_run_id": snapshot.source.run_id,
+            "source_guid": snapshot.source.guid,
+            "source_card_id": snapshot.source.card_id,
+            "replayed_steps": snapshot.step,
+            "prior_elapsed_seconds": fields.elapsed_seconds,
+            "lineage": [entry.model_dump() for entry in self._lineage],
+        }
+        if snapshot.pricing != self._pricing:
+            logger.warning(
+                f"Pricing changed since the snapshot ({snapshot.pricing} -> "
+                f"{self._pricing}); carried costs use the previous pricing."
+            )
+            provenance["pricing_changed"] = {
+                "previous": snapshot.pricing,
+                "current": self._pricing,
+            }
+        self.run_record.rehydration = provenance
+        self._write_run_meta()
+
+    def _rehydrate(self, prepared: PreparedRehydration) -> None:
+        """Replay recorded actions, verify every frame, then restore state.
+
+        Replayed steps re-submit their original reasoning metadata but write no
+        step files and add no usage; totals come from the snapshot.
+        """
+        snapshot = prepared.snapshot
+        logger.info(f"{self.game_id} - Replaying {snapshot.step} recorded steps.")
+        frame: FrameData | None = None
+        for number, recorded in enumerate(prepared.steps, start=1):
+            self._pending_action_reasoning = dict(recorded.reasoning)
+            frame = self.take_action(recorded.game_action())
+            if frame is None:
+                raise RehydrationError(f"Replay step {number}: invalid frame.")
+            self.append_frame(frame)
+            self.action_counter += 1
+            live, expected = frame_fingerprint(frame), frame_fingerprint(recorded)
+            if live != expected:
+                raise RehydrationError(
+                    f"Replay diverged at step {number}: live={live.model_dump()}, "
+                    f"recorded={expected.model_dump()}."
+                )
+
+        self._restore(snapshot)
+        # Snapshot the resume point under this session's guid, so this run can
+        # itself be rehydrated even if it stops before its first new step.
+        self._after_action(frame)
+        logger.info(
+            f"{self.game_id} - Rehydrated at step {snapshot.step}; "
+            "resuming normal play."
+        )
+
+    def main(self) -> None:
+        if self._rehydration is not None:
+            try:
+                self._rehydrate(self._rehydration)
+            except Exception:
+                self.exit_reason = ExitReason.REHYDRATION_ERROR
+                self.cleanup()
+                raise
+        super().main()
+
+    def _after_action(self, frame: Optional[FrameData]) -> None:
+        """Write a rolling state snapshot. Never interrupts the run."""
+        if frame is None:
+            logger.warning(
+                f"Skipping state snapshot after step {self.step_counter}: "
+                "action produced no frame."
+            )
+            return
+        try:
+            path = write_snapshot_atomic(self.run_dir, self._snapshot())
+        except Exception:
+            logger.exception(
+                f"Failed to write state snapshot after step {self.step_counter}."
+            )
+            return
+        logger.info(f"Saved state snapshot {self.step_counter} to {path}")
 
     def _run_pending_compaction(self) -> None:
         trigger_tokens = getattr(self, "_pending_compaction_trigger_tokens", None)
@@ -701,12 +1037,15 @@ class BenchmarkingAgent(Agent):
         self._sync_level_progress(latest_frame)
         self._level_action_counter += 1
 
+        observation: list[dict[str, Any]] = []
         if forced_action == GameAction.RESET and latest_frame.state is GameState.GAME_OVER:
             frame_message = {
                 "role": "user",
                 "content": self.build_frame_content(latest_frame),
             }
-            self.conversation.append(frame_message)
+            observation.append(frame_message)
+            if not self._continuous_conversation:
+                self.conversation.append(frame_message)
             # This observation reaches the model only on the next real API call,
             # so buffer it for server-managed state too.
             if self._server_state:
@@ -723,7 +1062,13 @@ class BenchmarkingAgent(Agent):
                 timestamp=datetime.now(timezone.utc),
                 duration_seconds=0.0,
                 model=self.MODEL,
-                messages_sent=list(self.conversation),
+                # Continuous configs log only the buffered observation; their
+                # full transcript is logged with the next model request.
+                messages_sent=(
+                    observation
+                    if self._continuous_conversation
+                    else list(self.conversation)
+                ),
                 parsed_action=self._format_parsed_action(forced_action),
             )
         )
@@ -758,6 +1103,11 @@ class BenchmarkingAgent(Agent):
         if latest_frame.state is GameState.WIN:
             self.exit_reason = ExitReason.GAME_WIN
             return True
+        cap = self._max_actions_hard_cap
+        if cap is not None and self.action_counter >= cap:
+            logger.info(f"{self.game_id} - Reached MAX_ACTIONS_HARD_CAP={cap}. Stopping.")
+            self.exit_reason = ExitReason.ACTION_BUDGET
+            return True
         # Check per-level action budget
         if self._level_action_budgets:
             self._sync_level_progress(latest_frame)
@@ -790,24 +1140,18 @@ class BenchmarkingAgent(Agent):
         self._sync_level_progress(latest_frame)
         self._level_action_counter += 1
 
-        # Ensure the system prompt is present before the first real turn
-        if not self.conversation:
-            self.conversation.append(
-                {"role": "system", "content": self._build_system_prompt()}
-            )
-        elif self._continuous_conversation and self.conversation[0].get(
-            "role"
-        ) != "system":
-            self.conversation.insert(
-                0, {"role": "system", "content": self._build_system_prompt()}
-            )
-
         # Normal turn: append frame, call the model, parse action
         frame_message = {
             "role": "user",
             "content": self.build_frame_content(latest_frame),
         }
-        self.conversation.append(frame_message)
+        if not self._continuous_conversation:
+            # Ensure the system prompt is present before the first real turn
+            if not self.conversation:
+                self.conversation.append(
+                    {"role": "system", "content": self._build_system_prompt()}
+                )
+            self.conversation.append(frame_message)
         if self._server_state:
             self._pending_user_messages.append(frame_message)
         if hasattr(self, "_stateful_adapter"):
@@ -842,15 +1186,16 @@ class BenchmarkingAgent(Agent):
             self._previous_response_id = model_response.response_id
             self._pending_user_messages = []
 
-        self.conversation.append(
-            {
-                "role": "assistant",
-                "content": self._build_assistant_turn_content(
-                    model_response.output_text,
-                    model_response.reasoning_text,
-                ),
-            }
-        )
+        if not self._continuous_conversation:
+            self.conversation.append(
+                {
+                    "role": "assistant",
+                    "content": self._build_assistant_turn_content(
+                        model_response.output_text,
+                        model_response.reasoning_text,
+                    ),
+                }
+            )
 
         logger.info(f"Parsed action: {self._format_parsed_action(action)}")
         request_record = None
@@ -968,6 +1313,7 @@ class BenchmarkingAgent(Agent):
         max_attempts = self.MAX_RETRIES + 1
         action_overflow_recoveries = 0
         provider_request_ids: list[str] = []
+        transient_failures = 0
         while attempt < max_attempts:
             try:
                 # Server-managed state compacts on OpenAI's side; the docs say not
@@ -1032,6 +1378,17 @@ class BenchmarkingAgent(Agent):
                     raise
                 attempt += 1
                 continue
+            except TransientProviderError as e:
+                transient_failures += 1
+                logger.warning(
+                    "Transient provider error (%s/%s): %s",
+                    transient_failures, self.TRANSIENT_MAX_ATTEMPTS,
+                    type(e.__cause__ or e).__name__,
+                )
+                if transient_failures >= self.TRANSIENT_MAX_ATTEMPTS:
+                    break
+                self._retry_backoff(transient_failures)
+                continue
             except EmptyResponseError as e:
                 if isinstance(e.usage, NormalizedUsage):
                     self.track_tokens(e.usage.total_tokens)
@@ -1047,6 +1404,8 @@ class BenchmarkingAgent(Agent):
                     f"(attempt {attempt + 1}/{max_attempts})."
                 )
                 attempt += 1
+                if attempt < max_attempts:
+                    self._retry_backoff(attempt)
                 continue
             except Exception as e:
                 logger.warning(
@@ -1107,11 +1466,16 @@ class BenchmarkingAgent(Agent):
                         sanitized_messages = turn_result.sanitized_request.get(
                             "messages"
                         )
-                    messages_sent = (
-                        sanitized_messages
-                        if isinstance(sanitized_messages, list)
-                        else list(self.conversation)
-                    )
+                    if isinstance(sanitized_messages, list):
+                        messages_sent = sanitized_messages
+                    elif self._continuous_conversation:
+                        # No readable projection: log this turn's new input.
+                        messages_sent = [
+                            {"role": "system", "content": self._build_system_prompt()},
+                            *(m.model_dump() for m in self._pending_turn_messages),
+                        ]
+                    else:
+                        messages_sent = list(self.conversation)
                 else:
                     assert model_request is not None
                     messages_sent = [
@@ -1120,7 +1484,7 @@ class BenchmarkingAgent(Agent):
                 return (
                     model_response,
                     action,
-                    attempt,
+                    attempt + transient_failures,
                     messages_sent,
                     provider_request_ids,
                 )
@@ -1129,7 +1493,15 @@ class BenchmarkingAgent(Agent):
                 f"Could not parse action from response "
                 f"(attempt {attempt + 1}/{max_attempts})."
             )
+            self._save_parse_failure_diagnostic(
+                model_response,
+                attempt=attempt + 1,
+                max_attempts=max_attempts,
+                actions=actions,
+            )
             attempt += 1
+            if attempt < max_attempts:
+                self._retry_backoff(attempt)
 
         if hasattr(self, "_stateful_adapter") and hasattr(self, "run_record"):
             self.run_record.total_usage = (
@@ -1138,8 +1510,14 @@ class BenchmarkingAgent(Agent):
             )
             self._write_run_meta()
         raise RuntimeError(
-            f"Failed to get a valid action after {max_attempts} attempts."
+            f"Failed to get a valid action after {attempt + transient_failures} attempts."
         )
+
+    def _retry_backoff(self, failures: int) -> None:
+        time.sleep(min(
+            self.RETRY_BASE_SECONDS * (2 ** min(failures - 1, 10)),
+            self.RETRY_MAX_SECONDS,
+        ))
 
     def _call_api(self, model_request: ModelRequest) -> ModelResponse:
         return self._adapter.invoke(model_request)
@@ -1169,21 +1547,26 @@ class BenchmarkingAgent(Agent):
 
     # ── Token tracking & cleanup ─────────────────────────────────────────
 
+    def _conversation_length(self) -> int | None:
+        """Transcript size for telemetry; None when provider state holds it."""
+        if self._continuous_conversation:
+            return None
+        return len(self.conversation)
+
     def track_tokens(self, tokens: int, message: str = "") -> None:
         self.token_counter += tokens
+        length = self._conversation_length()
         if hasattr(self, "recorder"):
-            self.recorder.record(
-                {
-                    "tokens": tokens,
-                    "total_tokens": self.token_counter,
-                    "conversation_length": len(self.conversation),
-                    "assistant": message,
-                }
-            )
-        logger.info(
-            f"Tokens: {tokens}, total: {self.token_counter}, "
-            f"messages: {len(self.conversation)}"
-        )
+            record: dict[str, Any] = {
+                "tokens": tokens,
+                "total_tokens": self.token_counter,
+            }
+            if length is not None:
+                record["conversation_length"] = length
+            record["assistant"] = message
+            self.recorder.record(record)
+        messages = "" if length is None else f", messages: {length}"
+        logger.info(f"Tokens: {tokens}, total: {self.token_counter}{messages}")
 
     def cleanup(self, *args: Any, **kwargs: Any) -> None:
         if self._cleanup:
@@ -1192,22 +1575,25 @@ class BenchmarkingAgent(Agent):
             self.run_record.duration_seconds = round(
                 (now - self.run_record.started_at).total_seconds(), 3
             )
-            if self.state is GameState.WIN:
+            if self.exit_reason == ExitReason.REHYDRATION_ERROR:
+                self.run_record.outcome = "REHYDRATION_ERROR"
+            elif self.state is GameState.WIN:
                 self.run_record.outcome = "WIN"
             elif self.state is GameState.GAME_OVER:
                 self.run_record.outcome = "GAME_OVER"
             elif self._timed_out:
                 self.run_record.outcome = "TIMEOUT"
-            elif self.action_counter >= self.MAX_ACTIONS:
+            elif self.exit_reason == ExitReason.ACTION_BUDGET or self.action_counter >= self.MAX_ACTIONS:
                 self.run_record.outcome = "MAX_ACTIONS"
             self._write_run_meta()
 
             if hasattr(self, "recorder"):
-                self.recorder.record(
-                    {
-                        "system_prompt": self._build_system_prompt(),
-                        "final_conversation_length": len(self.conversation),
-                        "total_tokens": self.token_counter,
-                    }
-                )
+                summary: dict[str, Any] = {
+                    "system_prompt": self._build_system_prompt(),
+                }
+                length = self._conversation_length()
+                if length is not None:
+                    summary["final_conversation_length"] = length
+                summary["total_tokens"] = self.token_counter
+                self.recorder.record(summary)
         super().cleanup(*args, **kwargs)

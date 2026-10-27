@@ -53,7 +53,8 @@ encrypted replay and synchronous compaction; see
 
 `continuous_conversation` carries provider-native conversation and reasoning
 state from one accepted turn to the next. It is implemented by
-`openai.responses.v1`, `google.interactions.v1`, and `anthropic.messages.v1`.
+`openai.responses.v1`, `google.interactions.v1`, `anthropic.messages.v1`,
+`deepseek.chat_completions.v1`, and `open_source.chat_completions.v1`.
 
 ### OpenAI Responses
 
@@ -116,7 +117,7 @@ The checked-in `anthropic-opus-5-low-provider-adapter` profile uses:
 - `claude-opus-5`, adaptive thinking, summarized display, and low effort
 - streaming, 128k maximum output, and 1,000k context capacity
 - a 175k completed-context compaction trigger and 5x baseline action budget
-- native on-demand compaction with `compact-2026-09-04`, capped at 8k output tokens
+- native on-demand compaction with `compact-2026-09-04`, using the normal 128k output limit
 - automatic prompt caching with Anthropic's default 5-minute TTL
 - standard-speed configured prices of $5/$25 per million input/output tokens
 - the native `ANTHROPIC_API_KEY`, with no OpenAI `store` parameter
@@ -129,7 +130,6 @@ runtime:
   compaction:
     strategy: native
     trigger_tokens: 175_000
-    summary_max_output_tokens: 8_192
 request:
   cache_control:
     type: "ephemeral"
@@ -259,19 +259,38 @@ outside harness summaries and restored unchanged.
 See the [DeepSeek Provider Adapter guide](deepseek-provider-adapter.md) for the
 request protocol, configuration, and tests.
 
+### Generic open-source Chat Completions
+
+`open_source.chat_completions.v1` implements opt-in continuous conversation for
+OpenAI-compatible open-weight endpoints. It accepts plain-text actions and
+replays each accepted assistant answer with the exact native reasoning string.
+Configurations explicitly select `reasoning_content`, `reasoning`, or both
+aliases according to the model server's documented chat template. It does not
+convert reasoning to visible text or add tool calls.
+
+The initial supported profiles are GLM-5.3-Flash and Qwen3.8-27B. Both reuse
+the shared harness summary compactor, keep pending observations out of summary
+requests, and require streaming usage data for accurate accounting and
+usage-triggered compaction. See the
+[open-source Provider Adapter guide](open-source-provider-adapter.md) for the
+request contract, model-specific settings, examples, and tests.
+
 ## Harness summary compaction
 
 Harness-managed reconstruction is an optional adapter capability, represented
-by `SummaryCompactionRuntimeAdapter`. OpenAI and Google implement it; Anthropic
-implements only the common stateful turn contract and uses native compaction.
+by `SummaryCompactionRuntimeAdapter`. OpenAI, Google, DeepSeek, and the generic
+open-source adapter implement it; Anthropic implements only the common stateful
+turn contract and uses native compaction.
 Both configuration validation and the summary compactor reject harness-summary
 requests for Anthropic before making a provider call.
 
 Providers without native compaction can select `runtime.compaction.strategy:
 harness_summary`. `runtime.compaction.trigger_tokens` controls when the harness
 schedules compaction, while `agent.MAX_CONTEXT_LENGTH` records the provider's
-hard context capacity. Configuration validation reserves the requested summary
-output plus `summary_input_headroom_tokens` between those values. The supplied
+hard context capacity. Configuration validation reserves the normal request
+output limit plus `summary_input_headroom_tokens` between those values.
+Compaction uses the same completion budget that the model receives during action
+turns. The supplied
 Gemini 3.8 Flash profile triggers at 175k against the model's
 [documented 1,048,576-token input limit](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash).
 The selected model receives a separate, domain-neutral request to summarize the

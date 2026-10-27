@@ -22,7 +22,7 @@ _PROVIDER_REQUEST_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
     default=None,
 )
 _CLIENT_HEADER_PROVIDERS = frozenset(
-    {"anthropic", "deepseek", "google", "openai", "xai"}
+    {"anthropic", "deepseek", "google", "open_source", "openai", "xai"}
 )
 _REQUEST_ID_HEADERS = {
     "anthropic-request-id",

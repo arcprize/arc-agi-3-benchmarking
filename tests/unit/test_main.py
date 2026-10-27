@@ -1,3 +1,5 @@
+import logging
+import signal
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -112,3 +114,127 @@ class TestMainCliHelpers:
             "https://example.com/api/games",
             timeout=10,
         )
+
+
+def _args(*argv: str):
+    return cli_main.build_parser().parse_args(list(argv))
+
+
+@pytest.fixture
+def cli_env(monkeypatch, tmp_path):
+    """Run main() offline; returns the patched Swarm class."""
+    # main() writes logs.log to the cwd and attaches root-logger handlers.
+    monkeypatch.chdir(tmp_path)
+    root = logging.getLogger()
+    monkeypatch.setattr(root, "handlers", list(root.handlers))
+    monkeypatch.setattr(cli_main, "print_requested_resource_lists", lambda *a, **k: False)
+    monkeypatch.setattr(cli_main, "validate_required_model_api_key", lambda _id: None)
+    monkeypatch.setattr(cli_main, "fetch_available_games", lambda _url: ["ls20-abc"])
+    swarm = MagicMock()
+    monkeypatch.setattr(cli_main, "Swarm", swarm)
+    return swarm
+
+
+@pytest.mark.unit
+class TestRehydrationCli:
+    def test_no_rehydrate_returns_nothing(self):
+        assert cli_main.resolve_rehydration(_args(), ["g"]) is None
+
+    def test_rehydrate_requires_config(self):
+        with pytest.raises(ValueError, match="requires --config"):
+            cli_main.resolve_rehydration(_args("--rehydrate", "state=s"), ["g"])
+
+    def test_rehydrate_prepares_inputs(self, monkeypatch):
+        prepared = MagicMock()
+        calls = {}
+        monkeypatch.setattr(cli_main, "parse_rehydrate_args", lambda pairs: ("args", pairs))
+
+        def fake_prepare(args, *, config_id, game_ids):
+            calls.update(args=args, config_id=config_id, game_ids=game_ids)
+            return prepared
+
+        monkeypatch.setattr(cli_main, "prepare_rehydration", fake_prepare)
+        args = _args("-c", "cfg", "--rehydrate", "recording=r", "--rehydrate", "state=s")
+
+        assert cli_main.resolve_rehydration(args, ["ls20-abc"]) is prepared
+        assert calls == {
+            "args": ("args", ["recording=r", "state=s"]),
+            "config_id": "cfg",
+            "game_ids": ["ls20-abc"],
+        }
+
+    def test_main_exits_with_rehydration_code_on_invalid_inputs(
+        self, monkeypatch, cli_env
+    ):
+        monkeypatch.setattr(
+            "sys.argv",
+            ["main.py", "-g", "ls20", "-c", "cfg", "--rehydrate", "state=missing.json"],
+        )
+
+        with pytest.raises(SystemExit) as excinfo:
+            cli_main.main()
+
+        assert excinfo.value.code == cli_main.REHYDRATION_EXIT_CODE == 3
+        cli_env.assert_not_called()
+
+
+@pytest.fixture
+def shutdown_state(monkeypatch, caplog):
+    """Reset the shutdown globals and restore signal handlers after the test."""
+    monkeypatch.setattr(cli_main, "_shutting_down", False)
+    monkeypatch.setattr(cli_main, "_swarm", None)
+    caplog.set_level(logging.INFO)
+    saved = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    yield
+    for sig, handler in saved.items():
+        signal.signal(sig, handler)
+
+
+def _messages(caplog) -> list[str]:
+    return [record.getMessage() for record in caplog.records]
+
+
+@pytest.mark.unit
+@pytest.mark.usefixtures("shutdown_state")
+class TestShutdownSignals:
+    @pytest.mark.parametrize(
+        ("signum", "code"), [(signal.SIGINT, 130), (signal.SIGTERM, 143)]
+    )
+    def test_exit_code_without_swarm(self, caplog, signum, code):
+        with pytest.raises(SystemExit) as excinfo:
+            cli_main.handle_shutdown_signal(signum, None)
+
+        assert excinfo.value.code == code
+        assert "SHUTDOWN: no scorecard opened" in _messages(caplog)
+
+    def test_nested_signal_during_close_is_ignored(self, caplog, monkeypatch):
+        swarm = MagicMock()
+        swarm.card_id = "card-123"
+        swarm.close_scorecard.side_effect = (
+            lambda: cli_main.handle_shutdown_signal(signal.SIGINT, None)
+        )
+        monkeypatch.setattr(cli_main, "_swarm", swarm)
+
+        with pytest.raises(SystemExit) as excinfo:
+            cli_main.handle_shutdown_signal(signal.SIGTERM, None)
+
+        assert excinfo.value.code == 143
+        swarm.request_shutdown.assert_called_once()
+        swarm.close_scorecard.assert_called_once()
+        assert "Ignoring SIGINT: shutdown already in progress." in _messages(caplog)
+
+    def test_signal_during_startup_exits_before_swarm(self, caplog, monkeypatch, cli_env):
+        monkeypatch.setattr("sys.argv", ["main.py", "-g", "ls20", "-c", "cfg"])
+
+        def fetch_games(_url):
+            signal.raise_signal(signal.SIGTERM)
+            return ["ls20-abc"]
+
+        monkeypatch.setattr(cli_main, "fetch_available_games", fetch_games)
+
+        with pytest.raises(SystemExit) as excinfo:
+            cli_main.main()
+
+        assert excinfo.value.code == 143
+        cli_env.assert_not_called()
+        assert "SHUTDOWN: no scorecard opened" in _messages(caplog)

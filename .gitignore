@@ -115,3 +115,4 @@ recordings
 .claude/
 docs/*
 !docs/deepseek-provider-adapter.md
+!docs/open-source-provider-adapter.md

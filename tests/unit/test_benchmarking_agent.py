@@ -1,5 +1,6 @@
 import json
 import logging
+import tempfile
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -97,6 +98,8 @@ def _agent_for_request_kwargs(request_kwargs: dict) -> BenchmarkingAgent:
     agent.MAX_RETRIES = 2
     agent.analysis_mode = False
     agent.token_counter = 0
+    agent.step_counter = 0
+    agent.run_dir = tempfile.mkdtemp()
     agent._server_state = False
     agent._previous_response_id = None
     agent._pending_user_messages = []
@@ -115,6 +118,7 @@ def _agent_for_choose_action(
     agent._pricing = {}
     agent.step_counter = 0
     agent._level_action_budgets = []
+    agent._max_actions_hard_cap = None
     agent._level_action_counter = 0
     agent._last_levels_completed = 0
     agent._level_just_advanced = False
@@ -298,11 +302,10 @@ class TestBenchmarkingAgentRuntimeClient:
             }
         assert ("compaction_count" in metadata["runtime"]) is uses_summary
 
-    def test_native_compaction_metadata_includes_validated_defaults(
+    def test_native_compaction_metadata_omits_inherited_output_limit(
         self, monkeypatch, tmp_path
     ):
         config = deepcopy(get_model_config("anthropic-opus-5-low-provider-adapter"))
-        config["runtime"]["compaction"].pop("summary_max_output_tokens")
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr("benchmarking.agent.get_model_config", lambda _id: config)
         monkeypatch.setattr(
@@ -321,7 +324,6 @@ class TestBenchmarkingAgentRuntimeClient:
         assert metadata["runtime"]["compaction"] == {
             "strategy": "native",
             "trigger_tokens": 175_000,
-            "summary_max_output_tokens": 8_192,
             "context_limit_tokens": 1_000_000,
         }
         assert agent._summary_compactor is None
@@ -692,6 +694,98 @@ class TestBenchmarkingAgentActionParsing:
 
         assert action == GameAction.ACTION5
 
+    def test_parses_complex_action_xml_invoke_block(self):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+
+        action = agent._parse_action(
+            (
+                '<invoke name="ACTION6">\n'
+                '  <parameter name="x">30</parameter>\n'
+                '  <parameter name="y">51</parameter>\n'
+                "</invoke>"
+            ),
+            [GameAction.ACTION6],
+        )
+
+        assert action is not None
+        assert action.name == "ACTION6"
+        assert action.action_data.x == 30
+        assert action.action_data.y == 51
+
+    def test_parses_xml_invoke_block_with_trailing_text(self):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+
+        action = agent._parse_action(
+            (
+                '<invoke name="ACTION6">\n'
+                '<parameter name="x">45</parameter>\n'
+                '<parameter name="y">27</parameter>\n'
+                "</invoke>\n"
+                "extra text"
+            ),
+            [GameAction.ACTION6],
+        )
+
+        assert action is not None
+        assert action.name == "ACTION6"
+        assert action.action_data.x == 45
+        assert action.action_data.y == 27
+
+    def test_parses_simple_action_xml_invoke_block(self):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+
+        action = agent._parse_action(
+            '<invoke name="ACTION3">\n</invoke>',
+            [GameAction.ACTION3],
+        )
+
+        assert action == GameAction.ACTION3
+
+    def test_parses_xml_invoke_block_with_internal_whitespace(self):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+
+        action = agent._parse_action(
+            (
+                '  <invoke name="ACTION6">\n'
+                '    \n'
+                '      <parameter name="x">\n'
+                "        30\n"
+                "      </parameter>\n"
+                '      <parameter name="y"> 51 </parameter>\n'
+                "  </invoke>  "
+            ),
+            [GameAction.ACTION6],
+        )
+
+        assert action is not None
+        assert action.name == "ACTION6"
+        assert action.action_data.x == 30
+        assert action.action_data.y == 51
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            '<invoke name="ACTION6"><parameter name="x">30</parameter></invoke>',
+            (
+                '<invoke name="ACTION6">'
+                '<parameter name="x">30</parameter>'
+                '<parameter name="y">64</parameter>'
+                "</invoke>"
+            ),
+            (
+                '<invoke name="ACTION6">'
+                '<parameter name="x">30</parameter>'
+                '<parameter name="y">51</parameter>'
+                '<parameter name="note">ACTION6 30 51</parameter>'
+                "</invoke>"
+            ),
+        ],
+    )
+    def test_rejects_invalid_xml_invoke_blocks(self, response):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+
+        assert agent._parse_action(response, [GameAction.ACTION6]) is None
+
     @pytest.mark.parametrize(
         "response",
         [
@@ -786,6 +880,83 @@ class TestBenchmarkingAgentRetries:
             {"role": "user", "content": "frame"},
         ]
         assert agent.token_counter == 10
+
+    def test_parse_failure_saves_raw_response_diagnostic(self):
+        agent = _agent_for_request_kwargs(
+            {"model": "gpt-5.4", "max_completion_tokens": 128}
+        )
+        agent.MAX_RETRIES = 0
+        agent.conversation = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "frame"},
+        ]
+        raw_response = {
+            "id": "resp_raw",
+            "content": [{"type": "text", "text": "not an action"}],
+        }
+
+        agent._call_api = lambda _request: ModelResponse(
+            output_text="not an action",
+            usage=NormalizedUsage(total_tokens=4),
+            raw_response=raw_response,
+        )
+
+        with pytest.raises(RuntimeError, match="Failed to get a valid action"):
+            agent._request_with_retries([GameAction.ACTION1])
+
+        diagnostics = list(Path(agent.run_dir).glob("diagnostic_parse_failure_*.json"))
+        assert len(diagnostics) == 1
+        diagnostic = json.loads(diagnostics[0].read_text())
+        assert diagnostic["diagnostic_type"] == "parse_failure"
+        assert diagnostic["step"] == 1
+        assert diagnostic["attempt"] == 1
+        assert diagnostic["max_attempts"] == 1
+        assert diagnostic["available_actions"] == ["ACTION1"]
+        assert diagnostic["response_source"] == "raw_response"
+        assert diagnostic["response"] == raw_response
+
+    def test_parse_failure_saves_normalized_diagnostic_without_raw_response(self):
+        agent = _agent_for_request_kwargs(
+            {"model": "gpt-5.4", "max_completion_tokens": 128}
+        )
+        agent.MAX_RETRIES = 0
+        agent.conversation = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "frame"},
+        ]
+
+        agent._call_api = lambda _request: ModelResponse(
+            output_text="I cannot decide.",
+            reasoning_text="No valid action was selected.",
+            usage=NormalizedUsage(input_tokens=3, output_tokens=5, total_tokens=8),
+            response_status="completed",
+            response_id="resp_normalized",
+        )
+
+        with pytest.raises(RuntimeError, match="Failed to get a valid action"):
+            agent._request_with_retries([GameAction.ACTION1])
+
+        diagnostics = list(Path(agent.run_dir).glob("diagnostic_parse_failure_*.json"))
+        assert len(diagnostics) == 1
+        diagnostic = json.loads(diagnostics[0].read_text())
+        assert diagnostic["diagnostic_type"] == "parse_failure"
+        assert diagnostic["response_source"] == "normalized_response"
+        assert diagnostic["response"] == {
+            "output_text": "I cannot decide.",
+            "reasoning_text": "No valid action was selected.",
+            "usage": {
+                "input_tokens": 3,
+                "output_tokens": 5,
+                "total_tokens": 8,
+                "reasoning_tokens": 0,
+                "cached_tokens": 0,
+                "cache_write_tokens": 0,
+                "cost": 0.0,
+                "cost_details": {},
+            },
+            "response_status": "completed",
+            "response_id": "resp_normalized",
+        }
 
     def test_empty_response_usage_is_counted_before_retry(self):
         agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
@@ -1537,6 +1708,7 @@ class TestBenchmarkingAgentContinuousConversationState:
             "reasoning": {"context": "auto", "summary": "auto"},
         }
 
+        agent._save_diagnostic = lambda _: None
         action = agent.choose_action([], _playable_frame())
 
         assert action == GameAction.ACTION1
@@ -1607,15 +1779,14 @@ class TestBenchmarkingAgentContinuousConversationState:
         assert agent._saved_steps[0].retries == 1
         assert agent._saved_steps[0].usage.total_tokens == 12
 
-    def test_transient_retry_exhaustion_preserves_state_and_pending_input(self):
+    def test_transient_retry_exhaustion_preserves_state_and_pending_input(self, monkeypatch):
+        monkeypatch.setattr("benchmarking.agent.time.sleep", lambda _: None)
         class SequenceAdapter:
             def __init__(self):
                 self.requests = []
                 self.responses = [
                     _google_model_response(signature="accepted-history"),
-                    TransientProviderError("unavailable"),
-                    TransientProviderError("unavailable"),
-                    TransientProviderError("unavailable"),
+                    *[TransientProviderError("unavailable") for _ in range(10)],
                 ]
 
             def invoke(self, request):
@@ -1656,7 +1827,7 @@ class TestBenchmarkingAgentContinuousConversationState:
 
         assert agent._runtime_state == original_state
         assert agent._pending_turn_messages == pending
-        assert len(low_level.requests) == 4
+        assert len(low_level.requests) == 11
         assert all(
             request.native_input == low_level.requests[1].native_input
             for request in low_level.requests[1:]
@@ -1723,7 +1894,6 @@ class TestBenchmarkingAgentContinuousConversationState:
             SummaryCompactionPolicy(
                 strategy="harness_summary",
                 trigger_tokens=700,
-                summary_max_output_tokens=100,
                 summary_input_headroom_tokens=20,
             )
         )
@@ -1870,6 +2040,7 @@ def _is_done_agent() -> BenchmarkingAgent:
     agent.game_id = "game-id"
     agent.exit_reason = ExitReason.UNKNOWN
     agent._level_action_budgets = []
+    agent._max_actions_hard_cap = None
     agent._level_action_counter = 0
     agent._last_levels_completed = 0
     agent._level_just_advanced = False
@@ -2483,3 +2654,46 @@ class TestBenchmarkingAgentReasoningTruncation:
         agent = _choose_action_with_reasoning(reasoning_text)
 
         assert agent._pending_action_reasoning["reasoning"] == reasoning_text
+
+@pytest.mark.unit
+def test_action_transient_budget_is_independent_of_invalid_responses(monkeypatch):
+    agent = _agent_for_request_kwargs({'model': 'test-model'})
+    agent.conversation = [{'role': 'user', 'content': 'frame'}]
+    sleeps = []
+    monkeypatch.setattr('benchmarking.agent.time.sleep', sleeps.append)
+    failures = [TransientProviderError('busy') for _ in range(9)]
+    failures += [EmptyResponseError('malformed', usage=NormalizedUsage(total_tokens=7))]
+    failures += [ModelResponse(output_text='RESET', usage=NormalizedUsage(total_tokens=3))]
+    requests = []
+
+    def invoke(request):
+        requests.append(request.model_dump())
+        result = failures.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    agent._call_api = invoke
+    response, action, retries, _, _ = agent._request_with_retries([GameAction.RESET])
+    assert action == GameAction.RESET
+    assert response.usage.total_tokens == 10
+    assert retries == 10
+    assert all(request == requests[0] for request in requests)
+    assert sleeps == [0.25, 0.5, 1, 2, 4, 8, 16, 30, 30, 0.25]
+
+
+@pytest.mark.unit
+def test_action_transient_budget_stops_at_ten(monkeypatch):
+    agent = _agent_for_request_kwargs({'model': 'test-model'})
+    agent.conversation = [{'role': 'user', 'content': 'frame'}]
+    monkeypatch.setattr('benchmarking.agent.time.sleep', lambda _: None)
+    calls = []
+
+    def invoke(request):
+        calls.append(request)
+        raise TransientProviderError('busy')
+
+    agent._call_api = invoke
+    with pytest.raises(RuntimeError, match='after 10 attempts'):
+        agent._request_with_retries([GameAction.RESET])
+    assert len(calls) == 10

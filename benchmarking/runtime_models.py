@@ -234,10 +234,18 @@ def _normalize_anthropic_messages_usage(usage: Any) -> dict[str, Any]:
 
     input_tokens = _value_from_response_object(usage, "input_tokens", 0) or 0
     output_tokens = _value_from_response_object(usage, "output_tokens", 0) or 0
+    output_tokens_details = _value_from_response_object(
+        usage,
+        "output_tokens_details",
+    )
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": input_tokens + output_tokens,
+        "reasoning_tokens": (
+            _value_from_response_object(output_tokens_details, "thinking_tokens", 0)
+            or 0
+        ),
         "cached_tokens": (
             _value_from_response_object(usage, "cache_read_input_tokens", 0) or 0
         ),

@@ -107,7 +107,6 @@ def test_google_harness_summary_compaction_live() -> None:
         SummaryCompactionPolicy(
             strategy="harness_summary",
             trigger_tokens=1,
-            summary_max_output_tokens=1_024,
         )
     )
 

@@ -24,7 +24,7 @@ wheels = [
 
 [[package]]
 name = "anthropic"
-version = "0.95.0"
+version = "0.125.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -36,9 +36,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f0/cb/b1896da12f12680c39c90af1b9c9fdf75354899317e2a7900ab37fe3a640/anthropic-0.95.0.tar.gz", hash = "sha256:e4d815351489e5627f39806f12561c52b574e69be10d12fcab723264f955c11d", size = 654528 }
+sdist = { url = "https://files.pythonhosted.org/packages/62/f8/6f0560884b5363848347bd640b6c1d04abc25e7aa61787a232f790c6b60a/anthropic-0.125.0.tar.gz", hash = "sha256:e0cdd336580cb7411c1cdab69f80973e9bf4bff7f8e08141811d46307d45c682", size = 1112593 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/64/29/a0285521eeaacf9ff5d0fad2d437389aefa0adf3db79b0e0bda49f809ce9/anthropic-0.95.0-py3-none-any.whl", hash = "sha256:9fd3503cb666446e28ab5a5d0ec7feda39968399e494bd2cca2f0b927f8aa7a6", size = 627749 },
+    { url = "https://files.pythonhosted.org/packages/2f/1a/b1bd30cda3790557e8791bec5922a6ec8fabb6fa8b008c76a39cf7be6152/anthropic-0.125.0-py3-none-any.whl", hash = "sha256:3486013602eca76d8b12540764e53654f02cf4951110bca86cf06e67428a9f21", size = 1184067 },
 ]
 
 [[package]]
@@ -57,7 +57,7 @@ wheels = [
 
 [[package]]
 name = "arc-agi"
-version = "0.9.8"
+version = "0.9.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "arcengine" },
@@ -68,9 +68,9 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c6/0f/3adf673343dea7d2df50df5de7c77c0156781316c0a7860320d761b7f435/arc_agi-0.9.8.tar.gz", hash = "sha256:7bfd236c3bb9db3d13654958b27eb7dbc32471d70329cdc6af94b071ceaeed4c", size = 35140 }
+sdist = { url = "https://files.pythonhosted.org/packages/f3/7d/503f6fc60e6ae28d65502d1225ed4723fa83246c48041b7b169dd12bd212/arc_agi-0.9.9.tar.gz", hash = "sha256:ee822d83f4ea4ccb96377ecbc81ffe1e9e7ded15300aedf88150b7f4743a2bc8", size = 35253 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/43/56/7abc80afbeb0dc151cc9222641408c418d512f1e80cd81c56d0ce86c4603/arc_agi-0.9.8-py3-none-any.whl", hash = "sha256:aeca1663db342e91cb8fc96cf0c83e2fa39db1640bc1298e80a8d522e3af70f3", size = 40151 },
+    { url = "https://files.pythonhosted.org/packages/90/53/ddc9450fdbcfaa1af63e2985027f5f3d85c8fccc71b5611cea16f17a0aef/arc_agi-0.9.9-py3-none-any.whl", hash = "sha256:a0536df47b5ab93af16ba708083f74261cd1b7801bb2e0802824623c04d59e50", size = 40268 },
 ]
 
 [[package]]
@@ -80,6 +80,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "arc-agi" },
+    { name = "certifi" },
     { name = "dotenv" },
     { name = "google-genai" },
     { name = "langchain", extra = ["openai"] },
@@ -105,8 +106,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = "==0.95.0" },
-    { name = "arc-agi", specifier = ">=0.9.8" },
+    { name = "anthropic", specifier = "==0.125.0" },
+    { name = "arc-agi", specifier = ">=0.9.9" },
+    { name = "certifi", specifier = ">=2026.10.19" },
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "google-genai", specifier = ">=2.4.0" },
     { name = "langchain", extras = ["openai"], specifier = ">=0.3.27" },
@@ -154,11 +156,11 @@ wheels = [
 
 [[package]]
 name = "certifi"
-version = "2025.8.3"
+version = "2026.10.19"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/dc/67/960ebe6bf230a96cda2e0abcf73af550ec4f090005363542f0765df162e0/certifi-2025.8.3.tar.gz", hash = "sha256:e564105f78ded564e3ae7c923924435e1daa7463faeab5bb932bc53ffae63407", size = 162386 }
+sdist = { url = "https://files.pythonhosted.org/packages/a6/bd/1436c50cc46699de0230fbaacc1d1de7bfec413176099949e9d5112e88f2/certifi-2026.10.19.tar.gz", hash = "sha256:035c1e85572b141bf1c3a3eff0e33a8eb74917522f2559075ff8d2fea780a1ae", size = 137598 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/48/1549795ba7742c948d2ad169c1c8cdbae65bc450d6cd753d124b17c8cd32/certifi-2025.8.3-py3-none-any.whl", hash = "sha256:f6c12493cfb1b06ba2ff328595af9350c65d6644968e5d3a2ffd78699af217a5", size = 161216 },
+    { url = "https://files.pythonhosted.org/packages/c4/51/29046e48f693c54e5b7412216d447a1d8362c9653148d98c02cdf65fa733/certifi-2026.10.19-py3-none-any.whl", hash = "sha256:42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b", size = 136464 },
 ]
 
 [[package]]

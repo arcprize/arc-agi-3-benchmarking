@@ -127,6 +127,7 @@ def _anthropic_response(
     content: list[object] | None = None,
     input_tokens: int = 15,
     output_tokens: int = 7,
+    thinking_tokens: int | None = None,
     cache_creation_input_tokens: int = 0,
     cache_read_input_tokens: int = 0,
 ) -> SimpleNamespace:
@@ -137,6 +138,7 @@ def _anthropic_response(
         usage=SimpleNamespace(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            output_tokens_details=SimpleNamespace(thinking_tokens=thinking_tokens),
             cache_creation_input_tokens=cache_creation_input_tokens,
             cache_read_input_tokens=cache_read_input_tokens,
         ),
@@ -450,7 +452,9 @@ class TestRuntimeModels:
 
         assert model_response.output_text == "MOVE_LEFT"
 
-    def test_anthropic_messages_normalizer_ignores_thinking_blocks_for_now(self):
+    def test_anthropic_messages_normalizer_ignores_thinking_blocks_for_reasoning_text(
+        self,
+    ):
         model_response = normalize_anthropic_messages_response(
             _anthropic_response(
                 content=[
@@ -463,6 +467,22 @@ class TestRuntimeModels:
         assert model_response.output_text == "RESET"
         assert model_response.reasoning_text is None
         assert model_response.usage.reasoning_tokens == 0
+
+    def test_anthropic_messages_usage_maps_thinking_tokens_without_double_counting(
+        self,
+    ):
+        model_response = normalize_anthropic_messages_response(
+            _anthropic_response(
+                input_tokens=27,
+                output_tokens=48,
+                thinking_tokens=11,
+            )
+        )
+
+        assert model_response.usage.input_tokens == 27
+        assert model_response.usage.output_tokens == 48
+        assert model_response.usage.reasoning_tokens == 11
+        assert model_response.usage.total_tokens == 75
 
     def test_anthropic_messages_usage_total_matches_input_plus_output_tokens(self):
         model_response = normalize_anthropic_messages_response(
@@ -498,6 +518,7 @@ class TestRuntimeModels:
             "usage": {
                 "input_tokens": 15,
                 "output_tokens": 7,
+                "output_tokens_details": {"thinking_tokens": 3},
                 "cache_creation_input_tokens": 0,
                 "cache_read_input_tokens": 0,
             },
@@ -508,6 +529,7 @@ class TestRuntimeModels:
         assert model_response.output_text == "TOKEN_PROBE"
         assert model_response.usage.input_tokens == 15
         assert model_response.usage.output_tokens == 7
+        assert model_response.usage.reasoning_tokens == 3
         assert model_response.usage.total_tokens == 22
         assert model_response.usage.cached_tokens == 0
         assert model_response.usage.cache_write_tokens == 0
@@ -824,6 +846,7 @@ class TestRuntimeModels:
             content=[SimpleNamespace(type="text", text="PUSH")],
             input_tokens=1_000,
             output_tokens=200,
+            thinking_tokens=50,
         )
 
         metadata = action_metadata_from_model_response(
@@ -835,6 +858,7 @@ class TestRuntimeModels:
         assert metadata.reasoning is None
         assert metadata.usage.input_tokens == 1_000
         assert metadata.usage.output_tokens == 200
+        assert metadata.usage.output_tokens_details.reasoning_tokens == 50
         assert metadata.usage.total_tokens == 1_200
         assert metadata.cost.input_cost == pytest.approx(0.005)
         assert metadata.cost.output_cost == pytest.approx(0.005)

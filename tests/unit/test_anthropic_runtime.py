@@ -442,11 +442,6 @@ class TestAnthropicConfiguration:
             {
                 "strategy": "native",
                 "trigger_tokens": 175_000,
-                "summary_max_output_tokens": 0,
-            },
-            {
-                "strategy": "native",
-                "trigger_tokens": 175_000,
                 "pause_after_compaction": True,
             },
         ],
@@ -455,6 +450,16 @@ class TestAnthropicConfiguration:
         config = deepcopy(get_model_config(CONFIG_ID))
         config["runtime"]["compaction"] = policy
         with pytest.raises(ValueError):
+            _validate_model_config_entry(config, 1, set())
+
+    def test_retired_summary_output_limit_is_rejected(self):
+        config = deepcopy(get_model_config(CONFIG_ID))
+        config["runtime"]["compaction"]["summary_max_output_tokens"] = 8_192
+
+        with pytest.raises(
+            ValueError,
+            match="summary_max_output_tokens is no longer supported",
+        ):
             _validate_model_config_entry(config, 1, set())
 
     def test_native_policy_requires_beta(self):
@@ -858,7 +863,7 @@ class TestAnthropicOnDemandCompaction:
         assert "stop_sequences" not in summary_config
         assert summary_config["output_config"] == {"effort": "low"}
         assert summary_config["thinking"] == config["thinking"]
-        assert summary_config["max_tokens"] == 8192
+        assert summary_config["max_tokens"] == 128_000
         assert low_level.requests[2].request_config == snapshot
         assert config == snapshot
         assert result.state.payload["context_tokens"] == 15

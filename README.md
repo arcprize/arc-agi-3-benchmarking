@@ -87,9 +87,13 @@ uv run main.py --game=ls20 --config=openai-gpt-5-4-2026-03-05
 Native Anthropic configs are also available:
 
 ```bash
-uv run main.py --game=ls20 --config=anthropic-opus-4-7-low
+uv run main.py --game=ls20 --config=anthropic-opus-4-7-medium
 uv run main.py --game=ls20 --config=anthropic-opus-4-7-low-thinking
 ```
+
+Anthropic responses preserve the reported thinking-token count as a breakdown of
+output tokens in both streaming and non-streaming runs, without adding it again
+to token totals or costs.
 
 6. Or on all games:
 
@@ -135,6 +139,12 @@ DeepSeek thinking mode can opt into `deepseek.chat_completions.v1`. The adapter
 uses DeepSeek's documented tools protocol, replays exact `reasoning_content`, and
 uses harness summary compaction. See the
 [DeepSeek Provider Adapter guide](docs/deepseek-provider-adapter.md).
+
+OpenAI-compatible open-weight endpoints can opt into
+`open_source.chat_completions.v1`. The generic adapter replays native reasoning
+fields without tools and reuses harness summary compaction. Checked-in low
+profiles for GLM-5.3-Flash and Qwen3.8-27B are documented in the
+[open-source Provider Adapter guide](docs/open-source-provider-adapter.md).
 
 Both harnesses use the same games, actions, limits, and scoring. The Standard
 harness supports controlled comparisons across providers, while the Provider
