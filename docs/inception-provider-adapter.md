@@ -31,8 +31,15 @@ Native usage aliases are supported when nested OpenAI-style fields are absent.
 
 ## Configuration
 
-Add the model to the ignored `models_private.yml`. For Mercury 3 Preview high
-through Baseten, the provider-adapter settings are:
+The checked-in `inception-mercury-3-preview-high-provider-adapter` profile in
+`benchmarking/model_configs.yaml` runs Mercury 3 Preview high through Baseten.
+Start a full LS20 run with the normal 5x baseline action budget:
+
+```bash
+uv run main.py --game ls20 --config inception-mercury-3-preview-high-provider-adapter
+```
+
+The profile uses these provider-adapter settings:
 
 ```yaml
 - id: inception-mercury-3-preview-high-provider-adapter
@@ -106,7 +113,6 @@ forced compaction, and checks pending-input ordering and post-compaction recall:
 
 ```bash
 RUN_INCEPTION_LIVE_TESTS=1 \
-INCEPTION_LIVE_MODEL_CONFIGS=models_private.yml \
 uv run python -m pytest -q tests/integration/test_inception_continuous_conversation_live.py
 ```
 
@@ -115,7 +121,7 @@ For a bounded local LS20 test, run from the sibling `arc-agi-tools` checkout:
 ```bash
 uv run arc-tools speed test --model inception-mercury-3-preview \
   --benchmark-dir ../arc-agi-3-benchmarking \
-  --model-configs ../arc-agi-3-benchmarking/models_private.yml \
+  --model-configs ../arc-agi-3-benchmarking/benchmarking/model_configs.yaml \
   --harness provider-adapter --reasoning high --game ls20 \
   --actions 20 --concurrency 1
 ```
