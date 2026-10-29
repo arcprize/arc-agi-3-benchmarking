@@ -21,6 +21,7 @@ from arcengine import GameState
 
 from benchmarking.agent import BenchmarkingAgent
 from benchmarking.base import ExitReason
+from benchmarking.recorder import Recorder
 from benchmarking.rehydration import RehydrationArgs, prepare_rehydration
 from benchmarking.runtime_models import ModelRequest, ModelResponse, NormalizedUsage
 from tests.unit.rehydration_fakes import (
@@ -311,6 +312,9 @@ def _run(
     )
     model = _ScriptedModel(responses)
     adapter.install(agent, model)
+    # Exercise the actual append_frame -> model_dump_json -> Recorder path,
+    # not only the toolkit-shaped events constructed by ScriptedEnv.
+    agent.recorder = Recorder(prefix=f"test-{guid}")
     if scenario == "level_budget_ends_run" and steps == TOTAL:
         # Only the per-level budget may stop the run, so a resumed run with a
         # wrong level counter would keep playing (and run out of responses).
@@ -324,8 +328,15 @@ def _run(
     return agent, model
 
 
-def _prepare_from_files(tmp_path, source: BenchmarkingAgent, step: int, config_id: str):
-    recording = source.arc_env.write_recording(tmp_path / f"{source.guid}.jsonl")
+def _prepare_from_files(
+    tmp_path, source: BenchmarkingAgent, step: int, config_id: str,
+    recording_format: str = "toolkit",
+):
+    recording = (
+        Path(source.recorder.filename)
+        if recording_format == "harness"
+        else source.arc_env.write_recording(tmp_path / f"{source.guid}.jsonl")
+    )
     state = Path(source.run_dir) / "state" / f"state_step_{step:04d}.json"
     return prepare_rehydration(
         RehydrationArgs(recording=recording, state=state),
@@ -395,9 +406,10 @@ SCENARIOS = [
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("recording_format", ["toolkit", "harness"])
 @pytest.mark.parametrize(("adapter_name", "scenario"), SCENARIOS)
 def test_rehydrated_run_matches_uninterrupted_run(
-    monkeypatch, tmp_path, adapter_name, scenario
+    monkeypatch, tmp_path, adapter_name, scenario, recording_format
 ):
     adapter = ADAPTERS[adapter_name]
     uninterrupted, uninterrupted_model = _run(
@@ -409,7 +421,9 @@ def test_rehydrated_run_matches_uninterrupted_run(
         steps=RESUME_AT, guid="guid-b", responses=_script(adapter, scenario),
     )
     prefix_calls = len(crashed_model.calls)
-    prepared = _prepare_from_files(tmp_path, crashed, RESUME_AT, adapter.config_id)
+    prepared = _prepare_from_files(
+        tmp_path, crashed, RESUME_AT, adapter.config_id, recording_format
+    )
 
     resumed, resumed_model = _run(
         monkeypatch, tmp_path, adapter, scenario,
@@ -458,9 +472,10 @@ def test_scenarios_exercise_their_boundary_conditions(monkeypatch, tmp_path):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("recording_format", ["toolkit", "harness"])
 @pytest.mark.parametrize("adapter_name", ["manual", "openai"])
 def test_steps_recorded_after_last_snapshot_are_truncated(
-    monkeypatch, tmp_path, adapter_name
+    monkeypatch, tmp_path, adapter_name, recording_format
 ):
     """Crash after action N+1 was submitted but before snapshot N+1."""
     adapter = ADAPTERS[adapter_name]
@@ -473,7 +488,9 @@ def test_steps_recorded_after_last_snapshot_are_truncated(
         steps=RESUME_AT + 1, guid="guid-b", responses=_script(adapter, "plain"),
     )
     (Path(crashed.run_dir) / "state" / f"state_step_{RESUME_AT + 1:04d}.json").unlink()
-    prepared = _prepare_from_files(tmp_path, crashed, RESUME_AT, adapter.config_id)
+    prepared = _prepare_from_files(
+        tmp_path, crashed, RESUME_AT, adapter.config_id, recording_format
+    )
     assert len(crashed.arc_env.events) == RESUME_AT + 1
     assert len(prepared.steps) == RESUME_AT
 

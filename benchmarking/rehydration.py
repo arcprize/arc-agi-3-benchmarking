@@ -1,7 +1,7 @@
-"""Agent state snapshots and toolkit recording parsing for rehydration.
+"""Agent state snapshots and recording parsing for rehydration.
 
 Defines the snapshot schema, writes rolling snapshots atomically, parses
-toolkit ``.jsonl`` recordings, and validates rehydration inputs offline.
+harness/toolkit ``.jsonl`` recordings, and validates rehydration inputs offline.
 The agent-side replay and restore live in ``BenchmarkingAgent``.
 """
 
@@ -186,7 +186,7 @@ def write_snapshot_atomic(run_dir: str | os.PathLike[str], snapshot: AgentSnapsh
 
 
 class RecordedStep(BaseModel):
-    """One action event from a toolkit recording, ready to replay.
+    """One action event from a harness or toolkit recording, ready to replay.
 
     ``index`` is the 0-based position among action events in the file, not the
     agent step number; ``_align_recording`` maps events to agent steps.
@@ -245,18 +245,25 @@ def _normalize_reasoning(value: Any, where: str) -> dict[str, Any]:
 
 def _parse_action_event(data: dict[str, Any], index: int, where: str) -> RecordedStep:
     action_input = data["action_input"]
-    name = action_input.get("id")
+    action_id = action_input.get("id")
     try:
-        action = GameAction.from_name(name)
+        # FrameData.model_dump_json() writes numeric enum values; toolkit
+        # recordings use names. Do not coerce bools/floats into valid IDs.
+        if type(action_id) is int:
+            action = GameAction.from_id(action_id)
+        elif isinstance(action_id, str):
+            action = GameAction.from_name(action_id)
+        else:
+            raise ValueError("Action id must be an integer or name.")
     except (KeyError, ValueError, TypeError, AttributeError) as exc:
-        raise RehydrationError(f"{where}: unknown action id {name!r}.") from exc
+        raise RehydrationError(f"{where}: unknown action id {action_id!r}.") from exc
 
     action_data: dict[str, int] = {}
     if action.is_complex():
         raw_data = action_input.get("data") or {}
         x, y = raw_data.get("x"), raw_data.get("y")
         if type(x) is not int or type(y) is not int:
-            raise RehydrationError(f"{where}: {name} requires integer x and y.")
+            raise RehydrationError(f"{where}: {action.name} requires integer x and y.")
         action_data = {"x": x, "y": y}
 
     reasoning = _normalize_reasoning(action_input.get("reasoning"), where)
@@ -277,7 +284,7 @@ def _parse_action_event(data: dict[str, Any], index: int, where: str) -> Recorde
 
 
 def parse_toolkit_recording(path: str | os.PathLike[str]) -> list[RecordedStep]:
-    """Parse every action event from a toolkit ``.jsonl`` recording, in order.
+    """Parse action events from a toolkit or harness ``.jsonl`` recording.
 
     Lines whose ``data`` has no ``action_input`` object are skipped as
     non-action events. Anything else malformed raises ``RehydrationError``.
@@ -370,24 +377,30 @@ def _align_recording(
 ) -> list[RecordedStep]:
     """Select the recorded events for agent steps ``1..snapshot.step``.
 
-    Event 0 is always the implicit RESET sent by ``Arcade.make()``, so agent
-    step k is event k. The step-N frame must match the snapshot.
+    Toolkit exports include the implicit RESET from Arcade.make(); harness
+    recordings begin with agent step 1. Match the snapshot at either legal
+    offset, rejecting ambiguity rather than dropping a real RESET action.
     """
-    if events[0].action != GameAction.RESET.name:
-        raise RehydrationError(
-            f"Recording starts with {events[0].action}, not the implicit RESET "
-            "from Arcade.make()."
-        )
-    steps = events[1 : 1 + snapshot.step]
-    if (
-        len(steps) < snapshot.step
-        or frame_fingerprint(steps[-1]) != snapshot.last_frame
-    ):
+    offsets = [0, 1] if events[0].action == GameAction.RESET.name else [0]
+    candidates = []
+    for offset in offsets:
+        steps = events[offset : offset + snapshot.step]
+        if (
+            len(steps) == snapshot.step
+            and frame_fingerprint(steps[-1]) == snapshot.last_frame
+        ):
+            candidates.append(steps)
+    if not candidates:
         raise RehydrationError(
             f"Recording ({len(events)} action events) has no step "
             f"{snapshot.step} matching the snapshot's last frame."
         )
-    return steps
+    if len(candidates) != 1:
+        raise RehydrationError(
+            "Recording alignment is ambiguous: both including and skipping "
+            "the leading RESET match the snapshot's last frame."
+        )
+    return candidates[0]
 
 
 def prepare_rehydration(

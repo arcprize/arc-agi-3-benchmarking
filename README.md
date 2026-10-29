@@ -101,6 +101,34 @@ to token totals or costs.
 uv run main.py --config=openai-gpt-5-4-2026-03-05
 ```
 
+## Resuming a game
+
+Rehydration uses a recording `.jsonl` file and a matching
+`recordings/<run>/state/state_step_NNNN.json` snapshot. The harness keeps the
+latest three snapshots. Set `ARC_HARNESS_COMMIT_SHA` to the actual harness
+commit before starting the original run and the resumed run; both must use
+the same commit. A missing commit SHA in an existing snapshot still prevents
+resumption.
+
+```bash
+uv run main.py --game=<exact-game-id> --config=<original-config-id> \
+  --rehydrate recording=/path/to/session.recording.jsonl \
+  --rehydrate state=/path/to/state_step_0020.json
+```
+
+Both harness recordings (numeric action IDs, beginning at agent step 1) and
+toolkit exports (action names, including the initial `Arcade.make()` RESET)
+are accepted. The snapshot's final frame identifies the replay boundary. If
+both possible boundaries match, for example because adjacent frames are
+identical around a leading RESET, validation rejects the ambiguous recording
+instead of guessing. Another matching snapshot may resolve the ambiguity.
+
+Rehydration replays the recorded actions without model calls, checks every
+resulting frame, then restores the agent and provider state. Config, session,
+game-version, commit, and budget validation still apply. Keep restart
+snapshots private: they can contain provider-native reasoning replay data
+that readable step logs omit.
+
 ## Standard and Provider Adapter harnesses
 
 ARC-AGI-3 games span many model calls, so the harness must determine what

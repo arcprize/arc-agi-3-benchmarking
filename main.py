@@ -169,7 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="KEY=PATH",
         help=(
             "Resume a previous session. Repeat for each input: "
-            "recording=<toolkit .jsonl> and state=<state_step_NNNN.json>. "
+            "recording=<harness or toolkit .jsonl> and state=<state_step_NNNN.json>. "
             "Requires --config and a single -g game."
         ),
     )

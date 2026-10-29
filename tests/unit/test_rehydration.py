@@ -30,7 +30,7 @@ FRAME = [[[0, 1], [2, 3]]]
 
 
 def _event(
-    action_id: str = "ACTION1",
+    action_id: str | int = "ACTION1",
     *,
     data: dict | None = None,
     reasoning: object = None,
@@ -138,6 +138,27 @@ class TestFrameFingerprint:
 
 @pytest.mark.unit
 class TestParseToolkitRecording:
+    @pytest.mark.parametrize("numeric", [False, True], ids=["names", "numeric"])
+    def test_action_ids_preserve_reset_click_and_reasoning(self, tmp_path, numeric):
+        ids = [0, 6, 1] if numeric else ["RESET", "ACTION6", "ACTION1"]
+        path = _write_jsonl(tmp_path / "r.jsonl", [
+            _event(ids[0]),
+            _event(ids[1], data={"x": 3, "y": 4}, reasoning={"output": "click"}),
+            _event(ids[2]),
+        ])
+        steps = parse_toolkit_recording(path)
+        assert [s.action for s in steps] == ["RESET", "ACTION6", "ACTION1"]
+        assert steps[1].game_action().action_data.model_dump() == {
+            "game_id": "", "x": 3, "y": 4,
+        }
+        assert steps[1].reasoning == {"output": "click"}
+
+    @pytest.mark.parametrize("action_id", [True, False, 1.0, None, 99, -1, "1"])
+    def test_invalid_action_ids_are_not_coerced(self, tmp_path, action_id):
+        path = _write_jsonl(tmp_path / "r.jsonl", [_event(action_id)])
+        with pytest.raises(RehydrationError, match="unknown action id"):
+            parse_toolkit_recording(path)
+
     def test_parses_action_events_in_order(self, tmp_path):
         path = _write_jsonl(
             tmp_path / "r.jsonl",
@@ -328,7 +349,7 @@ CONFIG_ID = "openai-gpt-5-4-2026-03-05"
 GAME_ID = "ls20-abc123"
 
 
-def _step_event(value: int, action_id: str = "ACTION1", **kwargs) -> dict:
+def _step_event(value: int, action_id: str | int = "ACTION1", **kwargs) -> dict:
     return _event(action_id, frame=[[[value]]], **kwargs)
 
 
@@ -383,14 +404,30 @@ class TestPrepareRehydration:
         assert prepared.steps[-1].frame == [[[3]]]
 
     def test_no_op_step_aligns_after_implicit_reset(self, tmp_path):
-        # Step 2 leaves the frame unchanged, so events 1 and 2 have the same frame.
-        events = _recording(2) + [_step_event(2, "ACTION2")]
-        prepared = self._prepare(tmp_path, _valid_snapshot(step=2), events)
-        assert [step.action for step in prepared.steps] == ["ACTION1", "ACTION2"]
+        # A no-op inside the prefix is fine when the endpoint is unambiguous.
+        events = _recording(1) + [_step_event(1, "ACTION2"), _step_event(3)]
+        prepared = self._prepare(tmp_path, _valid_snapshot(step=3), events)
+        assert [step.action for step in prepared.steps] == ["ACTION1", "ACTION2", "ACTION1"]
 
-    def test_rejects_recording_without_leading_reset(self, tmp_path):
-        events = [_step_event(value) for value in (1, 2, 3)]
-        with pytest.raises(RehydrationError, match="not the implicit RESET"):
+    def test_harness_recording_without_implicit_reset(self, tmp_path):
+        events = [_step_event(value, 1) for value in (1, 2, 3, 4)]
+        prepared = self._prepare(tmp_path, _valid_snapshot(step=3), events)
+        assert [step.index for step in prepared.steps] == [0, 1, 2]
+
+    def test_preserves_leading_reset_that_is_an_agent_step(self, tmp_path):
+        events = [_step_event(1, 0), _step_event(2, 1), _step_event(3, 1)]
+        prepared = self._prepare(tmp_path, _valid_snapshot(step=3), events)
+        assert [step.action for step in prepared.steps] == ["RESET", "ACTION1", "ACTION1"]
+
+    def test_rejects_ambiguous_leading_reset(self, tmp_path):
+        events = _recording(1, 3, 3)
+        with pytest.raises(RehydrationError, match="alignment is ambiguous"):
+            self._prepare(tmp_path, _valid_snapshot(step=3), events)
+
+    @pytest.mark.parametrize("values", [(1, 2, 9), (1, 2)])
+    def test_harness_recording_requires_matching_step(self, tmp_path, values):
+        events = [_step_event(value, 1) for value in values]
+        with pytest.raises(RehydrationError, match="no step 3 matching"):
             self._prepare(tmp_path, _valid_snapshot(step=3), events)
 
     @pytest.mark.parametrize("values", [(1, 2, 9), (1, 2)], ids=["mismatch", "short"])
