@@ -118,6 +118,11 @@ reasoning replay and separate Responses compaction using `XAI_API_KEY`.
 See the [xAI Provider Adapter](docs/xai-provider-adapter.md) for its request
 contract, compaction boundaries, and opt-in live tests.
 
+Inception Mercury models can opt into `inception.chat_completions.v1` for native
+encrypted `reasoning_details` replay and harness summary compaction. See the
+[Inception Provider Adapter](docs/inception-provider-adapter.md) for configuration,
+supported response formats, and local validation.
+
 The Anthropic Provider Adapter profile is `anthropic-opus-5-low-provider-adapter`.
 It uses Opus 5 at low reasoning effort, preserves native thinking blocks between
 actions, and uses Anthropic's native on-demand compaction at a 175k completed-

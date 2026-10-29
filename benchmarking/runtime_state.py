@@ -315,7 +315,10 @@ def sanitize_settings(value: Any) -> Any:
                 "thoughtsignature",
             }:
                 continue
-            if lowered == "data" and value.get("type") == "redacted_thinking":
+            if lowered == "data" and value.get("type") in {
+                "redacted_thinking",
+                "reasoning.encrypted",
+            }:
                 continue
             if lowered in {
                 "api_key",

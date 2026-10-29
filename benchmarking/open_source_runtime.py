@@ -280,6 +280,8 @@ class OpenSourceChatCompletionsAdapter:
     def __init__(self, client: Any) -> None:
         self._client = client
 
+    _normalize_response = staticmethod(normalize_open_source_response)
+
     def invoke(self, request: ModelRequest) -> ModelResponse:
         validate_open_source_request(request.request_config)
         kwargs = deepcopy(request.request_config)
@@ -297,7 +299,7 @@ class OpenSourceChatCompletionsAdapter:
             raw = self._client.chat.completions.create(**kwargs)
             if kwargs.get("stream"):
                 return self._consume_stream(raw)
-            return normalize_open_source_response(_mapping(raw))
+            return self._normalize_response(_mapping(raw))
         except APIError as exc:
             classified = _classified_provider_error(exc)
             if classified is not None:
@@ -305,7 +307,22 @@ class OpenSourceChatCompletionsAdapter:
             raise
 
     @staticmethod
-    def _consume_stream(stream: Any) -> ModelResponse:
+    def _merge_structured_delta(
+        message: dict[str, Any], delta: dict[str, Any], response: dict[str, Any]
+    ) -> None:
+        for field in (
+            "tool_calls",
+            "function_call",
+            "reasoning_details",
+            "encrypted_content",
+            "signature",
+            "thought_signature",
+        ):
+            if delta.get(field):
+                message[field] = delta[field]
+
+    @classmethod
+    def _consume_stream(cls, stream: Any) -> ModelResponse:
         message: dict[str, Any] = {"role": "assistant", "content": ""}
         choice: dict[str, Any] = {"message": message, "finish_reason": None}
         response: dict[str, Any] = {"choices": [choice]}
@@ -336,16 +353,7 @@ class OpenSourceChatCompletionsAdapter:
                                     "Non-text Chat Completions stream delta.", response
                                 )
                             message[field] = message.get(field, "") + fragment
-                    for field in (
-                        "tool_calls",
-                        "function_call",
-                        "reasoning_details",
-                        "encrypted_content",
-                        "signature",
-                        "thought_signature",
-                    ):
-                        if delta.get(field):
-                            message[field] = delta[field]
+                    cls._merge_structured_delta(message, delta, response)
                     if part.get("finish_reason") is not None:
                         choice["finish_reason"] = part["finish_reason"]
         except InvalidProviderResponseError:
@@ -363,7 +371,7 @@ class OpenSourceChatCompletionsAdapter:
             ) from exc
         finally:
             stream.close()
-        return normalize_open_source_response(response)
+        return cls._normalize_response(response)
 
 
 class OpenSourceContinuousConversationRuntimeAdapter:
@@ -436,6 +444,15 @@ class OpenSourceContinuousConversationRuntimeAdapter:
                 replay[self.reasoning_replay] = reasoning
         return replay
 
+    def _assistant_message(self, response: ModelResponse) -> dict[str, Any]:
+        assistant: dict[str, Any] = {
+            "role": "assistant",
+            "content": response.output_text,
+        }
+        if response.reasoning_text is not None:
+            assistant["reasoning_content"] = response.reasoning_text
+        return assistant
+
     def invoke_turn(self, request: ModelTurnRequest) -> ModelTurnResult:
         validate_open_source_request(request.request_config)
         payload = self._payload(
@@ -463,18 +480,15 @@ class OpenSourceContinuousConversationRuntimeAdapter:
             raise InvalidProviderResponseError(
                 "Open-source response was not completed.", usage=response.usage
             )
-        assistant: dict[str, Any] = {
-            "role": "assistant",
-            "content": response.output_text,
-        }
-        if response.reasoning_text is not None:
-            assistant["reasoning_content"] = response.reasoning_text
+        assistant = self._assistant_message(response)
         payload["messages"] = [*input_messages, assistant]
         payload["pending_messages"] = []
         descriptors = [
             {
                 "role": message["role"],
-                "reasoning_present": bool(message.get("reasoning_content")),
+                "reasoning_present": bool(
+                    message.get("reasoning_content") or message.get("reasoning_details")
+                ),
             }
             for message in input_messages
         ]
