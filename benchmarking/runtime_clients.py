@@ -20,7 +20,7 @@ ANTHROPIC_WIF_REQUIRED_ENV = (
 )
 
 
-def _read_anthropic_wif_environment(config_id: str) -> dict[str, str] | None:
+def _read_anthropic_wif_environment() -> dict[str, str] | None:
     """Select WIF explicitly, rejecting partial settings instead of using a key."""
     if not any(name in os.environ for name in ANTHROPIC_WIF_REQUIRED_ENV):
         return None
@@ -31,7 +31,7 @@ def _read_anthropic_wif_environment(config_id: str) -> dict[str, str] | None:
     missing = [name for name, value in settings.items() if not value]
     if missing:
         raise ValueError(
-            f"Model config '{config_id}' has incomplete Anthropic WIF configuration. "
+            "Incomplete Anthropic WIF environment configuration. "
             f"Set non-empty values for: {', '.join(missing)}. "
             "To use an API key instead, unset all three Anthropic WIF variables."
         )
@@ -81,7 +81,7 @@ def validate_model_credentials(
 ) -> None:
     """Check credential configuration without contacting AWS or the provider."""
     if runtime_config.get("sdk") == "anthropic-python":
-        if _read_anthropic_wif_environment(config_id) is not None:
+        if _read_anthropic_wif_environment() is not None:
             return
         default_api_key_env = DEFAULT_ANTHROPIC_API_KEY_ENV
     else:
@@ -116,7 +116,7 @@ def build_model_runtime_client(
         )
 
     if sdk == "anthropic-python":
-        wif_environment = _read_anthropic_wif_environment(config_id)
+        wif_environment = _read_anthropic_wif_environment()
         if wif_environment is not None:
             return AnthropicClient(
                 credentials=WorkloadIdentityCredentials(

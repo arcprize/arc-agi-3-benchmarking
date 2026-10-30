@@ -146,7 +146,9 @@ class TestMainCliHelpers:
         monkeypatch.setenv("ANTHROPIC_FEDERATION_RULE_ID", "fdrl_test")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "legacy-key")
 
-        with pytest.raises(ValueError, match="incomplete Anthropic WIF configuration"):
+        with pytest.raises(
+            ValueError, match="Incomplete Anthropic WIF environment configuration"
+        ):
             cli_main.validate_required_model_credentials("anthropic-opus-4-7-medium")
 
     def test_anthropic_legacy_startup_still_requires_api_key(self, monkeypatch):
