@@ -5,13 +5,15 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from .exceptions import InvalidProviderResponseError
 from .open_source_runtime import (
     OpenSourceChatCompletionsAdapter,
     OpenSourceContinuousConversationRuntimeAdapter,
     _invalid,
+    _usage,
     normalize_open_source_response,
 )
-from .runtime_models import ModelResponse
+from .runtime_models import ModelResponse, NormalizedUsage
 from .runtime_state import AdapterDescriptor
 
 INCEPTION_ADAPTER_ID = "inception.chat_completions.v1"
@@ -50,35 +52,61 @@ def _validated_details(value: Any) -> list[dict[str, Any]]:
     return deepcopy(value)
 
 
-def normalize_inception_response(raw: dict[str, Any]) -> ModelResponse:
-    # Keep the common completion/usage gate, but handle Inception's opaque field
-    # explicitly rather than letting the text-only adapter discard or reject it.
-    projected = deepcopy(raw)
-    try:
-        for choice in projected.get("choices") or []:
-            message = choice.get("message") or {}
-            _validated_details(message.pop("reasoning_details", None))
-    except ValueError as exc:
-        raise _invalid(str(exc), raw) from exc
+def normalize_inception_usage(value: Any) -> NormalizedUsage:
+    if value is not None and not isinstance(value, dict):
+        raise ValueError("Inception returned invalid token usage.")
+    usage = deepcopy(value or {})
     # Some Inception surfaces use the top-level usage aliases.
-    usage = raw.get("usage") or {}
     for container, field, alias in (
         ("completion_tokens_details", "reasoning_tokens", "reasoning_tokens"),
         ("prompt_tokens_details", "cached_tokens", "cached_input_tokens"),
     ):
         if (
-            isinstance(usage, dict)
-            and alias in usage
+            alias in usage
             and ((usage.get(container) or {}).get(field) is None)
         ):
             value = usage[alias]
             if type(value) is not int or value < 0:
-                raise _invalid("Inception returned invalid token usage.", raw)
-            projected["usage"][container] = {
+                raise ValueError("Inception returned invalid token usage.")
+            usage[container] = {
                 **(usage.get(container) or {}),
                 field: value,
             }
-    response = normalize_open_source_response(projected)
+    return _usage(usage)
+
+
+def _invalid_inception(
+    message: str, raw: dict[str, Any]
+) -> InvalidProviderResponseError:
+    error = _invalid(message, raw)
+    try:
+        error.usage = normalize_inception_usage(raw.get("usage"))
+    except (TypeError, ValueError):
+        # Preserve standard usage even if an Inception alias is malformed.
+        pass
+    return error
+
+
+def normalize_inception_response(raw: dict[str, Any]) -> ModelResponse:
+    # Keep the common completion/usage gate, but handle Inception's opaque field
+    # explicitly rather than letting the text-only adapter discard or reject it.
+    projected = deepcopy(raw)
+    try:
+        usage = normalize_inception_usage(raw.get("usage"))
+    except (TypeError, ValueError) as exc:
+        raise _invalid_inception("Inception returned invalid token usage.", raw) from exc
+    try:
+        for choice in projected.get("choices") or []:
+            message = choice.get("message") or {}
+            _validated_details(message.pop("reasoning_details", None))
+    except ValueError as exc:
+        raise _invalid_inception(str(exc), raw) from exc
+    try:
+        response = normalize_open_source_response(projected)
+    except InvalidProviderResponseError as exc:
+        exc.usage = usage
+        raise
+    response.usage = usage
     response.raw_response = deepcopy(raw)
     return response
 
@@ -87,6 +115,7 @@ class InceptionChatCompletionsAdapter(OpenSourceChatCompletionsAdapter):
     """Collect encrypted blocks by index without interpreting their ciphertext."""
 
     _normalize_response = staticmethod(normalize_inception_response)
+    _invalid_response = staticmethod(_invalid_inception)
 
     @staticmethod
     def _merge_structured_delta(
@@ -123,7 +152,7 @@ class InceptionChatCompletionsAdapter(OpenSourceChatCompletionsAdapter):
                     else:
                         existing[key] = value
         except ValueError as exc:
-            raise _invalid(str(exc), response) from exc
+            raise _invalid_inception(str(exc), response) from exc
 
 
 class InceptionContinuousConversationRuntimeAdapter(

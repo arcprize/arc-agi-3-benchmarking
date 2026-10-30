@@ -28,6 +28,8 @@ turn. The shared harness commits it only after accepting a valid ARC action.
 Failures, incomplete responses, and invalid actions retain the prior state.
 Reasoning usage is a breakdown of output tokens, never an additional cost.
 Native usage aliases are supported when nested OpenAI-style fields are absent.
+Rejected responses and interrupted streams retain any observed reasoning and
+cache usage through the same normalizer, so retries preserve those counts.
 
 ## Configuration
 

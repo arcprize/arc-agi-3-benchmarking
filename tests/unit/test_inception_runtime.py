@@ -329,6 +329,82 @@ def test_usage_aliases_do_not_double_count():
     assert response.usage.output_tokens == 20
 
 
+def _alias_usage(*, nested=False):
+    usage = deepcopy(_raw()["usage"])
+    usage.update(reasoning_tokens=15, cached_input_tokens=80)
+    if not nested:
+        usage.pop("completion_tokens_details")
+        usage.pop("prompt_tokens_details")
+    return usage
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("failure", ["detail", "length"])
+def test_rejected_responses_preserve_usage_aliases(runtime, nested, failure):
+    raw = _raw()
+    raw["usage"] = _alias_usage(nested=nested)
+    if failure == "detail":
+        raw["choices"][0]["message"]["reasoning_details"][0]["format"] = "unsupported"
+    else:
+        raw["choices"][0]["finish_reason"] = "length"
+    adapter, _ = runtime([raw])
+    state = adapter.initial_state()
+    before = state.model_dump()
+    with pytest.raises(InvalidProviderResponseError) as error:
+        _turn(adapter, state)
+    assert error.value.usage.reasoning_tokens == (12 if nested else 15)
+    assert error.value.usage.cached_tokens == (40 if nested else 80)
+    assert error.value.usage.total_tokens == 120
+    assert state.model_dump() == before
+    assert "OPAQUE-SECRET" not in json.dumps(error.value.response)
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("failure", ["interruption", "detail", "content"])
+def test_stream_failures_preserve_observed_usage_aliases(nested, failure):
+    class Stream:
+        closed = False
+
+        def __iter__(self):
+            yield {
+                "usage": _alias_usage(nested=nested),
+                "choices": [{"index": 0, "delta": {"reasoning_details": [_detail()]}}],
+            }
+            if failure == "interruption":
+                raise RuntimeError("connection interrupted")
+            delta = (
+                {"reasoning_details": [{"index": 0, "format": "unsupported"}]}
+                if failure == "detail"
+                else {"content": []}
+            )
+            yield {"choices": [{"index": 0, "delta": delta}]}
+
+        def close(self):
+            self.closed = True
+
+    stream = Stream()
+    with pytest.raises(InvalidProviderResponseError) as error:
+        InceptionChatCompletionsAdapter._consume_stream(stream)
+    assert error.value.usage.reasoning_tokens == (12 if nested else 15)
+    assert error.value.usage.cached_tokens == (40 if nested else 80)
+    assert error.value.usage.total_tokens == 120
+    assert stream.closed
+    assert "OPAQUE-SECRET" not in json.dumps(error.value.response)
+
+
+@pytest.mark.parametrize("alias", ["reasoning_tokens", "cached_input_tokens"])
+def test_invalid_usage_aliases_keep_standard_token_totals(alias):
+    raw = _raw()
+    raw["usage"] = _alias_usage()
+    raw["usage"][alias] = -1
+    with pytest.raises(InvalidProviderResponseError) as error:
+        normalize_inception_response(raw)
+    assert error.value.usage.input_tokens == 100
+    assert error.value.usage.output_tokens == 20
+    assert error.value.usage.total_tokens == 120
+    assert "OPAQUE-SECRET" not in json.dumps(error.value.response)
+
+
 def test_instant_response_without_reasoning_is_supported(runtime):
     raw = _raw()
     raw["choices"][0]["message"].pop("reasoning_details")
@@ -411,10 +487,15 @@ def test_registry_and_config_contract():
             _validate_model_config_entry(invalid, 0, set())
 
 
-def test_agent_rejects_bad_actions_without_replaying_their_reasoning(runtime, tmp_path):
-    adapter, calls = runtime(
-        [_raw("invalid action", data="REJECTED"), _raw(data="ACCEPTED")]
-    )
+@pytest.mark.parametrize("failure", ["action", "detail"])
+def test_agent_retries_preserve_usage_without_replaying_rejected_reasoning(
+    runtime, tmp_path, failure
+):
+    rejected = _raw("invalid action", data="REJECTED")
+    rejected["usage"] = _alias_usage()
+    if failure == "detail":
+        rejected["choices"][0]["message"]["reasoning_details"][0]["format"] = "unsupported"
+    adapter, calls = runtime([rejected, _raw(data="ACCEPTED")])
     agent = BenchmarkingAgent.__new__(BenchmarkingAgent)
     agent._stateful_adapter = adapter
     agent._runtime_state = adapter.initial_state()
@@ -445,6 +526,8 @@ def test_agent_rejects_bad_actions_without_replaying_their_reasoning(runtime, tm
     response, action, retries, _ = agent._request_with_retries([GameAction.ACTION1])
     assert action == GameAction.ACTION1 and retries == 1
     assert response.usage.total_tokens == agent.token_counter == 240
+    assert response.usage.reasoning_tokens == 27
+    assert response.usage.cached_tokens == 120
     assert calls[0]["messages"] == calls[1]["messages"]
     assert "REJECTED" not in agent._runtime_state.model_dump_json()
     assert "ACCEPTED" in agent._runtime_state.model_dump_json()

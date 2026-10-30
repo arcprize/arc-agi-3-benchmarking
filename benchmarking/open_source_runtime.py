@@ -281,6 +281,7 @@ class OpenSourceChatCompletionsAdapter:
         self._client = client
 
     _normalize_response = staticmethod(normalize_open_source_response)
+    _invalid_response = staticmethod(_invalid)
 
     def invoke(self, request: ModelRequest) -> ModelResponse:
         validate_open_source_request(request.request_config)
@@ -335,7 +336,7 @@ class OpenSourceChatCompletionsAdapter:
                     response["id"] = chunk["id"]
                 for part in chunk.get("choices") or []:
                     if part.get("index", 0) != 0 or choice["finish_reason"] is not None:
-                        raise _invalid(
+                        raise cls._invalid_response(
                             "Unexpected choice or data after stream completion.",
                             response,
                         )
@@ -349,7 +350,7 @@ class OpenSourceChatCompletionsAdapter:
                         fragment = delta.get(field)
                         if fragment is not None:
                             if not isinstance(fragment, str):
-                                raise _invalid(
+                                raise cls._invalid_response(
                                     "Non-text Chat Completions stream delta.", response
                                 )
                             message[field] = message.get(field, "") + fragment
@@ -362,11 +363,11 @@ class OpenSourceChatCompletionsAdapter:
             classified = _classified_provider_error(exc)
             if classified is not None:
                 raise classified from exc
-            raise _invalid(
+            raise cls._invalid_response(
                 "Chat Completions stream returned a provider error.", response
             ) from exc
         except Exception as exc:
-            raise _invalid(
+            raise cls._invalid_response(
                 "Chat Completions stream interrupted before completion.", response
             ) from exc
         finally:
