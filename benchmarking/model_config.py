@@ -149,6 +149,14 @@ def _validate_continuous_conversation_config(
             validate_deepseek_request(request)
         except ValueError as exc:
             raise ValueError(f"Model config '{config_id}': {exc}") from exc
+    elif adapter_id == "inception.chat_completions.v1":
+        from .open_source_runtime import validate_open_source_request
+
+        if "tool_calling" in runtime:
+            raise ValueError(
+                "Inception uses plain-text actions; remove runtime.tool_calling."
+            )
+        validate_open_source_request(request)
     elif adapter_id == "open_source.chat_completions.v1":
         from .open_source_runtime import (
             validate_open_source_request,

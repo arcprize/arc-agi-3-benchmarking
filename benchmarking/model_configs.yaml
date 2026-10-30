@@ -1,3 +1,33 @@
+- id: "inception-mercury-3-preview-high-provider-adapter"
+  agent:
+    MAX_ACTIONS_BASELINE_MULTIPLIER: 5
+    MAX_CONTEXT_LENGTH: 1_000_000
+  runtime:
+    sdk: "openai-python"
+    api: "chat_completions"
+    adapter_id: "inception.chat_completions.v1"
+    state: "continuous_conversation"
+    compaction:
+      strategy: "harness_summary"
+      trigger_tokens: 175_000
+  client:
+    base_url: "https://inference.baseten.co/v1"
+    api_key_env: "BASETEN_API_KEY"
+  request:
+    model: "inception/mercury-3-preview"
+    reasoning_effort: "high"
+    max_tokens: 131_072
+    stream: true
+    stream_options:
+      continuous_usage_stats: true
+    extra_headers:
+      X-Baseten-Experimental-Predict-Timeout-Seconds: "3600"
+  pricing:
+    date: "2026-10-27"
+    input: 0.10
+    cached_input: 0.01
+    output: 0.35
+
 - id: "xai-grok-4-7-low-provider-adapter"
   agent:
     MAX_ACTIONS_BASELINE_MULTIPLIER: 5.0
