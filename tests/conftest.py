@@ -4,6 +4,18 @@ import shutil
 import pytest
 
 
+@pytest.fixture
+def anthropic_wif_env(monkeypatch):
+    """Configure synthetic WIF identifiers; never use real workload credentials."""
+    for name, value in {
+        "ANTHROPIC_FEDERATION_RULE_ID": "fdrl_test",
+        "ANTHROPIC_ORGANIZATION_ID": "00000000-0000-0000-0000-000000000001",
+        "ANTHROPIC_SERVICE_ACCOUNT_ID": "svac_test",
+        "ANTHROPIC_WORKSPACE_ID": "wrkspc_test",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+
 def get_test_recordings_dir():
     conftest_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(conftest_dir, "recordings")

@@ -39,7 +39,7 @@ uv run main.py --game=ls20
 
 ## Running the Official Benchmarking Agent
 
-1. Get a model provider API key
+1. Get a model provider API key, or configure [Anthropic WIF](#anthropic-authentication).
 
 Provider key links:
 
@@ -131,7 +131,7 @@ frame, so the newest observation reaches the action request unchanged. It record
 provider-reported thinking-token usage when available without double-counting
 output tokens. The profile also enables Anthropic automatic prompt caching with
 the default 5-minute TTL so repeated native history can be reused. Set
-`ANTHROPIC_API_KEY` to use it:
+`ANTHROPIC_API_KEY` or configure [Anthropic WIF](#anthropic-authentication) to use it:
 
 ```bash
 uv run main.py --game=ls20 --config=anthropic-opus-5-low-provider-adapter
@@ -160,6 +160,53 @@ Their results should be reported separately and clearly labeled.
 
 When you run a benchmark, a scorecard is saved on the ARC server. If you are logged in, you can browse your saved scorecards at [arcprize.org/scorecards](https://arcprize.org/scorecards).
 
+
+## Anthropic authentication
+
+Both Standard and Provider Adapter harnesses support legacy API keys and AWS
+Workload Identity Federation (WIF). They use the same model configs; no WIF
+environment-variable names or authentication options need to be added to the
+model YAML.
+
+For legacy authentication, set the key named by `client.api_key_env` in the model
+config (normally `ANTHROPIC_API_KEY`). Custom key variables such as
+`ANTHROPIC_API_KEY_NO_ZDR` remain supported. If `api_key_env` is omitted for an
+Anthropic config, the runner defaults to `ANTHROPIC_API_KEY`.
+
+For AWS WIF, inject these standard environment variables into the container, or
+set them in `.env` for a local run with AWS credentials:
+
+```bash
+ANTHROPIC_FEDERATION_RULE_ID=fdrl_...
+ANTHROPIC_ORGANIZATION_ID=00000000-0000-0000-0000-000000000000
+ANTHROPIC_SERVICE_ACCOUNT_ID=svac_...
+ANTHROPIC_WORKSPACE_ID=wrkspc_...
+```
+
+All four values are required. The runner requires `ANTHROPIC_WORKSPACE_ID`
+to target the intended workspace explicitly, even when the federation rule
+selects a single workspace.
+
+Setting any of the four required WIF variables selects WIF for native
+Anthropic configs, even if a legacy API key is also present. Missing, empty, or
+whitespace-only required values fail startup validation. To use an API key,
+unset all four WIF variables and remove them from `.env` if present. Other
+providers continue using their existing API-key configuration.
+
+The runner follows [Anthropic's AWS WIF example](https://platform.claude.com/docs/en/manage-claude/wif-providers/aws):
+it uses the workload's normal AWS credentials to call regional STS in
+`us-east-1`, requesting a 900-second identity token with audience
+`https://api.anthropic.com` and signing algorithm `RS256`. The AWS account must
+have outbound federation enabled, and the job role must have
+`sts:GetWebIdentityToken` permission. The corresponding issuer, federation rule,
+and service-account workspace membership must already be configured in Claude
+Console.
+
+Startup validation checks configuration without making network requests. The
+first model request obtains an AWS identity token and exchanges it for an
+Anthropic access token. The Anthropic SDK caches and refreshes that access
+token, calling STS for a fresh identity token on each exchange. Authentication
+failures do not switch the run back to an API key.
 
 ## License
 
