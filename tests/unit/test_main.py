@@ -5,6 +5,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import main as cli_main
+from benchmarking import runtime_clients
+
+
+@pytest.fixture(autouse=True)
+def clear_anthropic_wif_environment(monkeypatch):
+    for name in (*runtime_clients.ANTHROPIC_WIF_REQUIRED_ENV, "ANTHROPIC_WORKSPACE_ID"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.mark.unit
@@ -23,12 +30,12 @@ class TestMainCliHelpers:
         assert "anthropic-opus-4-7-medium" in configs
         assert "anthropic-opus-4-7-low-thinking" in configs
 
-    def test_validate_required_model_api_key_uses_selected_config_env(self, monkeypatch):
+    def test_validate_required_model_credentials_uses_selected_config_env(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
-        cli_main.validate_required_model_api_key("openai-gpt-5.4-openrouter")
+        cli_main.validate_required_model_credentials("openai-gpt-5.4-openrouter")
 
-    def test_validate_required_model_api_key_uses_agent_model_config_id_when_config_omitted(
+    def test_validate_required_model_credentials_uses_agent_model_config_id_when_config_omitted(
         self, monkeypatch
     ):
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
@@ -38,32 +45,32 @@ class TestMainCliHelpers:
             "openai-gpt-5.4-openrouter",
         )
 
-        cli_main.validate_required_model_api_key(None)
+        cli_main.validate_required_model_credentials(None)
 
-    def test_validate_required_model_api_key_rejects_blank_values(self, monkeypatch):
+    def test_validate_required_model_credentials_rejects_blank_values(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "   ")
 
         with pytest.raises(ValueError, match="No OPENROUTER_API_KEY set"):
-            cli_main.validate_required_model_api_key("openai-gpt-5.4-openrouter")
+            cli_main.validate_required_model_credentials("openai-gpt-5.4-openrouter")
 
-    def test_validate_required_model_api_key_lists_available_configs_for_unknown_id(
+    def test_validate_required_model_credentials_lists_available_configs_for_unknown_id(
         self,
     ):
         with pytest.raises(ValueError) as exc_info:
-            cli_main.validate_required_model_api_key("does-not-exist")
+            cli_main.validate_required_model_credentials("does-not-exist")
 
         message = str(exc_info.value)
         assert "Model config 'does-not-exist' not found" in message
         assert "Available configs:" in message
         assert "openai-gpt-5.4-openrouter" in message
 
-    def test_validate_required_model_api_key_rejects_missing_client_api_key_env(self):
+    def test_validate_required_model_credentials_rejects_missing_client_api_key_env(self):
         with patch(
             "main.get_model_config",
             return_value={"client": {}},
         ):
             with pytest.raises(ValueError) as exc_info:
-                cli_main.validate_required_model_api_key("missing-api-key-env")
+                cli_main.validate_required_model_credentials("missing-api-key-env")
 
         assert (
             str(exc_info.value)
@@ -77,7 +84,7 @@ class TestMainCliHelpers:
             "openai-gpt-5-4-2026-03-05-responses",
         ],
     )
-    def test_validate_required_model_api_key_rejects_missing_openai_key_for_chat_and_responses_configs(
+    def test_validate_required_model_credentials_rejects_missing_openai_key_for_chat_and_responses_configs(
         self,
         monkeypatch,
         config_id,
@@ -85,7 +92,7 @@ class TestMainCliHelpers:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         with pytest.raises(ValueError) as exc_info:
-            cli_main.validate_required_model_api_key(config_id)
+            cli_main.validate_required_model_credentials(config_id)
 
         assert str(exc_info.value) == (
             "No OPENAI_API_KEY set. "
@@ -115,6 +122,39 @@ class TestMainCliHelpers:
             timeout=10,
         )
 
+    @pytest.mark.parametrize("config_id", [
+        "anthropic-opus-4-7-medium", "anthropic-opus-5-low-provider-adapter",
+    ])
+    def test_wif_startup_accepts_both_harnesses_without_api_keys(
+        self, monkeypatch, anthropic_wif_env, config_id
+    ):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY_NO_ZDR", raising=False)
+        with patch("benchmarking.runtime_clients.boto3.client") as sts:
+            cli_main.validate_required_model_credentials(config_id)
+        sts.assert_not_called()
+
+    def test_wif_startup_does_not_require_client_api_key_env(
+        self, anthropic_wif_env
+    ):
+        with patch("main.get_model_config", return_value={
+            "runtime": {"sdk": "anthropic-python"}, "client": {},
+        }):
+            cli_main.validate_required_model_credentials("wif-config")
+
+    def test_wif_startup_rejects_partial_settings_even_with_legacy_key(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_FEDERATION_RULE_ID", "fdrl_test")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "legacy-key")
+
+        with pytest.raises(ValueError, match="incomplete Anthropic WIF configuration"):
+            cli_main.validate_required_model_credentials("anthropic-opus-4-7-medium")
+
+    def test_anthropic_legacy_startup_still_requires_api_key(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        with pytest.raises(ValueError, match="No ANTHROPIC_API_KEY set"):
+            cli_main.validate_required_model_credentials("anthropic-opus-4-7-medium")
+
 
 def _args(*argv: str):
     return cli_main.build_parser().parse_args(list(argv))
@@ -128,7 +168,7 @@ def cli_env(monkeypatch, tmp_path):
     root = logging.getLogger()
     monkeypatch.setattr(root, "handlers", list(root.handlers))
     monkeypatch.setattr(cli_main, "print_requested_resource_lists", lambda *a, **k: False)
-    monkeypatch.setattr(cli_main, "validate_required_model_api_key", lambda _id: None)
+    monkeypatch.setattr(cli_main, "validate_required_model_credentials", lambda _id: None)
     monkeypatch.setattr(cli_main, "fetch_available_games", lambda _url: ["ls20-abc"])
     swarm = MagicMock()
     monkeypatch.setattr(cli_main, "Swarm", swarm)

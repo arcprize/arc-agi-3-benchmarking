@@ -31,6 +31,7 @@ from benchmarking.rehydration import (
     parse_rehydrate_args,
     prepare_rehydration,
 )
+from benchmarking.runtime_clients import validate_model_credentials
 
 logger = logging.getLogger()
 
@@ -107,7 +108,7 @@ def fetch_available_games(root_url: str) -> list[str]:
         return []
 
 
-def validate_required_model_api_key(config_id: Optional[str]) -> None:
+def validate_required_model_credentials(config_id: Optional[str]) -> None:
     selected_config_id = config_id or BenchmarkingAgent.MODEL_CONFIG_ID
     entry = get_model_config(selected_config_id)
 
@@ -117,19 +118,11 @@ def validate_required_model_api_key(config_id: Optional[str]) -> None:
             f"Model config '{selected_config_id}' is missing client configuration."
         )
 
-    api_key_env = str(client_cfg.get("api_key_env", "")).strip()
-    if not api_key_env:
-        raise ValueError(
-            f"Model config '{selected_config_id}' is missing client.api_key_env."
-        )
-
-    api_key = os.environ.get(api_key_env, "").strip()
-    if not api_key:
-        raise ValueError(
-            f"No {api_key_env} set. "
-            f"The selected model config '{selected_config_id}' requires "
-            f"the {api_key_env} environment variable to be set in your .env file."
-        )
+    validate_model_credentials(
+        runtime_config=entry.get("runtime", {}),
+        client_config=client_cfg,
+        config_id=selected_config_id,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -273,7 +266,7 @@ def main() -> None:
         return
 
     try:
-        validate_required_model_api_key(args.config)
+        validate_required_model_credentials(args.config)
     except ValueError as e:
         logger.error(str(e))
         return

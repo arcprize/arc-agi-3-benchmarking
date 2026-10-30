@@ -3,6 +3,12 @@ import pytest
 from benchmarking import runtime_clients
 
 
+@pytest.fixture(autouse=True)
+def clear_anthropic_wif_environment(monkeypatch):
+    for name in (*runtime_clients.ANTHROPIC_WIF_REQUIRED_ENV, "ANTHROPIC_WORKSPACE_ID"):
+        monkeypatch.delenv(name, raising=False)
+
+
 class _FakeOpenAIClient:
     def __init__(self, **kwargs: object) -> None:
         self.kwargs = kwargs
@@ -130,6 +136,56 @@ class TestBuildModelRuntimeClient:
         )
 
         assert client.kwargs == {"api_key": "test-anthropic-key"}
+
+    def test_anthropic_client_preserves_custom_api_key_env(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "wrong-key")
+        monkeypatch.setenv("ANTHROPIC_API_KEY_NO_ZDR", "selected-key")
+        monkeypatch.setattr(runtime_clients, "AnthropicClient", _FakeAnthropicClient)
+
+        client = runtime_clients.build_model_runtime_client(
+            runtime_config={"sdk": "anthropic-python"},
+            client_config={"api_key_env": "ANTHROPIC_API_KEY_NO_ZDR"},
+            config_id="anthropic-config",
+        )
+
+        assert client.kwargs == {"api_key": "selected-key"}
+
+    @pytest.mark.parametrize("missing", runtime_clients.ANTHROPIC_WIF_REQUIRED_ENV)
+    @pytest.mark.parametrize("value", [None, "", "   "])
+    def test_incomplete_wif_does_not_fall_back_to_api_key(
+        self, monkeypatch, anthropic_wif_env, missing, value
+    ):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "legacy-key")
+        if value is None:
+            monkeypatch.delenv(missing)
+        else:
+            monkeypatch.setenv(missing, value)
+
+        for validate_or_build in (
+            runtime_clients.validate_model_credentials,
+            runtime_clients.build_model_runtime_client,
+        ):
+            with pytest.raises(ValueError, match=f"Set non-empty values for: {missing}"):
+                validate_or_build(
+                    runtime_config={"sdk": "anthropic-python"},
+                    client_config={"api_key_env": "ANTHROPIC_API_KEY"},
+                    config_id="anthropic-config",
+                )
+
+    def test_non_anthropic_client_ignores_incomplete_wif(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_FEDERATION_RULE_ID", "fdrl_test")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+        monkeypatch.setattr(runtime_clients, "OpenAIClient", _FakeOpenAIClient)
+        config = {
+            "runtime_config": {"sdk": "openai-python"},
+            "client_config": {"api_key_env": "OPENAI_API_KEY"},
+            "config_id": "openai-config",
+        }
+
+        runtime_clients.validate_model_credentials(**config)
+        client = runtime_clients.build_model_runtime_client(**config)
+
+        assert client.kwargs["api_key"] == "test-openai-key"
 
     def test_missing_anthropic_api_key_raises_config_specific_error(self, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
