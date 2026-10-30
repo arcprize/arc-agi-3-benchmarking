@@ -330,6 +330,10 @@ def main() -> None:
         sys.exit(REHYDRATION_EXIT_CODE)
 
 
-if __name__ == "__main__":
+def cli() -> None:
     os.environ["TESTING"] = "False"
     main()
+
+
+if __name__ == "__main__":
+    cli()
