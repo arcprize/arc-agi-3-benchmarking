@@ -17,15 +17,14 @@ from benchmarking import runtime_clients
 pytestmark = pytest.mark.unit
 
 
-@pytest.mark.parametrize("workspace", ["wrkspc_test", None])
+@pytest.mark.parametrize("workspace", ["wrkspc_test", "wrkspc_other"])
 def test_wif_exchanges_caches_and_refreshes_with_fresh_aws_tokens(
     monkeypatch, anthropic_wif_env, workspace
 ):
     # Existing Batch jobs can still inject legacy keys. Explicit WIF must win.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "unused-api-key")
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "unused-auth-token")
-    if workspace is None:
-        monkeypatch.delenv("ANTHROPIC_WORKSPACE_ID")
+    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", workspace)
     sts = boto3.client(
         "sts",
         region_name="us-east-1",
@@ -132,7 +131,7 @@ def test_wif_exchanges_caches_and_refreshes_with_fresh_aws_tokens(
             assert exchange["federation_rule_id"] == "fdrl_test"
             assert exchange["organization_id"] == "00000000-0000-0000-0000-000000000001"
             assert exchange["service_account_id"] == "svac_test"
-            assert exchange.get("workspace_id") == workspace
+            assert exchange["workspace_id"] == workspace
         assert [headers["authorization"] for headers in message_headers] == [
             "Bearer access-token-1",
             "Bearer access-token-1",

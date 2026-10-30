@@ -10,7 +10,7 @@ from benchmarking import runtime_clients
 
 @pytest.fixture(autouse=True)
 def clear_anthropic_wif_environment(monkeypatch):
-    for name in (*runtime_clients.ANTHROPIC_WIF_REQUIRED_ENV, "ANTHROPIC_WORKSPACE_ID"):
+    for name in runtime_clients.ANTHROPIC_WIF_REQUIRED_ENV:
         monkeypatch.delenv(name, raising=False)
 
 
@@ -150,6 +150,20 @@ class TestMainCliHelpers:
             ValueError, match="Incomplete Anthropic WIF environment configuration"
         ):
             cli_main.validate_required_model_credentials("anthropic-opus-4-7-medium")
+
+    @pytest.mark.parametrize("config_id", [
+        "anthropic-opus-4-7-medium", "anthropic-opus-5-low-provider-adapter",
+    ])
+    def test_wif_startup_requires_explicit_workspace(
+        self, monkeypatch, anthropic_wif_env, config_id
+    ):
+        monkeypatch.delenv("ANTHROPIC_WORKSPACE_ID")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "legacy-key")
+
+        with pytest.raises(
+            ValueError, match="Set non-empty values for: ANTHROPIC_WORKSPACE_ID"
+        ):
+            cli_main.validate_required_model_credentials(config_id)
 
     def test_anthropic_legacy_startup_still_requires_api_key(self, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

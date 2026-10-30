@@ -17,6 +17,7 @@ ANTHROPIC_WIF_REQUIRED_ENV = (
     "ANTHROPIC_FEDERATION_RULE_ID",
     "ANTHROPIC_ORGANIZATION_ID",
     "ANTHROPIC_SERVICE_ACCOUNT_ID",
+    "ANTHROPIC_WORKSPACE_ID",
 )
 
 
@@ -33,7 +34,7 @@ def _read_anthropic_wif_environment() -> dict[str, str] | None:
         raise ValueError(
             "Incomplete Anthropic WIF environment configuration. "
             f"Set non-empty values for: {', '.join(missing)}. "
-            "To use an API key instead, unset all three Anthropic WIF variables."
+            "To use an API key instead, unset all four Anthropic WIF variables."
         )
     return settings
 
@@ -124,8 +125,7 @@ def build_model_runtime_client(
                     federation_rule_id=wif_environment["ANTHROPIC_FEDERATION_RULE_ID"],
                     organization_id=wif_environment["ANTHROPIC_ORGANIZATION_ID"],
                     service_account_id=wif_environment["ANTHROPIC_SERVICE_ACCOUNT_ID"],
-                    workspace_id=os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
-                    or None,
+                    workspace_id=wif_environment["ANTHROPIC_WORKSPACE_ID"],
                 ),
             )
         api_key = _read_required_api_key(

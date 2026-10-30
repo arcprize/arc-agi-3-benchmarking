@@ -5,7 +5,7 @@ from benchmarking import runtime_clients
 
 @pytest.fixture(autouse=True)
 def clear_anthropic_wif_environment(monkeypatch):
-    for name in (*runtime_clients.ANTHROPIC_WIF_REQUIRED_ENV, "ANTHROPIC_WORKSPACE_ID"):
+    for name in runtime_clients.ANTHROPIC_WIF_REQUIRED_ENV:
         monkeypatch.delenv(name, raising=False)
 
 
@@ -169,6 +169,21 @@ class TestBuildModelRuntimeClient:
                 validate_or_build(
                     runtime_config={"sdk": "anthropic-python"},
                     client_config={"api_key_env": "ANTHROPIC_API_KEY"},
+                    config_id="anthropic-config",
+                )
+
+    def test_workspace_alone_selects_wif_instead_of_api_key(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", "wrkspc_test")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "legacy-key")
+
+        for validate_or_build in (
+            runtime_clients.validate_model_credentials,
+            runtime_clients.build_model_runtime_client,
+        ):
+            with pytest.raises(ValueError, match="Incomplete Anthropic WIF environment"):
+                validate_or_build(
+                    runtime_config={"sdk": "anthropic-python"},
+                    client_config={},
                     config_id="anthropic-config",
                 )
 

@@ -178,14 +178,14 @@ ANTHROPIC_SERVICE_ACCOUNT_ID=svac_...
 ANTHROPIC_WORKSPACE_ID=wrkspc_...
 ```
 
-The first three values are required. `ANTHROPIC_WORKSPACE_ID` is optional when
-the federation rule selects a single workspace; set it to target the intended
-workspace explicitly.
+All four values are required. The runner requires `ANTHROPIC_WORKSPACE_ID`
+to target the intended workspace explicitly, even when the federation rule
+selects a single workspace.
 
-Setting any of the three required WIF variables selects WIF for native
+Setting any of the four required WIF variables selects WIF for native
 Anthropic configs, even if a legacy API key is also present. Missing, empty, or
 whitespace-only required values fail startup validation. To use an API key,
-unset all three WIF variables and remove them from `.env` if present. Other
+unset all four WIF variables and remove them from `.env` if present. Other
 providers continue using their existing API-key configuration.
 
 The runner follows [Anthropic's AWS WIF example](https://platform.claude.com/docs/en/manage-claude/wif-providers/aws):
