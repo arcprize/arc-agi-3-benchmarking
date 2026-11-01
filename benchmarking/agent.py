@@ -541,6 +541,19 @@ class BenchmarkingAgent(Agent):
         if isinstance(payload, dict) and "actions" in payload:
             return self._parse_structured_action(payload, available_actions)
 
+        # Normalize flat JSON into the same strict schema. Invalid flat actions
+        # must not fall through to text matching and execute an incidental name.
+        if isinstance(payload, dict) and "action" in payload:
+            if set(payload) not in ({"action"}, {"action", "x", "y"}):
+                return None
+            entry = {
+                "action_type" if key == "action" else key: value
+                for key, value in payload.items()
+            }
+            return self._parse_structured_action(
+                {"actions": [entry]}, available_actions
+            )
+
         xml_action, saw_xml_action = self._parse_xml_action(text, available_actions)
         if saw_xml_action:
             return xml_action
