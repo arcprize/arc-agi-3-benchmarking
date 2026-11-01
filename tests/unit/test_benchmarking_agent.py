@@ -671,6 +671,66 @@ class TestBenchmarkingAgentModelRequests:
 
 @pytest.mark.unit
 class TestBenchmarkingAgentActionParsing:
+    @pytest.mark.parametrize("x,y", [(39, 33), (0, 63), (63, 0)])
+    def test_parses_flat_complex_action_json(self, x, y):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+
+        action = agent._parse_action(
+            json.dumps({"action": "ACTION6", "x": x, "y": y}),
+            [GameAction.ACTION6],
+        )
+
+        assert action is not None
+        assert action.name == "ACTION6"
+        assert action.action_data.x == x
+        assert action.action_data.y == y
+
+    @pytest.mark.parametrize("name", ["ACTION5", "RESET"])
+    def test_parses_flat_simple_action_json(self, name):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+        available = GameAction.from_name(name)
+
+        action = agent._parse_action(json.dumps({"action": name}), [available])
+
+        assert action == available
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"action": "ACTION6"},
+            {"action": "ACTION6", "x": 39},
+            {"action": "ACTION6", "y": 33},
+            {"action": "ACTION6", "x": "39", "y": 33},
+            {"action": "ACTION6", "x": 39, "y": 33.0},
+            {"action": "ACTION6", "x": True, "y": 33},
+            {"action": "ACTION6", "x": 39, "y": False},
+            {"action": "ACTION6", "x": -1, "y": 33},
+            {"action": "ACTION6", "x": 39, "y": 64},
+            {"action": "ACTION6", "x": None, "y": 33},
+            {"action": "ACTION5", "x": 39, "y": 33},
+            {"action": "ACTION5", "note": "ACTION6 39 33"},
+            {"action": "ACTION6", "x": 39, "y": 33, "action_type": "ACTION5"},
+            {"action": "ACTION5", "actions": [{"action_type": "ACTION5"}]},
+            {"action": "ACTION1"},
+            {"action": "action6", "x": 39, "y": 33},
+            {"action": 6, "x": 39, "y": 33},
+            {"action": ["ACTION5"]},
+        ],
+    )
+    def test_rejects_invalid_flat_actions_without_text_fallback(self, payload):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+
+        assert agent._parse_action(
+            json.dumps(payload), [GameAction.ACTION5, GameAction.ACTION6]
+        ) is None
+
+    def test_rejects_unavailable_flat_complex_action(self):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+
+        assert agent._parse_action(
+            '{"action":"ACTION6","x":39,"y":33}', [GameAction.ACTION5]
+        ) is None
+
     def test_parses_observed_single_complex_action_json(self):
         agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
 
