@@ -95,6 +95,13 @@ Anthropic responses preserve the reported thinking-token count as a breakdown of
 output tokens in both streaming and non-streaming runs, without adding it again
 to token totals or costs.
 
+Gemini `generate_content` configs can enable streaming with `request.stream: true`.
+The runner handles continuation tokens and counts the latest cumulative usage
+within each stream request, then adds usage across continuation requests.
+Reasoning tokens are included in output tokens and reported separately.
+Streams that finish without usage metadata are rejected. Existing configs
+without the flag keep using non-streaming `generateContent`.
+
 6. Or on all games:
 
 ```bash

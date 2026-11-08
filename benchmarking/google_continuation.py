@@ -132,3 +132,152 @@ def generate_with_continuation(
             "slices": slices,
         }
         return normalize_google_genai_response(aggregate)
+
+
+def stream_with_continuation(
+    client: Any,
+    call_kwargs: dict[str, Any],
+    *,
+    native_contents: list[Any] | None = None,
+) -> ModelResponse:
+    """Stream one turn, accounting for cumulative usage in each decode hop."""
+    config = call_kwargs["config"].model_copy(deep=True)
+    # The harness owns retries and usage accounting. The SDK must not silently
+    # reconnect or merge continuation hops on our behalf.
+    config.automatic_continuation = False
+    options = config.http_options or types.HttpOptions()
+    if options.timeout is None:
+        options.timeout = 3_600_000
+    options.retry_options = types.HttpRetryOptions(attempts=1)
+    extra = deepcopy(options.extra_body or {})
+    if any(key in extra for key in ("contents", "continuationToken", "generationConfig")):
+        raise ValueError(
+            "Gemini continuation manages contents, token, and generationConfig."
+        )
+    if config.continuation_token is not None:
+        raise ValueError("Gemini continuation manages the continuation token.")
+    base_contents = [
+        content.model_dump(mode="json", by_alias=True, exclude_none=True)
+        for content in call_kwargs["contents"]
+    ]
+    if native_contents is not None:
+        base_contents = deepcopy(native_contents)
+        options.extra_body = {**extra, "contents": base_contents}
+    else:
+        options.extra_body = extra
+    config.http_options = options
+
+    parts: list[dict[str, Any]] = []
+    slices: list[dict[str, Any]] = []
+    seen_tokens: set[bytes] = set()
+    usage = NormalizedUsage()
+
+    while True:
+        hop_parts: list[dict[str, Any]] = []
+        hop_usage = NormalizedUsage()
+        hop_usage_metadata: dict[str, Any] = {}
+        reason: str | None = None
+        token: bytes | None = None
+        saw_chunk = False
+        try:
+            for chunk in client.models.generate_content_stream(
+                **{**call_kwargs, "config": config.model_copy(deep=True)}
+            ):
+                saw_chunk = True
+                if chunk.usage_metadata is not None:
+                    counts = chunk.usage_metadata
+                    hop_usage_metadata = counts.model_dump(
+                        mode="json", by_alias=True, exclude_none=True
+                    )
+                    prompt = counts.prompt_token_count or 0
+                    output = counts.candidates_token_count or 0
+                    thoughts = counts.thoughts_token_count or 0
+                    hop_usage = NormalizedUsage(
+                        input_tokens=prompt,
+                        output_tokens=output + thoughts,
+                        reasoning_tokens=thoughts,
+                        total_tokens=(
+                            counts.total_token_count
+                            if counts.total_token_count is not None
+                            else prompt + output + thoughts
+                        ),
+                        cached_tokens=counts.cached_content_token_count or 0,
+                    )
+                if not chunk.candidates:
+                    continue
+                candidate = chunk.candidates[0]
+                if candidate.content and candidate.content.parts:
+                    hop_parts.extend(
+                        part.model_dump(mode="json", by_alias=True, exclude_none=True)
+                        for part in candidate.content.parts
+                    )
+                if candidate.finish_reason is not None:
+                    reason = candidate.finish_reason.value
+                    token = candidate.continuation_token
+        except Exception as exc:
+            if not slices and not saw_chunk:
+                raise
+            usage += hop_usage
+            if saw_chunk:
+                slices.append(
+                    _stream_slice(hop_parts, reason, hop_usage_metadata)
+                )
+            raise InvalidProviderResponseError(
+                "Gemini stream failed after producing response chunks.",
+                response={"slices": slices},
+                usage=usage,
+            ) from exc
+
+        if saw_chunk:
+            slices.append(_stream_slice(hop_parts, reason, hop_usage_metadata))
+        if not hop_usage_metadata:
+            raise InvalidProviderResponseError(
+                "Gemini stream ended without usage metadata.",
+                response={"slices": slices},
+                usage=usage,
+            )
+        usage += hop_usage
+        parts.extend(hop_parts)
+
+        def invalid(message: str) -> InvalidProviderResponseError:
+            return InvalidProviderResponseError(
+                message, response={"slices": slices}, usage=usage
+            )
+
+        if reason == "CONTINUATION":
+            if not config.max_output_tokens or config.max_output_tokens <= 0:
+                raise invalid(
+                    "Gemini returned CONTINUATION without explicit positive max_output_tokens."
+                )
+            if not token:
+                raise invalid("Gemini CONTINUATION response has no continuation token.")
+            if token in seen_tokens:
+                raise invalid("Gemini returned a repeated continuation token.")
+            seen_tokens.add(token)
+            config.continuation_token = token
+            continue
+        if reason not in ("STOP", "MAX_TOKENS"):
+            raise invalid(f"Unexpected Gemini stream finish reason: {reason}")
+        if reason == "MAX_TOKENS":
+            logger.warning("Gemini exhausted its cumulative output budget.")
+        aggregate = {
+            "candidates": [{"content": {"parts": parts}, "finish_reason": reason}],
+            "usage_metadata": {
+                "prompt_token_count": usage.input_tokens,
+                "candidates_token_count": usage.output_tokens - usage.reasoning_tokens,
+                "thoughts_token_count": usage.reasoning_tokens,
+                "cached_content_token_count": usage.cached_tokens,
+                "total_token_count": usage.total_tokens,
+            },
+            "slices": slices,
+        }
+        return normalize_google_genai_response(aggregate)
+
+
+def _stream_slice(
+    parts: list[dict[str, Any]], reason: str | None, usage: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "candidates": [{"content": {"parts": parts}, "finishReason": reason}],
+        "usageMetadata": usage,
+    }

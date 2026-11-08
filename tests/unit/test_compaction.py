@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timezone
 
 import pytest
-from google.genai._interactions.types.interaction import Interaction
+from google.genai.interactions import Interaction
 
 from benchmarking.agent import BenchmarkingAgent
 from benchmarking.compaction import (

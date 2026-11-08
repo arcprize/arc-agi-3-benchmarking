@@ -1,5 +1,6 @@
 """Validate actual SDK serialization against an in-memory HTTP transport."""
 
+import base64
 import json
 from copy import deepcopy
 
@@ -63,6 +64,191 @@ def make_adapter():
     yield make
     for client in clients:
         client.close()
+
+
+def stream_response(*events):
+    return httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        text="".join(f"data: {json.dumps(event)}\n\n" for event in events),
+    )
+
+
+@pytest.fixture
+def make_stream_adapter():
+    clients = []
+
+    def make(responses):
+        responses = iter(responses)
+        calls = []
+
+        def handle(req):
+            calls.append(req)
+            response = next(responses)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        client = genai.Client(
+            api_key="test-key",
+            http_options=types.HttpOptions(
+                httpx_client=httpx.Client(transport=httpx.MockTransport(handle))
+            ),
+        )
+        clients.append(client)
+        return GoogleGenAIGenerateContentAdapter(client), calls
+
+    yield make
+    for client in clients:
+        client.close()
+
+
+def test_stream_uses_latest_cumulative_usage_and_keeps_thought_parts(
+    make_stream_adapter,
+):
+    signature = base64.b64encode(b"opaque-signature").decode()
+    thought = {"thought": True, "text": "Think", "thoughtSignature": signature}
+    adapter, calls = make_stream_adapter(
+        [
+            stream_response(
+                reply(
+                    "STOP",
+                    [thought],
+                    usage={
+                        "promptTokenCount": 10,
+                        "thoughtsTokenCount": 2,
+                        "totalTokenCount": 12,
+                    },
+                ),
+                reply(
+                    "STOP",
+                    [{"text": "ACTION1"}],
+                    usage={
+                        "promptTokenCount": 10,
+                        "candidatesTokenCount": 2,
+                        "thoughtsTokenCount": 3,
+                        "cachedContentTokenCount": 4,
+                        "totalTokenCount": 16,
+                    },
+                ),
+            )
+        ]
+    )
+    result = adapter.invoke(request(stream=True))
+    assert result.output_text == "ACTION1"
+    assert result.reasoning_text == "Think"
+    assert result.usage.input_tokens == 10
+    assert result.usage.output_tokens == 5
+    assert result.usage.reasoning_tokens == 3
+    assert result.usage.cached_tokens == 4
+    assert result.usage.total_tokens == 16
+    assert result.raw_response["slices"][0]["candidates"][0]["content"]["parts"][0][
+        "thoughtSignature"
+    ] == signature
+    assert calls[0].url.path.endswith(":streamGenerateContent")
+    assert calls[0].extensions["timeout"]["read"] == 3600
+
+
+def test_stream_continuation_adds_hop_usage_once(make_stream_adapter):
+    token = base64.b64encode(b"token1").decode()
+    adapter, calls = make_stream_adapter(
+        [
+            stream_response(
+                reply(
+                    "CONTINUATION",
+                    [{"text": "AC"}],
+                    token,
+                    {"promptTokenCount": 10, "candidatesTokenCount": 1, "totalTokenCount": 11},
+                )
+            ),
+            stream_response(
+                reply(
+                    "STOP",
+                    [{"text": "TION1"}],
+                    usage={
+                        "promptTokenCount": 11,
+                        "candidatesTokenCount": 2,
+                        "thoughtsTokenCount": 4,
+                        "totalTokenCount": 17,
+                    },
+                )
+            ),
+        ]
+    )
+    result = adapter.invoke(request(stream=True))
+    assert result.output_text == "ACTION1"
+    assert result.usage.input_tokens == 21
+    assert result.usage.output_tokens == 7
+    assert result.usage.reasoning_tokens == 4
+    assert result.usage.total_tokens == 28
+    assert len(result.raw_response["slices"]) == 2
+    bodies = [json.loads(call.content) for call in calls]
+    assert "continuationToken" not in bodies[0]
+    assert bodies[1]["continuationToken"] == token
+    assert bodies[1]["contents"] == bodies[0]["contents"]
+
+
+def test_stream_interruption_preserves_last_reported_usage(make_stream_adapter):
+    class InterruptedStream(httpx.SyncByteStream):
+        def __iter__(self):
+            event = reply(
+                "STOP",
+                [{"text": "partial"}],
+                usage={"promptTokenCount": 5, "thoughtsTokenCount": 7},
+            )
+            yield f"data: {json.dumps(event)}\n\n".encode()
+            raise httpx.ReadError("stream interrupted")
+
+    adapter, calls = make_stream_adapter(
+        [
+            httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=InterruptedStream(),
+            )
+        ]
+    )
+    with pytest.raises(InvalidProviderResponseError) as error:
+        adapter.invoke(request(stream=True))
+    assert error.value.usage.input_tokens == 5
+    assert error.value.usage.output_tokens == 7
+    assert error.value.usage.reasoning_tokens == 7
+    assert len(error.value.response["slices"]) == 1
+    assert len(calls) == 1
+
+
+def test_stream_requires_provider_usage(make_stream_adapter):
+    adapter, _ = make_stream_adapter(
+        [stream_response(reply("STOP", [{"text": "ACTION1"}]))]
+    )
+    with pytest.raises(InvalidProviderResponseError, match="without usage metadata"):
+        adapter.invoke(request(stream=True))
+
+
+def test_stream_preserves_native_contents_on_wire(make_stream_adapter):
+    adapter, calls = make_stream_adapter(
+        [
+            stream_response(
+                reply(
+                    "STOP",
+                    [{"text": "ACTION1"}],
+                    usage={"promptTokenCount": 5, "candidatesTokenCount": 2},
+                )
+            )
+        ]
+    )
+    req = request(stream=True)
+    req.native_input = [
+        {
+            "role": "model",
+            "parts": [{"text": "prior", "thoughtSignature": "c2ln"}],
+        },
+        {"role": "user", "parts": [{"text": "frame"}]},
+    ]
+    original = deepcopy(req)
+    assert adapter.invoke(req).output_text == "ACTION1"
+    assert json.loads(calls[0].content)["contents"] == req.native_input
+    assert req == original
 
 
 def test_continuation_wire_replay_and_usage(make_adapter):

@@ -189,10 +189,15 @@ def _normalize_google_genai_usage(usage: Any) -> dict[str, Any]:
     cached_tokens = (
         _value_from_response_object(usage, "cached_content_token_count", 0) or 0
     )
+    total_tokens = _value_from_response_object(usage, "total_token_count")
     return {
         "input_tokens": prompt_tokens,
         "output_tokens": candidates_tokens + thoughts_tokens,
-        "total_tokens": prompt_tokens + candidates_tokens + thoughts_tokens,
+        "total_tokens": (
+            total_tokens
+            if total_tokens is not None
+            else prompt_tokens + candidates_tokens + thoughts_tokens
+        ),
         "reasoning_tokens": thoughts_tokens,
         "cached_tokens": cached_tokens,
     }
