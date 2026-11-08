@@ -103,7 +103,9 @@ class Swarm:
 
         # create all the threads
         for a in self.agents:
-            self.threads.append(Thread(target=a.main, daemon=True))
+            thread = Thread(target=a.main, daemon=True)
+            thread.name = f"game-{a.game_id}"
+            self.threads.append(thread)
 
         # start all the threads
         for t in self.threads:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from copy import deepcopy
+from threading import current_thread
 from typing import Any
 
 from google.genai import types
@@ -230,6 +231,13 @@ def stream_with_continuation(
 
         if saw_chunk:
             slices.append(_stream_slice(hop_parts, reason, hop_usage_metadata))
+        logger.info(
+            "Gemini stream %s hop %d finished with %s; reported usage: %s",
+            current_thread().name,
+            len(slices),
+            reason,
+            bool(hop_usage_metadata),
+        )
         if not hop_usage_metadata:
             raise InvalidProviderResponseError(
                 "Gemini stream ended without usage metadata.",
