@@ -9,7 +9,12 @@ import pytest
 from google import genai
 from google.genai import types
 
-from benchmarking.exceptions import EmptyResponseError, InvalidProviderResponseError
+from benchmarking.exceptions import (
+    EmptyResponseError,
+    InvalidProviderResponseError,
+    TransientProviderError,
+)
+from benchmarking.google_continuation import MAX_STREAM_RECOVERY_RETRIES
 from benchmarking.runtime_adapters import (
     GoogleGenAIGenerateContentAdapter,
 )
@@ -142,9 +147,12 @@ def test_stream_uses_latest_cumulative_usage_and_keeps_thought_parts(
     assert result.usage.reasoning_tokens == 3
     assert result.usage.cached_tokens == 4
     assert result.usage.total_tokens == 16
-    assert result.raw_response["slices"][0]["candidates"][0]["content"]["parts"][0][
-        "thoughtSignature"
-    ] == signature
+    assert (
+        result.raw_response["slices"][0]["candidates"][0]["content"]["parts"][0][
+            "thoughtSignature"
+        ]
+        == signature
+    )
     assert calls[0].url.path.endswith(":streamGenerateContent")
     assert calls[0].extensions["timeout"]["read"] == 3600
 
@@ -158,7 +166,11 @@ def test_stream_continuation_adds_hop_usage_once(make_stream_adapter):
                     "CONTINUATION",
                     [{"text": "AC"}],
                     token,
-                    {"promptTokenCount": 10, "candidatesTokenCount": 1, "totalTokenCount": 11},
+                    {
+                        "promptTokenCount": 10,
+                        "candidatesTokenCount": 1,
+                        "totalTokenCount": 11,
+                    },
                 )
             ),
             stream_response(
@@ -188,12 +200,74 @@ def test_stream_continuation_adds_hop_usage_once(make_stream_adapter):
     assert bodies[1]["contents"] == bodies[0]["contents"]
 
 
-def test_stream_interruption_preserves_last_reported_usage(make_stream_adapter):
+def test_stream_recovers_from_latest_checkpoint_without_replaying_pending_output(
+    make_stream_adapter,
+):
+    token1 = base64.b64encode(b"checkpoint-1").decode()
+    token2 = base64.b64encode(b"checkpoint-2").decode()
+
+    class InterruptedStream(httpx.SyncByteStream):
+        def __iter__(self):
+            for event in (
+                reply(
+                    None,
+                    [{"text": "A"}],
+                    usage={"promptTokenCount": 10, "candidatesTokenCount": 1},
+                ),
+                reply(
+                    None,
+                    [{"text": "B"}],
+                    token1,
+                    {"promptTokenCount": 10, "candidatesTokenCount": 2},
+                ),
+                reply(
+                    None,
+                    [{"text": "C"}],
+                    token2,
+                    {"promptTokenCount": 10, "candidatesTokenCount": 3},
+                ),
+                reply(
+                    None,
+                    [{"text": "discard"}],
+                    usage={"promptTokenCount": 10, "candidatesTokenCount": 4},
+                ),
+            ):
+                yield f"data: {json.dumps(event)}\n\n".encode()
+            raise httpx.ReadError("stream interrupted")
+
+    adapter, calls = make_stream_adapter(
+        [
+            httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=InterruptedStream(),
+            ),
+            stream_response(
+                reply(
+                    "STOP",
+                    [{"text": "D"}],
+                    usage={"promptTokenCount": 11, "candidatesTokenCount": 1},
+                )
+            ),
+        ]
+    )
+    result = adapter.invoke(request(stream=True))
+    assert result.output_text == "ABCD"
+    assert result.usage.input_tokens == 21
+    assert result.usage.output_tokens == 4
+    assert result.usage.total_tokens == 25
+    assert len(result.raw_response["slices"]) == 2
+    bodies = [json.loads(call.content) for call in calls]
+    assert bodies[1]["continuationToken"] == token2
+    assert bodies[1]["contents"] == bodies[0]["contents"]
+
+
+def test_stream_retries_disconnect_before_first_checkpoint(make_stream_adapter):
     class InterruptedStream(httpx.SyncByteStream):
         def __iter__(self):
             event = reply(
-                "STOP",
-                [{"text": "partial"}],
+                None,
+                [{"text": "discard"}],
                 usage={"promptTokenCount": 5, "thoughtsTokenCount": 7},
             )
             yield f"data: {json.dumps(event)}\n\n".encode()
@@ -205,16 +279,72 @@ def test_stream_interruption_preserves_last_reported_usage(make_stream_adapter):
                 200,
                 headers={"content-type": "text/event-stream"},
                 stream=InterruptedStream(),
-            )
+            ),
+            stream_response(
+                reply(
+                    "STOP",
+                    [{"text": "ACTION1"}],
+                    usage={"promptTokenCount": 5, "candidatesTokenCount": 2},
+                )
+            ),
         ]
     )
-    with pytest.raises(InvalidProviderResponseError) as error:
+    result = adapter.invoke(request(stream=True))
+    assert result.output_text == "ACTION1"
+    assert result.usage.input_tokens == 5
+    assert result.usage.output_tokens == 2
+    assert len(calls) == 2
+    assert "continuationToken" not in json.loads(calls[1].content)
+
+
+def test_stream_recovery_is_bounded(make_stream_adapter):
+    adapter, calls = make_stream_adapter(
+        [httpx.ReadError("stream interrupted")] * (MAX_STREAM_RECOVERY_RETRIES + 1)
+    )
+    with pytest.raises(TransientProviderError):
         adapter.invoke(request(stream=True))
+    assert len(calls) == MAX_STREAM_RECOVERY_RETRIES + 1
+
+
+def test_stream_recovery_exhaustion_keeps_only_checkpoint_usage(make_stream_adapter):
+    token = base64.b64encode(b"checkpoint").decode()
+
+    class CheckpointThenDisconnect(httpx.SyncByteStream):
+        def __iter__(self):
+            for event in (
+                reply(
+                    None,
+                    [{"text": "committed"}],
+                    token,
+                    {"promptTokenCount": 5, "candidatesTokenCount": 2},
+                ),
+                reply(
+                    None,
+                    [{"text": "discard"}],
+                    usage={"promptTokenCount": 5, "candidatesTokenCount": 3},
+                ),
+            ):
+                yield f"data: {json.dumps(event)}\n\n".encode()
+            raise httpx.ReadError("stream interrupted")
+
+    responses = [
+        httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=CheckpointThenDisconnect(),
+        )
+    ] + [httpx.ReadError("stream interrupted")] * MAX_STREAM_RECOVERY_RETRIES
+    adapter, calls = make_stream_adapter(responses)
+    with pytest.raises(
+        InvalidProviderResponseError, match="retries exhausted"
+    ) as error:
+        adapter.invoke(request(stream=True))
+    assert len(calls) == MAX_STREAM_RECOVERY_RETRIES + 1
     assert error.value.usage.input_tokens == 5
-    assert error.value.usage.output_tokens == 7
-    assert error.value.usage.reasoning_tokens == 7
-    assert len(error.value.response["slices"]) == 1
-    assert len(calls) == 1
+    assert error.value.usage.output_tokens == 2
+    assert error.value.response["slices"][0]["candidates"][0]["content"]["parts"] == [
+        {"text": "committed"}
+    ]
 
 
 def test_stream_requires_provider_usage(make_stream_adapter):
@@ -297,10 +427,8 @@ def test_continuation_wire_replay_and_usage(make_adapter):
     assert "continuationToken" not in bodies[0]
     assert bodies[1]["continuationToken"] == "token1"
     assert bodies[2]["continuationToken"] == "token2"
-    assert bodies[1]["contents"] == bodies[0]["contents"] + [
-        {"role": "model", "parts": [thought]}
-    ]
-    assert bodies[2]["contents"][-1]["parts"] == [thought, {"text": "AC"}]
+    assert bodies[1]["contents"] == bodies[0]["contents"]
+    assert bodies[2]["contents"] == bodies[0]["contents"]
     for body, call in zip(bodies, calls):
         assert body["generationConfig"]["maxOutputTokens"] == 1000000
         assert "continuation" not in body["generationConfig"]
@@ -393,18 +521,29 @@ def test_existing_path(make_adapter):
     assert adapter.invoke(request()).output_text == "ACTION1"
     assert len(calls) == 1
 
-@pytest.mark.parametrize('status', [500, 503])
+
+@pytest.mark.parametrize("status", [500, 503])
 def test_real_sdk_server_errors_are_transient(status):
     from benchmarking.exceptions import TransientProviderError
 
     def handle(req):
-        return httpx.Response(status, json={
-            'error': {'code': status, 'message': 'Temporary failure', 'status': 'INTERNAL'}
-        })
+        return httpx.Response(
+            status,
+            json={
+                "error": {
+                    "code": status,
+                    "message": "Temporary failure",
+                    "status": "INTERNAL",
+                }
+            },
+        )
 
-    with genai.Client(api_key='test-key', http_options=types.HttpOptions(
-        httpx_client=httpx.Client(transport=httpx.MockTransport(handle))
-    )) as client:
+    with genai.Client(
+        api_key="test-key",
+        http_options=types.HttpOptions(
+            httpx_client=httpx.Client(transport=httpx.MockTransport(handle))
+        ),
+    ) as client:
         with pytest.raises(TransientProviderError) as caught:
             GoogleGenAIGenerateContentAdapter(client).invoke(request())
         assert caught.value.__cause__.code == status
@@ -412,7 +551,8 @@ def test_real_sdk_server_errors_are_transient(status):
 
 def test_transport_timeout_is_transient(make_adapter):
     from benchmarking.exceptions import TransientProviderError
-    adapter, _ = make_adapter([httpx.ReadTimeout('timeout')])
+
+    adapter, _ = make_adapter([httpx.ReadTimeout("timeout")])
     with pytest.raises(TransientProviderError):
         adapter.invoke(request())
 
@@ -421,12 +561,22 @@ def test_permanent_google_error_is_not_transient():
     from google.genai.errors import ClientError
 
     def handle(req):
-        return httpx.Response(403, json={
-            'error': {'code': 403, 'message': 'Denied', 'status': 'PERMISSION_DENIED'}
-        })
+        return httpx.Response(
+            403,
+            json={
+                "error": {
+                    "code": 403,
+                    "message": "Denied",
+                    "status": "PERMISSION_DENIED",
+                }
+            },
+        )
 
-    with genai.Client(api_key='test-key', http_options=types.HttpOptions(
-        httpx_client=httpx.Client(transport=httpx.MockTransport(handle))
-    )) as client:
+    with genai.Client(
+        api_key="test-key",
+        http_options=types.HttpOptions(
+            httpx_client=httpx.Client(transport=httpx.MockTransport(handle))
+        ),
+    ) as client:
         with pytest.raises(ClientError):
             GoogleGenAIGenerateContentAdapter(client).invoke(request())

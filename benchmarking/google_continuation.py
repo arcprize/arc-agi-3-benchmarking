@@ -8,6 +8,7 @@ from copy import deepcopy
 from threading import current_thread
 from typing import Any
 
+import httpx
 from google.genai import types
 
 from .exceptions import InvalidProviderResponseError
@@ -18,6 +19,7 @@ from .runtime_models import (
 )
 
 logger = logging.getLogger(__name__)
+MAX_STREAM_RECOVERY_RETRIES = 3
 
 
 def generate_with_continuation(
@@ -113,8 +115,7 @@ def generate_with_continuation(
             config.http_options.extra_body = {
                 **extra,
                 "continuationToken": token,
-                "contents": base_contents
-                + [{"role": "model", "parts": deepcopy(parts)}],
+                "contents": base_contents,
             }
             continue
         if reason not in ("STOP", "MAX_TOKENS"):
@@ -151,7 +152,9 @@ def stream_with_continuation(
         options.timeout = 3_600_000
     options.retry_options = types.HttpRetryOptions(attempts=1)
     extra = deepcopy(options.extra_body or {})
-    if any(key in extra for key in ("contents", "continuationToken", "generationConfig")):
+    if any(
+        key in extra for key in ("contents", "continuationToken", "generationConfig")
+    ):
         raise ValueError(
             "Gemini continuation manages contents, token, and generationConfig."
         )
@@ -172,11 +175,15 @@ def stream_with_continuation(
     slices: list[dict[str, Any]] = []
     seen_tokens: set[bytes] = set()
     usage = NormalizedUsage()
+    recovery_retries = 0
 
     while True:
         hop_parts: list[dict[str, Any]] = []
+        pending_parts: list[dict[str, Any]] = []
         hop_usage = NormalizedUsage()
         hop_usage_metadata: dict[str, Any] = {}
+        checkpoint_usage = NormalizedUsage()
+        checkpoint_usage_metadata: dict[str, Any] = {}
         reason: str | None = None
         token: bytes | None = None
         saw_chunk = False
@@ -208,44 +215,107 @@ def stream_with_continuation(
                     continue
                 candidate = chunk.candidates[0]
                 if candidate.content and candidate.content.parts:
-                    hop_parts.extend(
+                    pending_parts.extend(
                         part.model_dump(mode="json", by_alias=True, exclude_none=True)
                         for part in candidate.content.parts
                     )
+                if candidate.continuation_token:
+                    next_token = candidate.continuation_token
+                    if next_token != token:
+                        if (
+                            next_token in seen_tokens
+                            or next_token == config.continuation_token
+                        ):
+                            raise InvalidProviderResponseError(
+                                "Gemini returned a repeated continuation token.",
+                                response={"slices": slices},
+                                usage=usage + hop_usage,
+                            )
+                        token = next_token
+                        seen_tokens.add(token)
+                        hop_parts.extend(pending_parts)
+                        pending_parts.clear()
+                        checkpoint_usage = hop_usage.model_copy(deep=True)
+                        checkpoint_usage_metadata = deepcopy(hop_usage_metadata)
                 if candidate.finish_reason is not None:
                     reason = candidate.finish_reason.value
-                    token = candidate.continuation_token
         except Exception as exc:
+            if isinstance(exc, InvalidProviderResponseError):
+                raise
+            if not isinstance(exc, httpx.TransportError):
+                if not slices and not saw_chunk:
+                    raise
+                raise InvalidProviderResponseError(
+                    "Gemini stream failed after producing response chunks.",
+                    response={
+                        "slices": slices
+                        + [
+                            _stream_slice(
+                                hop_parts + pending_parts, reason, hop_usage_metadata
+                            )
+                        ]
+                    },
+                    usage=usage + hop_usage,
+                ) from exc
+            if token and not checkpoint_usage_metadata:
+                raise InvalidProviderResponseError(
+                    "Gemini stream checkpoint has no usage metadata.",
+                    response={"slices": slices},
+                    usage=usage + hop_usage,
+                ) from exc
+            if token:
+                usage += checkpoint_usage
+                parts.extend(hop_parts)
+                slices.append(
+                    _stream_slice(hop_parts, "CONTINUATION", checkpoint_usage_metadata)
+                )
+                config.continuation_token = token
+            recovery_retries += 1
+            if recovery_retries <= MAX_STREAM_RECOVERY_RETRIES:
+                logger.warning(
+                    "Gemini stream disconnected; retrying from %s checkpoint (%d/%d)",
+                    "latest" if token else "initial",
+                    recovery_retries,
+                    MAX_STREAM_RECOVERY_RETRIES,
+                )
+                continue
             if not slices and not saw_chunk:
                 raise
-            usage += hop_usage
-            if saw_chunk:
-                slices.append(
-                    _stream_slice(hop_parts, reason, hop_usage_metadata)
-                )
             raise InvalidProviderResponseError(
-                "Gemini stream failed after producing response chunks.",
+                "Gemini stream recovery retries exhausted.",
                 response={"slices": slices},
                 usage=usage,
             ) from exc
 
+        if reason == "CONTINUATION" and token:
+            # A terminal signal without a new token may follow an earlier
+            # checkpoint. Only output covered by that token can be resumed.
+            completed_parts = hop_parts
+            completed_usage = checkpoint_usage
+            completed_usage_metadata = checkpoint_usage_metadata
+        else:
+            completed_parts = hop_parts + pending_parts
+            completed_usage = hop_usage
+            completed_usage_metadata = hop_usage_metadata
         if saw_chunk:
-            slices.append(_stream_slice(hop_parts, reason, hop_usage_metadata))
+            slices.append(
+                _stream_slice(completed_parts, reason, completed_usage_metadata)
+            )
         logger.info(
             "Gemini stream %s hop %d finished with %s; reported usage: %s",
             current_thread().name,
             len(slices),
             reason,
-            bool(hop_usage_metadata),
+            bool(completed_usage_metadata),
         )
-        if not hop_usage_metadata:
+        if not completed_usage_metadata:
             raise InvalidProviderResponseError(
                 "Gemini stream ended without usage metadata.",
                 response={"slices": slices},
                 usage=usage,
             )
-        usage += hop_usage
-        parts.extend(hop_parts)
+        usage += completed_usage
+        parts.extend(completed_parts)
 
         def invalid(message: str) -> InvalidProviderResponseError:
             return InvalidProviderResponseError(
@@ -259,9 +329,6 @@ def stream_with_continuation(
                 )
             if not token:
                 raise invalid("Gemini CONTINUATION response has no continuation token.")
-            if token in seen_tokens:
-                raise invalid("Gemini returned a repeated continuation token.")
-            seen_tokens.add(token)
             config.continuation_token = token
             continue
         if reason not in ("STOP", "MAX_TOKENS"):
