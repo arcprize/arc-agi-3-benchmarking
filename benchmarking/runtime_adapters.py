@@ -559,6 +559,10 @@ def build_model_runtime_adapter(
             from .runtime_registry import resolve_adapter_id
 
             adapter_id = resolve_adapter_id(runtime_config, config_id)
+            if adapter_id == "inception.chat_completions.v1":
+                from .inception_runtime import InceptionChatCompletionsAdapter
+
+                return InceptionChatCompletionsAdapter(client)
             if adapter_id == OPEN_SOURCE_ADAPTER_ID:
                 return OpenSourceChatCompletionsAdapter(client)
             return DeepSeekChatCompletionsAdapter(client)

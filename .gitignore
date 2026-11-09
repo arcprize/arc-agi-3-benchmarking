@@ -116,3 +116,4 @@ recordings
 docs/*
 !docs/deepseek-provider-adapter.md
 !docs/open-source-provider-adapter.md
+!docs/inception-provider-adapter.md

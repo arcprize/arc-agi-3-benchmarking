@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 from typing import Any
 
+import boto3
 from anthropic import Anthropic as AnthropicClient
+from anthropic import WorkloadIdentityCredentials
 from google import genai as google_genai
 from openai import OpenAI as OpenAIClient
 
@@ -11,6 +13,41 @@ DEFAULT_ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
 DEFAULT_OPENAI_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_OPENAI_API_KEY_ENV = "OPENROUTER_API_KEY"
 DEFAULT_GOOGLE_API_KEY_ENV = "GOOGLE_API_KEY"
+ANTHROPIC_WIF_REQUIRED_ENV = (
+    "ANTHROPIC_FEDERATION_RULE_ID",
+    "ANTHROPIC_ORGANIZATION_ID",
+    "ANTHROPIC_SERVICE_ACCOUNT_ID",
+    "ANTHROPIC_WORKSPACE_ID",
+)
+
+
+def _read_anthropic_wif_environment() -> dict[str, str] | None:
+    """Select WIF explicitly, rejecting partial settings instead of using a key."""
+    if not any(name in os.environ for name in ANTHROPIC_WIF_REQUIRED_ENV):
+        return None
+
+    settings = {
+        name: os.environ.get(name, "").strip() for name in ANTHROPIC_WIF_REQUIRED_ENV
+    }
+    missing = [name for name, value in settings.items() if not value]
+    if missing:
+        raise ValueError(
+            "Incomplete Anthropic WIF environment configuration. "
+            f"Set non-empty values for: {', '.join(missing)}. "
+            "To use an API key instead, unset all four Anthropic WIF variables."
+        )
+    return settings
+
+
+def get_sts_web_identity_token() -> str:
+    """Fetch a fresh AWS identity token whenever the Anthropic SDK refreshes."""
+    sts = boto3.client("sts", region_name="us-east-1")
+    response = sts.get_web_identity_token(
+        Audience=["https://api.anthropic.com"],
+        SigningAlgorithm="RS256",
+        DurationSeconds=900,
+    )
+    return response["WebIdentityToken"]
 
 
 def _read_required_api_key(
@@ -37,6 +74,27 @@ def _read_required_api_key(
     return api_key
 
 
+def validate_model_credentials(
+    *,
+    runtime_config: dict[str, Any],
+    client_config: dict[str, Any],
+    config_id: str,
+) -> None:
+    """Check credential configuration without contacting AWS or the provider."""
+    if runtime_config.get("sdk") == "anthropic-python":
+        if _read_anthropic_wif_environment() is not None:
+            return
+        default_api_key_env = DEFAULT_ANTHROPIC_API_KEY_ENV
+    else:
+        # Preserve the CLI's explicit API-key configuration for other providers.
+        default_api_key_env = ""
+    _read_required_api_key(
+        client_config=client_config,
+        config_id=config_id,
+        default_api_key_env=default_api_key_env,
+    )
+
+
 def build_model_runtime_client(
     *,
     runtime_config: dict[str, Any],
@@ -59,6 +117,17 @@ def build_model_runtime_client(
         )
 
     if sdk == "anthropic-python":
+        wif_environment = _read_anthropic_wif_environment()
+        if wif_environment is not None:
+            return AnthropicClient(
+                credentials=WorkloadIdentityCredentials(
+                    identity_token_provider=get_sts_web_identity_token,
+                    federation_rule_id=wif_environment["ANTHROPIC_FEDERATION_RULE_ID"],
+                    organization_id=wif_environment["ANTHROPIC_ORGANIZATION_ID"],
+                    service_account_id=wif_environment["ANTHROPIC_SERVICE_ACCOUNT_ID"],
+                    workspace_id=wif_environment["ANTHROPIC_WORKSPACE_ID"],
+                ),
+            )
         api_key = _read_required_api_key(
             client_config=client_config,
             config_id=config_id,

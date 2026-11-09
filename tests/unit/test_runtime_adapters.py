@@ -1,9 +1,11 @@
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import anthropic
 import httpx
 import pytest
 from google import genai as google_genai
@@ -1008,6 +1010,109 @@ class TestOpenAIResponsesServerStateAdapter:
 
 @pytest.mark.unit
 class TestAnthropicMessagesAdapter:
+    @pytest.mark.parametrize("streaming", [False, True])
+    @pytest.mark.parametrize("thinking_tokens", [None, 0, 11])
+    def test_sdk_thinking_usage_reaches_action_metadata(
+        self, streaming, thinking_tokens
+    ):
+        from benchmarking.recording import StepUsage
+        from benchmarking.runtime_models import action_metadata_from_model_response
+
+        usage = {
+            "input_tokens": 27,
+            "output_tokens": 48,
+            "cache_creation_input_tokens": 3,
+            "cache_read_input_tokens": 7,
+        }
+        if thinking_tokens is not None:
+            usage["output_tokens_details"] = {"thinking_tokens": thinking_tokens}
+        message = {
+            "id": "msg_thinking_usage",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-opus-4-7",
+            "content": [{"type": "text", "text": "ACTION1"}],
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": usage,
+        }
+
+        def handle(request):
+            assert "anthropic-beta" not in request.headers
+            assert json.loads(request.content).get("stream", False) is streaming
+            if not streaming:
+                return httpx.Response(200, json=message)
+            events = [
+                {
+                    "type": "message_start",
+                    "message": {
+                        **message,
+                        "content": [],
+                        "stop_reason": None,
+                        "usage": {"input_tokens": 27, "output_tokens": 0},
+                    },
+                },
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "ACTION1"},
+                },
+                {"type": "content_block_stop", "index": 0},
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                    "usage": usage,
+                },
+                {"type": "message_stop"},
+            ]
+            body = "".join(
+                f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+                for event in events
+            )
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, text=body
+            )
+
+        with anthropic.Anthropic(
+            api_key="test-key",
+            max_retries=0,
+            http_client=httpx.Client(transport=httpx.MockTransport(handle)),
+        ) as client:
+            response = AnthropicMessagesAdapter(client).invoke(
+                ModelRequest(
+                    messages=[Message(role="user", content="frame")],
+                    request_config={
+                        "model": "claude-opus-4-7",
+                        "max_tokens": 128,
+                        "stream": streaming,
+                    },
+                )
+            )
+
+        assert response.output_text == "ACTION1"
+        assert response.reasoning_text is None
+        assert response.usage.input_tokens == 27
+        assert response.usage.output_tokens == 48
+        assert response.usage.total_tokens == 75
+        assert response.usage.reasoning_tokens == (thinking_tokens or 0)
+        assert response.usage.cached_tokens == 7
+        assert response.usage.cache_write_tokens == 3
+        saved = StepUsage.from_normalized_usage(response.usage)
+        metadata = action_metadata_from_model_response(
+            response, pricing={"input": 5.0, "output": 25.0}
+        )
+        assert saved.reasoning_tokens == (thinking_tokens or 0)
+        assert metadata.usage.output_tokens_details.reasoning_tokens == (
+            thinking_tokens or 0
+        )
+        assert metadata.usage.total_tokens == 75
+        assert metadata.cost.total_cost == pytest.approx((27 * 5 + 48 * 25) / 1e6)
+
     def test_invokes_messages_create_and_returns_normalized_response(self):
         client = _FakeAnthropicClient(
             _anthropic_response(

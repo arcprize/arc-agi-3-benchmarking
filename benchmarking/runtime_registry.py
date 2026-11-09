@@ -11,6 +11,10 @@ from .deepseek_runtime import (
 )
 from .google_content_runtime import GoogleContentConversationRuntimeAdapter
 from .google_runtime import GoogleContinuousConversationRuntimeAdapter
+from .inception_runtime import (
+    INCEPTION_ADAPTER_ID,
+    InceptionContinuousConversationRuntimeAdapter,
+)
 from .open_source_runtime import (
     OPEN_SOURCE_ADAPTER_ID,
     OpenSourceContinuousConversationRuntimeAdapter,
@@ -37,6 +41,14 @@ _LEGACY_RUNTIME_ADAPTER_IDS = {
 }
 
 ADAPTER_DESCRIPTORS = {
+    INCEPTION_ADAPTER_ID: AdapterDescriptor(
+        adapter_id=INCEPTION_ADAPTER_ID,
+        provider="inception",
+        api_surface="chat_completions",
+        implementation_path="benchmarking/inception_runtime.py",
+        version="1",
+        approval_status="unreviewed",
+    ),
     DEEPSEEK_ADAPTER_ID: AdapterDescriptor(
         adapter_id=DEEPSEEK_ADAPTER_ID,
         provider="deepseek",
@@ -118,11 +130,15 @@ def resolve_adapter_id(runtime_config: dict[str, Any], config_id: str) -> str:
         runtime_pair == ("openai-python", "chat_completions")
         and runtime_config.get("state") == CONTINUOUS_CONVERSATION_RUNTIME_STATE
     ):
-        if explicit not in {DEEPSEEK_ADAPTER_ID, OPEN_SOURCE_ADAPTER_ID}:
+        if explicit not in {
+            DEEPSEEK_ADAPTER_ID,
+            OPEN_SOURCE_ADAPTER_ID,
+            INCEPTION_ADAPTER_ID,
+        }:
             raise ValueError(
                 f"Model config '{config_id}' continuous Chat Completions requires "
                 "runtime.adapter_id='deepseek.chat_completions.v1' or "
-                "'open_source.chat_completions.v1'."
+                "'open_source.chat_completions.v1' or 'inception.chat_completions.v1'."
             )
         return explicit
     if explicit is None:
@@ -160,6 +176,10 @@ def build_stateful_runtime_adapter(
     descriptor = ADAPTER_DESCRIPTORS[adapter_id]
     strategy = runtime_config.get("state")
     if strategy == CONTINUOUS_CONVERSATION_RUNTIME_STATE:
+        if adapter_id == INCEPTION_ADAPTER_ID:
+            return InceptionContinuousConversationRuntimeAdapter(
+                model_adapter=model_adapter, descriptor=descriptor
+            )
         if adapter_id == DEEPSEEK_ADAPTER_ID:
             return DeepSeekContinuousConversationRuntimeAdapter(
                 model_adapter=model_adapter,
