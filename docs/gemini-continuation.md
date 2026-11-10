@@ -60,11 +60,14 @@ committed after an action passes validation.
 Malformed provider output is never salvaged as a game action. A terminal
 malformed response still fails after the bounded invalid-response budget.
 Streaming calls retain intermediate checkpoint tokens independently of finish
-reasons. Output and cumulative usage are committed only through the latest
-checkpoint. On a transport disconnect, the adapter discards later pending output
-and retries from that checkpoint; before the first checkpoint, it retries the
-original request. Recovery allows at most three disconnect retries per model
-turn. A checkpoint without usage metadata fails closed so token accounting does
-not silently omit a billed slice. These retries do not extend or recover an
-expired game session. They also do not guarantee recovery from a persistent
-provider failure, and another model request can incur additional usage.
+reasons. Only output through the latest checkpoint is committed. Usage retains
+the latest provider-reported total for every request, including discarded output
+and requests interrupted before their first checkpoint. On a transport disconnect
+or a stream ending without a terminal finish reason, the adapter discards later
+pending output and retries from the available checkpoint. A transport disconnect
+before the first checkpoint retries the original request. Recovery allows at most
+three retries per model turn, shared across disconnects and early stream endings.
+A checkpoint without usage metadata or an explicit positive output budget fails
+closed. These retries do not extend or recover an expired
+game session. They also do not guarantee recovery from a persistent provider
+failure, and another model request can incur additional usage.

@@ -200,8 +200,10 @@ def test_stream_continuation_adds_hop_usage_once(make_stream_adapter):
     assert bodies[1]["contents"] == bodies[0]["contents"]
 
 
+@pytest.mark.parametrize("cutoff", ["disconnect", "eof"])
 def test_stream_recovers_from_latest_checkpoint_without_replaying_pending_output(
     make_stream_adapter,
+    cutoff,
 ):
     token1 = base64.b64encode(b"checkpoint-1").decode()
     token2 = base64.b64encode(b"checkpoint-2").decode()
@@ -233,7 +235,8 @@ def test_stream_recovers_from_latest_checkpoint_without_replaying_pending_output
                 ),
             ):
                 yield f"data: {json.dumps(event)}\n\n".encode()
-            raise httpx.ReadError("stream interrupted")
+            if cutoff == "disconnect":
+                raise httpx.ReadError("stream interrupted")
 
     adapter, calls = make_stream_adapter(
         [
@@ -254,9 +257,13 @@ def test_stream_recovers_from_latest_checkpoint_without_replaying_pending_output
     result = adapter.invoke(request(stream=True))
     assert result.output_text == "ABCD"
     assert result.usage.input_tokens == 21
-    assert result.usage.output_tokens == 4
-    assert result.usage.total_tokens == 25
+    # Discard provisional text, but keep all reported usage from its request.
+    assert result.usage.output_tokens == 5
+    assert result.usage.total_tokens == 26
     assert len(result.raw_response["slices"]) == 2
+    assert (
+        result.raw_response["slices"][0]["usageMetadata"]["candidatesTokenCount"] == 4
+    )
     bodies = [json.loads(call.content) for call in calls]
     assert bodies[1]["continuationToken"] == token2
     assert bodies[1]["contents"] == bodies[0]["contents"]
@@ -291,8 +298,10 @@ def test_stream_retries_disconnect_before_first_checkpoint(make_stream_adapter):
     )
     result = adapter.invoke(request(stream=True))
     assert result.output_text == "ACTION1"
-    assert result.usage.input_tokens == 5
-    assert result.usage.output_tokens == 2
+    assert result.usage.input_tokens == 10
+    assert result.usage.output_tokens == 9
+    assert result.usage.reasoning_tokens == 7
+    assert result.usage.total_tokens == 19
     assert len(calls) == 2
     assert "continuationToken" not in json.loads(calls[1].content)
 
@@ -306,7 +315,7 @@ def test_stream_recovery_is_bounded(make_stream_adapter):
     assert len(calls) == MAX_STREAM_RECOVERY_RETRIES + 1
 
 
-def test_stream_recovery_exhaustion_keeps_only_checkpoint_usage(make_stream_adapter):
+def test_stream_recovery_exhaustion_keeps_latest_reported_usage(make_stream_adapter):
     token = base64.b64encode(b"checkpoint").decode()
 
     class CheckpointThenDisconnect(httpx.SyncByteStream):
@@ -341,10 +350,156 @@ def test_stream_recovery_exhaustion_keeps_only_checkpoint_usage(make_stream_adap
         adapter.invoke(request(stream=True))
     assert len(calls) == MAX_STREAM_RECOVERY_RETRIES + 1
     assert error.value.usage.input_tokens == 5
-    assert error.value.usage.output_tokens == 2
+    assert error.value.usage.output_tokens == 3
     assert error.value.response["slices"][0]["candidates"][0]["content"]["parts"] == [
         {"text": "committed"}
     ]
+
+
+def test_stream_continuation_keeps_usage_after_its_checkpoint(make_stream_adapter):
+    token = base64.b64encode(b"checkpoint").decode()
+    adapter, calls = make_stream_adapter(
+        [
+            stream_response(
+                reply(
+                    None,
+                    [{"text": "A"}],
+                    token,
+                    {"promptTokenCount": 5, "candidatesTokenCount": 1},
+                ),
+                reply(
+                    None,
+                    [{"text": "discard"}],
+                    usage={
+                        "promptTokenCount": 5,
+                        "candidatesTokenCount": 3,
+                    },
+                ),
+                reply(
+                    "CONTINUATION",
+                    usage={
+                        "promptTokenCount": 5,
+                        "candidatesTokenCount": 3,
+                    },
+                ),
+            ),
+            stream_response(
+                reply(
+                    "STOP",
+                    [{"text": "B"}],
+                    usage={
+                        "promptTokenCount": 6,
+                        "candidatesTokenCount": 1,
+                    },
+                )
+            ),
+        ]
+    )
+    result = adapter.invoke(request(stream=True))
+    assert result.output_text == "AB"
+    assert result.usage.input_tokens == 11
+    assert result.usage.output_tokens == 4
+    assert result.usage.total_tokens == 15
+    assert json.loads(calls[1].content)["continuationToken"] == token
+
+
+def test_stream_eof_recovery_is_bounded_without_new_checkpoints(make_stream_adapter):
+    token = base64.b64encode(b"checkpoint").decode()
+    initial = stream_response(
+        reply(
+            None,
+            [{"text": "A"}],
+            token,
+            {
+                "promptTokenCount": 5,
+                "candidatesTokenCount": 1,
+            },
+        )
+    )
+    responses = [initial] + [
+        stream_response(
+            reply(
+                None,
+                [{"text": "discard"}],
+                usage={
+                    "promptTokenCount": 6,
+                    "candidatesTokenCount": 2,
+                },
+            )
+        )
+        for _ in range(MAX_STREAM_RECOVERY_RETRIES)
+    ]
+    adapter, calls = make_stream_adapter(responses)
+    with pytest.raises(
+        InvalidProviderResponseError, match="retries exhausted"
+    ) as error:
+        adapter.invoke(request(stream=True))
+    assert len(calls) == MAX_STREAM_RECOVERY_RETRIES + 1
+    for call in calls[1:]:
+        assert json.loads(call.content)["continuationToken"] == token
+    assert error.value.usage.input_tokens == 5 + 6 * MAX_STREAM_RECOVERY_RETRIES
+    assert error.value.usage.output_tokens == 1 + 2 * MAX_STREAM_RECOVERY_RETRIES
+
+
+@pytest.mark.parametrize("cutoff", ["disconnect", "eof"])
+def test_stream_checkpoint_without_usage_fails_closed(make_stream_adapter, cutoff):
+    token = base64.b64encode(b"checkpoint").decode()
+
+    class MissingUsageStream(httpx.SyncByteStream):
+        def __iter__(self):
+            event = reply(None, [{"text": "A"}], token)
+            yield f"data: {json.dumps(event)}\n\n".encode()
+            if cutoff == "disconnect":
+                raise httpx.ReadError("stream interrupted")
+
+    adapter, calls = make_stream_adapter(
+        [
+            httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=MissingUsageStream(),
+            ),
+        ]
+    )
+    with pytest.raises(InvalidProviderResponseError, match="checkpoint has no usage"):
+        adapter.invoke(request(stream=True))
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("cutoff", ["disconnect", "eof"])
+def test_stream_checkpoint_recovery_requires_output_budget(make_stream_adapter, cutoff):
+    token = base64.b64encode(b"checkpoint").decode()
+
+    class CheckpointStream(httpx.SyncByteStream):
+        def __iter__(self):
+            event = reply(
+                None,
+                [{"text": "A"}],
+                token,
+                {
+                    "promptTokenCount": 5,
+                    "candidatesTokenCount": 1,
+                },
+            )
+            yield f"data: {json.dumps(event)}\n\n".encode()
+            if cutoff == "disconnect":
+                raise httpx.ReadError("stream interrupted")
+
+    adapter, calls = make_stream_adapter(
+        [
+            httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=CheckpointStream(),
+            ),
+        ]
+    )
+    with pytest.raises(
+        InvalidProviderResponseError, match="positive max_output_tokens"
+    ) as error:
+        adapter.invoke(request(stream=True, max_output_tokens=None))
+    assert len(calls) == 1
+    assert error.value.usage.total_tokens == 6
 
 
 def test_stream_requires_provider_usage(make_stream_adapter):

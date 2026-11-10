@@ -97,7 +97,8 @@ to token totals or costs.
 
 Gemini `generate_content` configs can enable streaming with `request.stream: true`.
 The runner handles continuation tokens and counts the latest cumulative usage
-within each stream request, then adds usage across continuation requests.
+within each stream request, then adds reported usage across requests, including
+interrupted ones.
 Reasoning tokens are included in output tokens and reported separately.
 Streams that finish without usage metadata are rejected. Existing configs
 without the flag keep using non-streaming `generateContent`.

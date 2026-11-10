@@ -182,11 +182,11 @@ def stream_with_continuation(
         pending_parts: list[dict[str, Any]] = []
         hop_usage = NormalizedUsage()
         hop_usage_metadata: dict[str, Any] = {}
-        checkpoint_usage = NormalizedUsage()
         checkpoint_usage_metadata: dict[str, Any] = {}
         reason: str | None = None
         token: bytes | None = None
         saw_chunk = False
+        stream_error: httpx.TransportError | None = None
         try:
             for chunk in client.models.generate_content_stream(
                 **{**call_kwargs, "config": config.model_copy(deep=True)}
@@ -235,7 +235,6 @@ def stream_with_continuation(
                         seen_tokens.add(token)
                         hop_parts.extend(pending_parts)
                         pending_parts.clear()
-                        checkpoint_usage = hop_usage.model_copy(deep=True)
                         checkpoint_usage_metadata = deepcopy(hop_usage_metadata)
                 if candidate.finish_reason is not None:
                     reason = candidate.finish_reason.value
@@ -257,46 +256,68 @@ def stream_with_continuation(
                     },
                     usage=usage + hop_usage,
                 ) from exc
-            if token and not checkpoint_usage_metadata:
+            stream_error = exc
+
+        if (
+            token
+            and not checkpoint_usage_metadata
+            and (stream_error is not None or reason in (None, "CONTINUATION"))
+        ):
+            raise InvalidProviderResponseError(
+                "Gemini stream checkpoint has no usage metadata.",
+                response={"slices": slices},
+                usage=usage + hop_usage,
+            ) from stream_error
+
+        # A clean EOF can also cut off a resumable stream. If a resumed hop
+        # has no new checkpoint, retry from the token it was requested with.
+        checkpoint_cutoff = reason is None and bool(token or config.continuation_token)
+        if stream_error is not None or checkpoint_cutoff:
+            if (token or config.continuation_token) and (
+                not config.max_output_tokens or config.max_output_tokens <= 0
+            ):
                 raise InvalidProviderResponseError(
-                    "Gemini stream checkpoint has no usage metadata.",
+                    "Gemini checkpoint recovery requires explicit positive max_output_tokens.",
                     response={"slices": slices},
                     usage=usage + hop_usage,
-                ) from exc
-            if token:
-                usage += checkpoint_usage
-                parts.extend(hop_parts)
+                ) from stream_error
+            # Output rolls back to the checkpoint; reported usage does not.
+            # Keep the latest running total from every interrupted request,
+            # including requests that never reached their first checkpoint.
+            usage += hop_usage
+            if saw_chunk:
                 slices.append(
-                    _stream_slice(hop_parts, "CONTINUATION", checkpoint_usage_metadata)
+                    _stream_slice(hop_parts, "CONTINUATION", hop_usage_metadata)
                 )
+            if token:
+                parts.extend(hop_parts)
                 config.continuation_token = token
             recovery_retries += 1
             if recovery_retries <= MAX_STREAM_RECOVERY_RETRIES:
                 logger.warning(
-                    "Gemini stream disconnected; retrying from %s checkpoint (%d/%d)",
-                    "latest" if token else "initial",
+                    "Gemini stream %s; retrying from %s checkpoint (%d/%d)",
+                    "disconnected" if stream_error is not None else "ended early",
+                    "latest" if config.continuation_token else "initial",
                     recovery_retries,
                     MAX_STREAM_RECOVERY_RETRIES,
                 )
                 continue
-            if not slices and not saw_chunk:
-                raise
+            if stream_error is not None and not slices and not saw_chunk:
+                raise stream_error
             raise InvalidProviderResponseError(
                 "Gemini stream recovery retries exhausted.",
                 response={"slices": slices},
                 usage=usage,
-            ) from exc
+            ) from stream_error
 
         if reason == "CONTINUATION" and token:
             # A terminal signal without a new token may follow an earlier
             # checkpoint. Only output covered by that token can be resumed.
             completed_parts = hop_parts
-            completed_usage = checkpoint_usage
-            completed_usage_metadata = checkpoint_usage_metadata
         else:
             completed_parts = hop_parts + pending_parts
-            completed_usage = hop_usage
-            completed_usage_metadata = hop_usage_metadata
+        completed_usage = hop_usage
+        completed_usage_metadata = hop_usage_metadata
         if saw_chunk:
             slices.append(
                 _stream_slice(completed_parts, reason, completed_usage_metadata)
