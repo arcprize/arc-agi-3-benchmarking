@@ -118,7 +118,9 @@ class Swarm:
 
         # Log agent exit reasons
         for a in self.agents:
-            logger.info(f"AGENT EXIT REASON -- Agent: [{a.agent_name}] Game: [{a.game_id}] Reason: [{a.exit_reason}]")
+            logger.info(
+                f"AGENT EXIT REASON -- Agent: [{a.agent_name}] Game: [{a.game_id}] Reason: [{a.exit_reason}]"
+            )
 
         if scorecard:
             logger.info("--- FINAL SCORECARD REPORT ---")
@@ -141,7 +143,23 @@ class Swarm:
     def open_scorecard(self) -> Optional[str]:
         with self._card_lock:
             if not self._shutdown_requested:
-                self.card_id = self._arc.open_scorecard(tags=self.tags)
+                opaque = None
+                batch_job_id = os.getenv("AWS_BATCH_JOB_ID", "").strip()
+                if batch_job_id:
+                    provenance: dict[str, object] = {
+                        "schema_version": 1,
+                        "batch_job_id": batch_job_id,
+                        "kind": "resume" if self.rehydration else "fresh",
+                    }
+                    if self.rehydration:
+                        source = self.rehydration.snapshot.source
+                        provenance.update(
+                            source_card_id=source.card_id,
+                            source_session_id=source.guid,
+                            source_step=self.rehydration.snapshot.step,
+                        )
+                    opaque = {"arc_benchmark_job": provenance}
+                self.card_id = self._arc.open_scorecard(tags=self.tags, opaque=opaque)
             return self.card_id
 
     def request_shutdown(self) -> None:
@@ -151,7 +169,9 @@ class Swarm:
         try:
             with requests.Session() as session:
                 session.headers.update(self.headers)
-                response = session.get(f"{self.ROOT_URL}/api/v3/scorecards/{card_id}", timeout=10)
+                response = session.get(
+                    f"{self.ROOT_URL}/api/v3/scorecards/{card_id}", timeout=10
+                )
                 return 199 < response.status_code < 300
         except requests.RequestException:
             logger.exception("HTTPError encountered on check for closed scorecard.")
@@ -173,9 +193,13 @@ class Swarm:
 
         # Arcade.close_scorecard copies its master cookie jar into the session first,
         # so refresh that jar with the agent's current cookies.
-        if self.agents and isinstance(self.agents[-1].arc_env, RemoteEnvironmentWrapper):
+        if self.agents and isinstance(
+            self.agents[-1].arc_env, RemoteEnvironmentWrapper
+        ):
             with self._arc._cookie_lock:
-                self._arc._master_cookie_jar.update(self.agents[-1].arc_env._master_cookie_jar)
+                self._arc._master_cookie_jar.update(
+                    self.agents[-1].arc_env._master_cookie_jar
+                )
 
         deadline = time.monotonic() + CLOSE_BUDGET_SECONDS
         for delay in (0, 1, 2):  # first attempt, then two retries
@@ -188,20 +212,31 @@ class Swarm:
                 return scorecard
             except HTTPError as ex:
                 # Check if scorecard closed due to idle/total time limit
-                if ex.response is not None and ex.response.status_code == 404 and self._scorecard_exists(card_id):
+                if (
+                    ex.response is not None
+                    and ex.response.status_code == 404
+                    and self._scorecard_exists(card_id)
+                ):
                     for agent in self.agents:
                         if agent.exit_reason == ExitReason.API_ERROR:
                             agent.exit_reason = ExitReason.SCORECARD_CLOSED
-                    logger.info(f"SHUTDOWN: closed scorecard {card_id} (closed by server)")
+                    logger.info(
+                        f"SHUTDOWN: closed scorecard {card_id} (closed by server)"
+                    )
                     return None
                 error: Exception = ex
             except Exception as ex:
                 error = ex
 
-        logger.error("Exception encountered on scorecard close. Swarm exit reason API_ERROR.", exc_info=error)
+        logger.error(
+            "Exception encountered on scorecard close. Swarm exit reason API_ERROR.",
+            exc_info=error,
+        )
         for agent in self.agents:
             agent.exit_reason = ExitReason.API_ERROR
-        logger.error(f"SHUTDOWN: close failed for {card_id}: {type(error).__name__}: {error}")
+        logger.error(
+            f"SHUTDOWN: close failed for {card_id}: {type(error).__name__}: {error}"
+        )
         return None
 
     def cleanup(self, scorecard: Optional[EnvironmentScorecard] = None) -> None:

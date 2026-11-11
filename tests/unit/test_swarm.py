@@ -17,7 +17,9 @@ from benchmarking.swarm import Swarm
 @pytest.fixture(autouse=True)
 def _no_retry_sleep(monkeypatch):
     monkeypatch.setattr(
-        swarm_module, "time", SimpleNamespace(monotonic=time.monotonic, sleep=lambda _: None)
+        swarm_module,
+        "time",
+        SimpleNamespace(monotonic=time.monotonic, sleep=lambda _: None),
     )
 
 
@@ -52,6 +54,7 @@ class FakeArcade:
         self.requested_operation_mode = operation_mode
         self.operation_mode = SimpleNamespace(ONLINE="online").ONLINE
         self.opened_tags: list[str] | None = None
+        self.opened_opaque: dict | None = None
         self.closed_card_id: str | None = None
         self.open_calls = 0
         self.close_calls: list[str] = []
@@ -67,12 +70,13 @@ class FakeArcade:
     def make(self, game_id: str, scorecard_id: str) -> str:
         return f"env:{game_id}:{scorecard_id}"
 
-    def open_scorecard(self, tags: list[str]) -> str:
+    def open_scorecard(self, tags: list[str], opaque: dict | None = None) -> str:
         self.open_calls += 1
         self.opening.set()
         if self.open_gate is not None:
             self.open_gate.wait(5)
         self.opened_tags = tags
+        self.opened_opaque = opaque
         return "card-123"
 
     def close_scorecard(self, card_id: str) -> Mock:
@@ -187,7 +191,9 @@ def _make_swarm(games: list[str] | None = None) -> Swarm:
 
 
 def _outcome_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
-    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("SHUTDOWN:")]
+    return [
+        r.getMessage() for r in caplog.records if r.getMessage().startswith("SHUTDOWN:")
+    ]
 
 
 def _swarm_with_agents(agents: list[_ExitAgent], close_error: HTTPError) -> Swarm:
@@ -227,7 +233,9 @@ class TestSwarmCloseScorecard:
             swarm.close_scorecard()
 
         assert api_agent.exit_reason is ExitReason.API_ERROR
-        assert _outcome_lines(caplog) == ["SHUTDOWN: close failed for card-123: HTTPError: "]
+        assert _outcome_lines(caplog) == [
+            "SHUTDOWN: close failed for card-123: HTTPError: "
+        ]
 
     def test_non_404_error_reraises_without_existence_check(self, caplog):
         api_agent = _ExitAgent(ExitReason.API_ERROR)
@@ -278,7 +286,9 @@ class TestSwarmShutdown:
         assert arc.opening.wait(5)
 
         swarm.request_shutdown()
-        closer = threading.Thread(target=lambda: results.append(swarm.close_scorecard()))
+        closer = threading.Thread(
+            target=lambda: results.append(swarm.close_scorecard())
+        )
         closer.start()
         arc.open_gate.set()
         main_thread.join(5)
@@ -321,7 +331,9 @@ class TestSwarmShutdown:
         first = threading.Thread(target=lambda: results.append(swarm.close_scorecard()))
         first.start()
         assert arc.closing.wait(5)
-        second = threading.Thread(target=lambda: results.append(swarm.close_scorecard()))
+        second = threading.Thread(
+            target=lambda: results.append(swarm.close_scorecard())
+        )
         second.start()
         arc.close_gate.set()
         first.join(5)
@@ -352,7 +364,9 @@ class TestSwarmShutdown:
         assert swarm.close_scorecard() is None
 
         assert len(swarm._arc.close_calls) == 3  # first attempt plus two retries
-        assert _outcome_lines(caplog) == ["SHUTDOWN: close failed for card-123: Timeout: slow"]
+        assert _outcome_lines(caplog) == [
+            "SHUTDOWN: close failed for card-123: Timeout: slow"
+        ]
 
     def test_close_uses_fresh_agent_cookies(self):
         swarm = _make_swarm()
@@ -394,3 +408,48 @@ class TestSwarmRehydration:
             ).main()
 
         assert [agent.rehydration for agent in DummyAgent.instances] == [prepared]
+
+    def test_batch_scorecard_records_fresh_job(self, monkeypatch):
+        monkeypatch.setenv("AWS_BATCH_JOB_ID", "job-fresh")
+        swarm = _make_swarm()
+
+        swarm.open_scorecard()
+
+        assert swarm._arc.opened_opaque == {
+            "arc_benchmark_job": {
+                "schema_version": 1,
+                "batch_job_id": "job-fresh",
+                "kind": "fresh",
+            }
+        }
+
+    def test_batch_scorecard_records_resume_source(self, monkeypatch):
+        monkeypatch.setenv("AWS_BATCH_JOB_ID", "job-resume")
+        swarm = _make_swarm()
+        swarm.rehydration = SimpleNamespace(
+            snapshot=SimpleNamespace(
+                source=SimpleNamespace(card_id="source-card", guid="source-session"),
+                step=23,
+            )
+        )
+
+        swarm.open_scorecard()
+
+        assert swarm._arc.opened_opaque == {
+            "arc_benchmark_job": {
+                "schema_version": 1,
+                "batch_job_id": "job-resume",
+                "kind": "resume",
+                "source_card_id": "source-card",
+                "source_session_id": "source-session",
+                "source_step": 23,
+            }
+        }
+
+    def test_local_scorecard_has_no_batch_provenance(self, monkeypatch):
+        monkeypatch.delenv("AWS_BATCH_JOB_ID", raising=False)
+        swarm = _make_swarm()
+
+        swarm.open_scorecard()
+
+        assert swarm._arc.opened_opaque is None
