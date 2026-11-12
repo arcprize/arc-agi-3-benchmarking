@@ -1064,6 +1064,47 @@ class TestBenchmarkingAgentRetries:
         )
         assert agent.token_counter == 10
 
+    def test_exhausted_manual_rolling_retries_persist_usage_without_step(self, tmp_path):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+        agent.MAX_RETRIES = 1
+        agent.run_dir = str(tmp_path)
+        agent.run_record = RunRecord(
+            run_id="test",
+            game_id="test",
+            agent_name="test",
+            model="gpt-5.4",
+            started_at=datetime.now(timezone.utc),
+            run_dir=str(tmp_path),
+        )
+        responses = [
+            EmptyResponseError(
+                "empty output",
+                usage=NormalizedUsage(input_tokens=3, output_tokens=1, total_tokens=4),
+            ),
+            ModelResponse(
+                output_text="cannot act",
+                usage=NormalizedUsage(input_tokens=4, output_tokens=2, total_tokens=6),
+            ),
+        ]
+
+        def fake_call_api(_request: ModelRequest) -> ModelResponse:
+            response = responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        agent._call_api = fake_call_api
+        with pytest.raises(RuntimeError, match="Failed to get a valid action"):
+            agent._request_with_retries([GameAction.RESET])
+
+        run = json.loads((tmp_path / "run_meta.json").read_text())
+        assert run["total_usage"]["prompt_tokens"] == 7
+        assert run["total_usage"]["completion_tokens"] == 3
+        assert run["total_usage"]["total_tokens"] == 10
+        assert run["total_steps"] == 0
+        assert agent.token_counter == 10
+        assert not list(tmp_path.glob("step_*.json"))
+
     def test_normalized_responses_output_parses_action_like_chat_output(self):
         agent = _agent_for_request_kwargs(
             {

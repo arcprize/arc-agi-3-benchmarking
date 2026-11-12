@@ -14,8 +14,9 @@ milliseconds and apply per request; they are not a whole-turn deadline. The
 continuation path defaults to a 3600-second timeout if none is specified.
 
 When a candidate finishes with `CONTINUATION`, the adapter resends its token at
-the top level of the next request with the original contents and accumulated raw
-model parts. Opaque signatures are preserved. It returns one model response only
+the top level of the next request with the original contents. The token carries
+the model's state, so partial output is not added to the request. Opaque
+signatures from completed output are preserved. It returns one model response only
 after `STOP` or terminal `MAX_TOKENS`; slices do not create extra game actions.
 Thought text is kept separate from action text. Prompt, output, reasoning, and
 cached token counts are summed across slices using the existing v3 accounting
@@ -58,8 +59,15 @@ committed after an action passes validation.
 
 Malformed provider output is never salvaged as a game action. A terminal
 malformed response still fails after the bounded invalid-response budget.
-Failures after completed continuation slices retain their existing usage-aware
-invalid-response handling; this change does not resume a failed slice in place.
-These retries do not extend or recover an expired game session. They also do
-not guarantee recovery from a persistent provider failure, and another model
-request can incur additional usage.
+Streaming calls retain intermediate checkpoint tokens independently of finish
+reasons. Only output through the latest checkpoint is committed. Usage retains
+the latest provider-reported total for every request, including discarded output
+and requests interrupted before their first checkpoint. On a transport disconnect
+or a stream ending without a terminal finish reason, the adapter discards later
+pending output and retries from the available checkpoint. A transport disconnect
+before the first checkpoint retries the original request. Recovery allows at most
+three retries per model turn, shared across disconnects and early stream endings.
+A checkpoint without usage metadata or an explicit positive output budget fails
+closed. These retries do not extend or recover an expired
+game session. They also do not guarantee recovery from a persistent provider
+failure, and another model request can incur additional usage.

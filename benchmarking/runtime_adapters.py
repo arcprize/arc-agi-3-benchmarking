@@ -20,7 +20,7 @@ from .exceptions import (
     InvalidProviderResponseError,
     TransientProviderError,
 )
-from .google_continuation import generate_with_continuation
+from .google_continuation import generate_with_continuation, stream_with_continuation
 from .google_interactions_continuation import create_with_continuation
 from .open_source_runtime import (
     OPEN_SOURCE_ADAPTER_ID,
@@ -404,6 +404,7 @@ class GoogleGenAIGenerateContentAdapter:
     def _build_call_kwargs(request: ModelRequest) -> dict[str, Any]:
         request_config = dict(request.request_config)
         model = request_config.pop("model", None)
+        request_config.pop("stream", None)
         if not model:
             raise ValueError(
                 "Google GenAI request_config is missing required 'model'."
@@ -437,8 +438,15 @@ class GoogleGenAIGenerateContentAdapter:
         }
 
     def invoke(self, request: ModelRequest) -> ModelResponse:
+        streaming = request.request_config.get("stream", False)
+        if not isinstance(streaming, bool):
+            raise ValueError("Google GenAI request.stream must be a boolean.")
         call_kwargs = self._build_call_kwargs(request)
         try:
+            if streaming:
+                return stream_with_continuation(
+                    self._client, call_kwargs, native_contents=request.native_input
+                )
             return generate_with_continuation(
                 self._client, call_kwargs, native_contents=request.native_input
             )

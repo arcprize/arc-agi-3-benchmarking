@@ -1485,7 +1485,7 @@ class BenchmarkingAgent(Agent):
             if attempt < max_attempts:
                 self._retry_backoff(attempt)
 
-        if hasattr(self, "_stateful_adapter") and hasattr(self, "run_record"):
+        if hasattr(self, "run_record"):
             self.run_record.total_usage = (
                 self.run_record.total_usage
                 + StepUsage.from_normalized_usage(accumulated_usage)

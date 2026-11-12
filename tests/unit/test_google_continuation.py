@@ -1,5 +1,6 @@
 """Validate actual SDK serialization against an in-memory HTTP transport."""
 
+import base64
 import json
 from copy import deepcopy
 
@@ -8,7 +9,12 @@ import pytest
 from google import genai
 from google.genai import types
 
-from benchmarking.exceptions import EmptyResponseError, InvalidProviderResponseError
+from benchmarking.exceptions import (
+    EmptyResponseError,
+    InvalidProviderResponseError,
+    TransientProviderError,
+)
+from benchmarking.google_continuation import MAX_STREAM_RECOVERY_RETRIES
 from benchmarking.runtime_adapters import (
     GoogleGenAIGenerateContentAdapter,
 )
@@ -65,6 +71,471 @@ def make_adapter():
         client.close()
 
 
+def stream_response(*events):
+    return httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        text="".join(f"data: {json.dumps(event)}\n\n" for event in events),
+    )
+
+
+@pytest.fixture
+def make_stream_adapter():
+    clients = []
+
+    def make(responses):
+        responses = iter(responses)
+        calls = []
+
+        def handle(req):
+            calls.append(req)
+            response = next(responses)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        client = genai.Client(
+            api_key="test-key",
+            http_options=types.HttpOptions(
+                httpx_client=httpx.Client(transport=httpx.MockTransport(handle))
+            ),
+        )
+        clients.append(client)
+        return GoogleGenAIGenerateContentAdapter(client), calls
+
+    yield make
+    for client in clients:
+        client.close()
+
+
+def test_stream_uses_latest_cumulative_usage_and_keeps_thought_parts(
+    make_stream_adapter,
+):
+    signature = base64.b64encode(b"opaque-signature").decode()
+    thought = {"thought": True, "text": "Think", "thoughtSignature": signature}
+    adapter, calls = make_stream_adapter(
+        [
+            stream_response(
+                reply(
+                    "STOP",
+                    [thought],
+                    usage={
+                        "promptTokenCount": 10,
+                        "thoughtsTokenCount": 2,
+                        "totalTokenCount": 12,
+                    },
+                ),
+                reply(
+                    "STOP",
+                    [{"text": "ACTION1"}],
+                    usage={
+                        "promptTokenCount": 10,
+                        "candidatesTokenCount": 2,
+                        "thoughtsTokenCount": 3,
+                        "cachedContentTokenCount": 4,
+                        "totalTokenCount": 16,
+                    },
+                ),
+            )
+        ]
+    )
+    result = adapter.invoke(request(stream=True))
+    assert result.output_text == "ACTION1"
+    assert result.reasoning_text == "Think"
+    assert result.usage.input_tokens == 10
+    assert result.usage.output_tokens == 5
+    assert result.usage.reasoning_tokens == 3
+    assert result.usage.cached_tokens == 4
+    assert result.usage.total_tokens == 16
+    assert (
+        result.raw_response["slices"][0]["candidates"][0]["content"]["parts"][0][
+            "thoughtSignature"
+        ]
+        == signature
+    )
+    assert calls[0].url.path.endswith(":streamGenerateContent")
+    assert calls[0].extensions["timeout"]["read"] == 3600
+
+
+def test_stream_continuation_adds_hop_usage_once(make_stream_adapter):
+    token = base64.b64encode(b"token1").decode()
+    adapter, calls = make_stream_adapter(
+        [
+            stream_response(
+                reply(
+                    "CONTINUATION",
+                    [{"text": "AC"}],
+                    token,
+                    {
+                        "promptTokenCount": 10,
+                        "candidatesTokenCount": 1,
+                        "totalTokenCount": 11,
+                    },
+                )
+            ),
+            stream_response(
+                reply(
+                    "STOP",
+                    [{"text": "TION1"}],
+                    usage={
+                        "promptTokenCount": 11,
+                        "candidatesTokenCount": 2,
+                        "thoughtsTokenCount": 4,
+                        "totalTokenCount": 17,
+                    },
+                )
+            ),
+        ]
+    )
+    result = adapter.invoke(request(stream=True))
+    assert result.output_text == "ACTION1"
+    assert result.usage.input_tokens == 21
+    assert result.usage.output_tokens == 7
+    assert result.usage.reasoning_tokens == 4
+    assert result.usage.total_tokens == 28
+    assert len(result.raw_response["slices"]) == 2
+    bodies = [json.loads(call.content) for call in calls]
+    assert "continuationToken" not in bodies[0]
+    assert bodies[1]["continuationToken"] == token
+    assert bodies[1]["contents"] == bodies[0]["contents"]
+
+
+@pytest.mark.parametrize("cutoff", ["disconnect", "eof"])
+def test_stream_recovers_from_latest_checkpoint_without_replaying_pending_output(
+    make_stream_adapter,
+    cutoff,
+):
+    token1 = base64.b64encode(b"checkpoint-1").decode()
+    token2 = base64.b64encode(b"checkpoint-2").decode()
+
+    class InterruptedStream(httpx.SyncByteStream):
+        def __iter__(self):
+            for event in (
+                reply(
+                    None,
+                    [{"text": "A"}],
+                    usage={"promptTokenCount": 10, "candidatesTokenCount": 1},
+                ),
+                reply(
+                    None,
+                    [{"text": "B"}],
+                    token1,
+                    {"promptTokenCount": 10, "candidatesTokenCount": 2},
+                ),
+                reply(
+                    None,
+                    [{"text": "C"}],
+                    token2,
+                    {"promptTokenCount": 10, "candidatesTokenCount": 3},
+                ),
+                reply(
+                    None,
+                    [{"text": "discard"}],
+                    usage={"promptTokenCount": 10, "candidatesTokenCount": 4},
+                ),
+            ):
+                yield f"data: {json.dumps(event)}\n\n".encode()
+            if cutoff == "disconnect":
+                raise httpx.ReadError("stream interrupted")
+
+    adapter, calls = make_stream_adapter(
+        [
+            httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=InterruptedStream(),
+            ),
+            stream_response(
+                reply(
+                    "STOP",
+                    [{"text": "D"}],
+                    usage={"promptTokenCount": 11, "candidatesTokenCount": 1},
+                )
+            ),
+        ]
+    )
+    result = adapter.invoke(request(stream=True))
+    assert result.output_text == "ABCD"
+    assert result.usage.input_tokens == 21
+    # Discard provisional text, but keep all reported usage from its request.
+    assert result.usage.output_tokens == 5
+    assert result.usage.total_tokens == 26
+    assert len(result.raw_response["slices"]) == 2
+    assert (
+        result.raw_response["slices"][0]["usageMetadata"]["candidatesTokenCount"] == 4
+    )
+    bodies = [json.loads(call.content) for call in calls]
+    assert bodies[1]["continuationToken"] == token2
+    assert bodies[1]["contents"] == bodies[0]["contents"]
+
+
+def test_stream_retries_disconnect_before_first_checkpoint(make_stream_adapter):
+    class InterruptedStream(httpx.SyncByteStream):
+        def __iter__(self):
+            event = reply(
+                None,
+                [{"text": "discard"}],
+                usage={"promptTokenCount": 5, "thoughtsTokenCount": 7},
+            )
+            yield f"data: {json.dumps(event)}\n\n".encode()
+            raise httpx.ReadError("stream interrupted")
+
+    adapter, calls = make_stream_adapter(
+        [
+            httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=InterruptedStream(),
+            ),
+            stream_response(
+                reply(
+                    "STOP",
+                    [{"text": "ACTION1"}],
+                    usage={"promptTokenCount": 5, "candidatesTokenCount": 2},
+                )
+            ),
+        ]
+    )
+    result = adapter.invoke(request(stream=True))
+    assert result.output_text == "ACTION1"
+    assert result.usage.input_tokens == 10
+    assert result.usage.output_tokens == 9
+    assert result.usage.reasoning_tokens == 7
+    assert result.usage.total_tokens == 19
+    assert len(calls) == 2
+    assert "continuationToken" not in json.loads(calls[1].content)
+
+
+def test_stream_recovery_is_bounded(make_stream_adapter):
+    adapter, calls = make_stream_adapter(
+        [httpx.ReadError("stream interrupted")] * (MAX_STREAM_RECOVERY_RETRIES + 1)
+    )
+    with pytest.raises(TransientProviderError):
+        adapter.invoke(request(stream=True))
+    assert len(calls) == MAX_STREAM_RECOVERY_RETRIES + 1
+
+
+def test_stream_recovery_exhaustion_keeps_latest_reported_usage(make_stream_adapter):
+    token = base64.b64encode(b"checkpoint").decode()
+
+    class CheckpointThenDisconnect(httpx.SyncByteStream):
+        def __iter__(self):
+            for event in (
+                reply(
+                    None,
+                    [{"text": "committed"}],
+                    token,
+                    {"promptTokenCount": 5, "candidatesTokenCount": 2},
+                ),
+                reply(
+                    None,
+                    [{"text": "discard"}],
+                    usage={"promptTokenCount": 5, "candidatesTokenCount": 3},
+                ),
+            ):
+                yield f"data: {json.dumps(event)}\n\n".encode()
+            raise httpx.ReadError("stream interrupted")
+
+    responses = [
+        httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=CheckpointThenDisconnect(),
+        )
+    ] + [httpx.ReadError("stream interrupted")] * MAX_STREAM_RECOVERY_RETRIES
+    adapter, calls = make_stream_adapter(responses)
+    with pytest.raises(
+        InvalidProviderResponseError, match="retries exhausted"
+    ) as error:
+        adapter.invoke(request(stream=True))
+    assert len(calls) == MAX_STREAM_RECOVERY_RETRIES + 1
+    assert error.value.usage.input_tokens == 5
+    assert error.value.usage.output_tokens == 3
+    assert error.value.response["slices"][0]["candidates"][0]["content"]["parts"] == [
+        {"text": "committed"}
+    ]
+
+
+def test_stream_continuation_keeps_usage_after_its_checkpoint(make_stream_adapter):
+    token = base64.b64encode(b"checkpoint").decode()
+    adapter, calls = make_stream_adapter(
+        [
+            stream_response(
+                reply(
+                    None,
+                    [{"text": "A"}],
+                    token,
+                    {"promptTokenCount": 5, "candidatesTokenCount": 1},
+                ),
+                reply(
+                    None,
+                    [{"text": "discard"}],
+                    usage={
+                        "promptTokenCount": 5,
+                        "candidatesTokenCount": 3,
+                    },
+                ),
+                reply(
+                    "CONTINUATION",
+                    usage={
+                        "promptTokenCount": 5,
+                        "candidatesTokenCount": 3,
+                    },
+                ),
+            ),
+            stream_response(
+                reply(
+                    "STOP",
+                    [{"text": "B"}],
+                    usage={
+                        "promptTokenCount": 6,
+                        "candidatesTokenCount": 1,
+                    },
+                )
+            ),
+        ]
+    )
+    result = adapter.invoke(request(stream=True))
+    assert result.output_text == "AB"
+    assert result.usage.input_tokens == 11
+    assert result.usage.output_tokens == 4
+    assert result.usage.total_tokens == 15
+    assert json.loads(calls[1].content)["continuationToken"] == token
+
+
+def test_stream_eof_recovery_is_bounded_without_new_checkpoints(make_stream_adapter):
+    token = base64.b64encode(b"checkpoint").decode()
+    initial = stream_response(
+        reply(
+            None,
+            [{"text": "A"}],
+            token,
+            {
+                "promptTokenCount": 5,
+                "candidatesTokenCount": 1,
+            },
+        )
+    )
+    responses = [initial] + [
+        stream_response(
+            reply(
+                None,
+                [{"text": "discard"}],
+                usage={
+                    "promptTokenCount": 6,
+                    "candidatesTokenCount": 2,
+                },
+            )
+        )
+        for _ in range(MAX_STREAM_RECOVERY_RETRIES)
+    ]
+    adapter, calls = make_stream_adapter(responses)
+    with pytest.raises(
+        InvalidProviderResponseError, match="retries exhausted"
+    ) as error:
+        adapter.invoke(request(stream=True))
+    assert len(calls) == MAX_STREAM_RECOVERY_RETRIES + 1
+    for call in calls[1:]:
+        assert json.loads(call.content)["continuationToken"] == token
+    assert error.value.usage.input_tokens == 5 + 6 * MAX_STREAM_RECOVERY_RETRIES
+    assert error.value.usage.output_tokens == 1 + 2 * MAX_STREAM_RECOVERY_RETRIES
+
+
+@pytest.mark.parametrize("cutoff", ["disconnect", "eof"])
+def test_stream_checkpoint_without_usage_fails_closed(make_stream_adapter, cutoff):
+    token = base64.b64encode(b"checkpoint").decode()
+
+    class MissingUsageStream(httpx.SyncByteStream):
+        def __iter__(self):
+            event = reply(None, [{"text": "A"}], token)
+            yield f"data: {json.dumps(event)}\n\n".encode()
+            if cutoff == "disconnect":
+                raise httpx.ReadError("stream interrupted")
+
+    adapter, calls = make_stream_adapter(
+        [
+            httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=MissingUsageStream(),
+            ),
+        ]
+    )
+    with pytest.raises(InvalidProviderResponseError, match="checkpoint has no usage"):
+        adapter.invoke(request(stream=True))
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("cutoff", ["disconnect", "eof"])
+def test_stream_checkpoint_recovery_requires_output_budget(make_stream_adapter, cutoff):
+    token = base64.b64encode(b"checkpoint").decode()
+
+    class CheckpointStream(httpx.SyncByteStream):
+        def __iter__(self):
+            event = reply(
+                None,
+                [{"text": "A"}],
+                token,
+                {
+                    "promptTokenCount": 5,
+                    "candidatesTokenCount": 1,
+                },
+            )
+            yield f"data: {json.dumps(event)}\n\n".encode()
+            if cutoff == "disconnect":
+                raise httpx.ReadError("stream interrupted")
+
+    adapter, calls = make_stream_adapter(
+        [
+            httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=CheckpointStream(),
+            ),
+        ]
+    )
+    with pytest.raises(
+        InvalidProviderResponseError, match="positive max_output_tokens"
+    ) as error:
+        adapter.invoke(request(stream=True, max_output_tokens=None))
+    assert len(calls) == 1
+    assert error.value.usage.total_tokens == 6
+
+
+def test_stream_requires_provider_usage(make_stream_adapter):
+    adapter, _ = make_stream_adapter(
+        [stream_response(reply("STOP", [{"text": "ACTION1"}]))]
+    )
+    with pytest.raises(InvalidProviderResponseError, match="without usage metadata"):
+        adapter.invoke(request(stream=True))
+
+
+def test_stream_preserves_native_contents_on_wire(make_stream_adapter):
+    adapter, calls = make_stream_adapter(
+        [
+            stream_response(
+                reply(
+                    "STOP",
+                    [{"text": "ACTION1"}],
+                    usage={"promptTokenCount": 5, "candidatesTokenCount": 2},
+                )
+            )
+        ]
+    )
+    req = request(stream=True)
+    req.native_input = [
+        {
+            "role": "model",
+            "parts": [{"text": "prior", "thoughtSignature": "c2ln"}],
+        },
+        {"role": "user", "parts": [{"text": "frame"}]},
+    ]
+    original = deepcopy(req)
+    assert adapter.invoke(req).output_text == "ACTION1"
+    assert json.loads(calls[0].content)["contents"] == req.native_input
+    assert req == original
+
+
 def test_continuation_wire_replay_and_usage(make_adapter):
     thought = {"thought": True, "text": "Think", "thoughtSignature": "opaque-signature"}
     adapter, calls = make_adapter(
@@ -111,10 +582,8 @@ def test_continuation_wire_replay_and_usage(make_adapter):
     assert "continuationToken" not in bodies[0]
     assert bodies[1]["continuationToken"] == "token1"
     assert bodies[2]["continuationToken"] == "token2"
-    assert bodies[1]["contents"] == bodies[0]["contents"] + [
-        {"role": "model", "parts": [thought]}
-    ]
-    assert bodies[2]["contents"][-1]["parts"] == [thought, {"text": "AC"}]
+    assert bodies[1]["contents"] == bodies[0]["contents"]
+    assert bodies[2]["contents"] == bodies[0]["contents"]
     for body, call in zip(bodies, calls):
         assert body["generationConfig"]["maxOutputTokens"] == 1000000
         assert "continuation" not in body["generationConfig"]
@@ -207,18 +676,29 @@ def test_existing_path(make_adapter):
     assert adapter.invoke(request()).output_text == "ACTION1"
     assert len(calls) == 1
 
-@pytest.mark.parametrize('status', [500, 503])
+
+@pytest.mark.parametrize("status", [500, 503])
 def test_real_sdk_server_errors_are_transient(status):
     from benchmarking.exceptions import TransientProviderError
 
     def handle(req):
-        return httpx.Response(status, json={
-            'error': {'code': status, 'message': 'Temporary failure', 'status': 'INTERNAL'}
-        })
+        return httpx.Response(
+            status,
+            json={
+                "error": {
+                    "code": status,
+                    "message": "Temporary failure",
+                    "status": "INTERNAL",
+                }
+            },
+        )
 
-    with genai.Client(api_key='test-key', http_options=types.HttpOptions(
-        httpx_client=httpx.Client(transport=httpx.MockTransport(handle))
-    )) as client:
+    with genai.Client(
+        api_key="test-key",
+        http_options=types.HttpOptions(
+            httpx_client=httpx.Client(transport=httpx.MockTransport(handle))
+        ),
+    ) as client:
         with pytest.raises(TransientProviderError) as caught:
             GoogleGenAIGenerateContentAdapter(client).invoke(request())
         assert caught.value.__cause__.code == status
@@ -226,7 +706,8 @@ def test_real_sdk_server_errors_are_transient(status):
 
 def test_transport_timeout_is_transient(make_adapter):
     from benchmarking.exceptions import TransientProviderError
-    adapter, _ = make_adapter([httpx.ReadTimeout('timeout')])
+
+    adapter, _ = make_adapter([httpx.ReadTimeout("timeout")])
     with pytest.raises(TransientProviderError):
         adapter.invoke(request())
 
@@ -235,12 +716,22 @@ def test_permanent_google_error_is_not_transient():
     from google.genai.errors import ClientError
 
     def handle(req):
-        return httpx.Response(403, json={
-            'error': {'code': 403, 'message': 'Denied', 'status': 'PERMISSION_DENIED'}
-        })
+        return httpx.Response(
+            403,
+            json={
+                "error": {
+                    "code": 403,
+                    "message": "Denied",
+                    "status": "PERMISSION_DENIED",
+                }
+            },
+        )
 
-    with genai.Client(api_key='test-key', http_options=types.HttpOptions(
-        httpx_client=httpx.Client(transport=httpx.MockTransport(handle))
-    )) as client:
+    with genai.Client(
+        api_key="test-key",
+        http_options=types.HttpOptions(
+            httpx_client=httpx.Client(transport=httpx.MockTransport(handle))
+        ),
+    ) as client:
         with pytest.raises(ClientError):
             GoogleGenAIGenerateContentAdapter(client).invoke(request())
