@@ -103,6 +103,22 @@ Reasoning tokens are included in output tokens and reported separately.
 Streams that finish without usage metadata are rejected. Existing configs
 without the flag keep using non-streaming `generateContent`.
 
+Google `generate_content` responses can also return one native `functionCall`
+instead of action text. Bare action names and the explicit `google:` prefix
+are mapped to the existing structured-action validator, including action
+availability, required arguments, and integer coordinates from 0 through 63.
+The single native call takes precedence over accompanying text. Multiple calls,
+unknown namespaces, and incomplete calls are rejected without falling back to
+action names in text. Existing text-only responses keep their current behavior.
+This handling applies to both streaming and non-streaming calls and both
+harnesses; it does not enable multiple actions per turn or arbitrary tool use.
+
+In native conversation history, the original call and its signatures are
+preserved. The next frame is sent as a matching `functionResponse`, retaining
+the original name and call ID when provided. If compaction summarizes the
+preceding call, a retained result frame becomes ordinary user text so the new
+history does not start with an orphan function response.
+
 6. Or on all games:
 
 ```bash

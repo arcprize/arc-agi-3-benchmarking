@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
 
-from .exceptions import EmptyResponseError
+from .exceptions import EmptyResponseError, InvalidProviderResponseError
 from .models import (
     ActionMetadata,
     CostDetails,
@@ -338,8 +339,62 @@ def _google_genai_message_parts(response: Any) -> list[Any]:
 
 
 def _extract_google_genai_output_text(response: Any) -> str:
+    parts = _google_genai_message_parts(response)
+    calls = [
+        call
+        for part in parts
+        for key in ("functionCall", "function_call")
+        if (call := _value_from_response_object(part, key)) is not None
+    ]
+    if calls:
+        # Native calls are authoritative. Never fall back to incidental action
+        # text when a native response is invalid or requests multiple actions.
+        if len(calls) != 1 or any(
+            _value_from_response_object(part, "thought", False)
+            and any(
+                _value_from_response_object(part, key) is not None
+                for key in ("functionCall", "function_call")
+            )
+            for part in parts
+        ):
+            raise InvalidProviderResponseError(
+                "Expected exactly one non-thought native action call.",
+                response=response,
+            )
+        call = calls[0]
+        name = _value_from_response_object(call, "name")
+        args = _value_from_response_object(call, "args", {})
+        if args is None:
+            args = {}
+        if isinstance(name, str):
+            name = name.removeprefix("google:")
+        if (
+            not isinstance(name, str)
+            or not name
+            or ":" in name
+            or not isinstance(args, dict)
+            or "action_type" in args
+            or _value_from_response_object(call, "partial_args")
+            or _value_from_response_object(call, "partialArgs")
+            or _value_from_response_object(call, "will_continue")
+            or _value_from_response_object(call, "willContinue")
+        ):
+            raise InvalidProviderResponseError(
+                "Invalid native action call name or arguments.", response=response
+            )
+        # Reuse the agent's strict action availability, argument, and coordinate
+        # validation rather than introducing another executable-action parser.
+        try:
+            return json.dumps(
+                {"actions": [{"action_type": name, **args}]}, allow_nan=False
+            )
+        except (TypeError, ValueError) as exc:
+            raise InvalidProviderResponseError(
+                "Native action arguments must be JSON values.", response=response
+            ) from exc
+
     text_parts: list[str] = []
-    for part in _google_genai_message_parts(response):
+    for part in parts:
         if _value_from_response_object(part, "thought", False):
             continue
         text_parts.append(_google_genai_part_text(part))
