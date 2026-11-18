@@ -113,11 +113,13 @@ action names in text. Existing text-only responses keep their current behavior.
 This handling applies to both streaming and non-streaming calls and both
 harnesses; it does not enable multiple actions per turn or arbitrary tool use.
 
-In native conversation history, the original call and its signatures are
-preserved. The next frame is sent as a matching `functionResponse`, retaining
-the original name and call ID when provided. If compaction summarizes the
-preceding call, a retained result frame becomes ordinary user text so the new
-history does not start with an orphan function response.
+This is response-format compatibility, not Google tool-calling support. In the
+Provider Adapter's conversation history, the call part is replaced with the
+normalized action text. Its call ID and call-bound signature are not replayed,
+and the next frame remains an ordinary user message, not a `functionResponse`.
+Other native content, including signed reasoning, keeps its existing behavior.
+The original response remains intact for diagnostics. DeepSeek's native tool
+handling is unchanged.
 
 6. Or on all games:
 

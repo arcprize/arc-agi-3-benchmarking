@@ -5,7 +5,7 @@ import pytest
 from benchmarking.runtime_adapters import build_model_runtime_adapter
 from benchmarking.runtime_models import Message
 from benchmarking.runtime_registry import build_stateful_runtime_adapter
-from benchmarking.runtime_state import ModelTurnRequest
+from benchmarking.runtime_state import ModelTurnRequest, RuntimeState
 from tests.unit.test_google_continuation import (  # noqa: F401
     make_adapter,
     make_stream_adapter,
@@ -95,7 +95,7 @@ def test_failed_slice_does_not_mutate_accepted_history(make_adapter):  # noqa: F
 
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("call_id", [None, "call-123"])
-def test_native_action_replays_signature_and_returns_frame_as_function_result(
+def test_native_action_is_replayed_as_text_with_ordinary_frame_inputs(
     make_adapter,  # noqa: F811
     make_stream_adapter,  # noqa: F811
     stream,
@@ -104,10 +104,11 @@ def test_native_action_replays_signature_and_returns_frame_as_function_result(
     native_call = {"name": "google:ACTION6", "args": {"x": 22, "y": 29}}
     if call_id is not None:
         native_call["id"] = call_id
-    part = {"functionCall": native_call, "thoughtSignature": "b3BhcXVl"}
+    thought = {"thought": True, "text": "think", "thoughtSignature": "dGhvdWdodA=="}
+    part = {"functionCall": native_call, "thoughtSignature": "Y2FsbA=="}
     next_call = {"functionCall": {"name": "ACTION3", "args": {}}}
     replies = [
-        reply("STOP", [part], usage={"candidatesTokenCount": 2}),
+        reply("STOP", [thought, part], usage={"candidatesTokenCount": 2}),
         reply("STOP", [next_call], usage={"candidatesTokenCount": 2}),
         reply("STOP", [{"text": "ACTION4"}], usage={"candidatesTokenCount": 2}),
     ]
@@ -124,31 +125,49 @@ def test_native_action_replays_signature_and_returns_frame_as_function_result(
         "actions": [{"action_type": "ACTION6", "x": 22, "y": 29}]
     }
     assert initial.payload == {"contents": []}
-    assert first.state.payload["contents"][-1]["parts"] == [part]
-    second_request = turn(first.state)
+    # Retain the true response only for diagnostics; accepted provider history
+    # presents the single action as if it had originally arrived as text.
+    assert first.response.raw_response["candidates"][0]["content"]["parts"] == [
+        thought,
+        part,
+    ]
+    expected_model = {
+        "role": "model",
+        "parts": [thought, {"text": first.response.output_text}],
+    }
+    assert first.state.payload["contents"][-1] == expected_model
+    persisted_state = first.state.model_dump_json()
+    assert "functionCall" not in persisted_state
+    assert "call-123" not in persisted_state
+    second_request = turn(RuntimeState.model_validate_json(persisted_state))
     second_request.request_config["stream"] = stream
     second = adapter.invoke_turn(second_request)
-    expected_result = {"name": "google:ACTION6", "response": {"output": "frame"}}
-    if call_id is not None:
-        expected_result["id"] = call_id
     contents = json.loads(calls[1].content)["contents"]
-    assert contents[-2] == {"role": "model", "parts": [part]}
-    assert contents[-1] == {
-        "role": "user",
-        "parts": [{"functionResponse": expected_result}],
+    assert contents[-2] == expected_model
+    assert contents[-1] == {"role": "user", "parts": [{"text": "frame"}]}
+    assert second.readable_request_messages[-2] == {
+        "role": "assistant",
+        "content": "think\n" + first.response.output_text,
     }
     assert second.readable_request_messages[-1] == {"role": "user", "content": "frame"}
-    assert "b3BhcXVl" not in json.dumps(second.readable_request_messages)
-    assert "b3BhcXVl" not in json.dumps(second.sanitized_request)
+    wire = json.dumps(contents)
+    for marker in [
+        "functionCall",
+        "function_call",
+        "functionResponse",
+        "call-123",
+        "Y2FsbA==",
+    ]:
+        assert marker not in wire
+    assert "dGhvdWdodA==" not in json.dumps(second.readable_request_messages)
+    assert "dGhvdWdodA==" not in json.dumps(second.sanitized_request)
 
     buffered = adapter.buffer_inputs(
         first.state, [Message(role="user", content="frame")]
     )
     assert buffered.payload["contents"][-1] == contents[-1]
-    assert first.state.payload["contents"][-1]["role"] == "model"
+    assert first.state.payload["contents"][-1] == expected_model
 
-    # If compaction summarizes the preceding call, retain the frame as plain
-    # input rather than replaying an orphan function response.
     retained = adapter.unwind_latest_accepted_turn(second.state)
     assert retained is not None
     rebuilt = adapter.rebuild_after_compaction(
@@ -157,20 +176,18 @@ def test_native_action_replays_signature_and_returns_frame_as_function_result(
     assert rebuilt.payload["contents"] == [
         {"role": "user", "parts": [{"text": "summary"}]},
         {"role": "user", "parts": [{"text": "frame"}]},
-        {"role": "model", "parts": [next_call]},
+        {"role": "model", "parts": [{"text": second.response.output_text}]},
     ]
-    assert "functionResponse" in retained.native_items[0]["parts"][0]
+    assert retained.native_items[0]["parts"] == [{"text": "frame"}]
     assert rebuilt.accepted_turns[0].start_item == 1
     assert rebuilt.accepted_turns[0].end_item == 3
     third_request = turn(rebuilt)
     third_request.request_config["stream"] = stream
     adapter.invoke_turn(third_request)
-    assert json.loads(calls[2].content)["contents"][-1] == {
-        "role": "user",
-        "parts": [
-            {"functionResponse": {"name": "ACTION3", "response": {"output": "frame"}}}
-        ],
-    }
+    third_contents = json.loads(calls[2].content)["contents"]
+    assert third_contents[-1] == {"role": "user", "parts": [{"text": "frame"}]}
+    assert "functionCall" not in json.dumps(third_contents)
+    assert "functionResponse" not in json.dumps(third_contents)
 
 
 def test_multiple_native_calls_reject_without_accepting_state(make_adapter):  # noqa: F811

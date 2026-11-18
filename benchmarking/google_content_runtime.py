@@ -42,44 +42,21 @@ def message_to_content(message: Message) -> dict[str, Any]:
     }
 
 
-def append_input_contents(
-    contents: list[dict[str, Any]], messages: list[Message]
-) -> None:
-    """Return the next frame as the result of an accepted native action call."""
-    for message in messages:
-        previous = contents[-1] if contents else {}
-        calls = (
-            [
-                call
-                for part in previous.get("parts", [])
-                for key in ("functionCall", "function_call")
-                if (call := part.get(key)) is not None
-            ]
-            if previous.get("role") == "model"
-            else []
-        )
-        if calls:
-            # Normalization already enforces this for newly accepted turns;
-            # reject incompatible restored history rather than dropping calls.
-            if len(calls) != 1 or message.role != "user":
-                raise ValueError("Native action history requires one user result.")
-            call = calls[0]
-            result = {
-                "name": call["name"],
-                "response": {"output": message.content},
-            }
-            if call.get("id") is not None:
-                result["id"] = call["id"]
-            contents.append({"role": "user", "parts": [{"functionResponse": result}]})
-        else:
-            contents.append(message_to_content(message))
-
-
 def response_contents(response: ModelResponse) -> list[dict[str, Any]]:
     raw = response.raw_response
     if not isinstance(raw, dict):
         raise ValueError("generateContent response must retain native content.")
     content = deepcopy(raw["candidates"][0]["content"])
+    # Native calls are tolerated as an action-output format, not as a tool
+    # protocol. Replay the validated action as text, without call IDs or a
+    # signature that belonged to the original function-call part. Other native
+    # content (including signed reasoning) and the raw diagnostic stay intact.
+    content["parts"] = [
+        {"text": response.output_text}
+        if any(part.get(key) is not None for key in ("functionCall", "function_call"))
+        else part
+        for part in content.get("parts", [])
+    ]
     content["role"] = "model"
     return [content]
 
@@ -102,14 +79,6 @@ def readable_content_messages(
             for p in content.get("parts", [])
             if isinstance(p.get("text"), str)
         )
-        # Function results carry the same frame text as ordinary user inputs.
-        # Do not project opaque signatures or raw native calls into transcripts.
-        results = [
-            p["functionResponse"]["response"]["output"]
-            for p in content.get("parts", [])
-            if "functionResponse" in p
-        ]
-        text = "\n".join([text, *results]).strip() if results else text
         messages.append(
             {
                 "role": "assistant" if content.get("role") == "model" else "user",
@@ -141,7 +110,7 @@ class GoogleContentConversationRuntimeAdapter:
             adapter_id=self.descriptor.adapter_id, strategy=self.strategy
         )
         steps = runtime_payload_items(state, "contents")
-        append_input_contents(steps, messages)
+        steps.extend(message_to_content(message) for message in messages)
         return replace_runtime_payload(state, {"contents": steps})
 
     def invoke_turn(self, request: ModelTurnRequest) -> ModelTurnResult:
@@ -152,7 +121,9 @@ class GoogleContentConversationRuntimeAdapter:
         previous_steps = runtime_payload_items(request.previous_state, "contents")
         turn_start = len(previous_steps)
         input_steps = list(previous_steps)
-        append_input_contents(input_steps, request.new_messages)
+        input_steps.extend(
+            message_to_content(message) for message in request.new_messages
+        )
         model_request = ModelRequest(
             messages=[
                 Message(role="system", content=request.system_prompt),
@@ -215,17 +186,6 @@ class GoogleContentConversationRuntimeAdapter:
             self.initial_state(),
             [summary_message],
         )
-        retained_turns = [turn.model_copy(deep=True) for turn in retained_turns]
-        if retained_turns:
-            # The previous action call may have been summarized away. The
-            # retained frame is still useful, but cannot remain a tool result
-            # without its call. Keep its text at the same accepted-turn boundary.
-            first = retained_turns[0].native_items[0]
-            if first.get("role") == "user":
-                for index, part in enumerate(first.get("parts", [])):
-                    if "functionResponse" in part:
-                        frame = part["functionResponse"]["response"]["output"]
-                        first["parts"][index] = {"text": frame}
         return restore_unwound_runtime_state_items(
             summary_state,
             payload_key="contents",
