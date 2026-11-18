@@ -973,6 +973,14 @@ class TestBenchmarkingAgentRetries:
         assert diagnostic["max_attempts"] == 1
         assert diagnostic["available_actions"] == ["ACTION1"]
         assert diagnostic["response_source"] == "raw_response"
+        assert diagnostic["provider_identifiers"] == [
+            {
+                "kind": "id",
+                "value": "resp_raw",
+                "source": "response.id",
+                "provider_name": "id",
+            }
+        ]
         assert diagnostic["response"] == raw_response
 
     def test_parse_failure_saves_normalized_diagnostic_without_raw_response(self):
@@ -1001,6 +1009,14 @@ class TestBenchmarkingAgentRetries:
         diagnostic = json.loads(diagnostics[0].read_text())
         assert diagnostic["diagnostic_type"] == "parse_failure"
         assert diagnostic["response_source"] == "normalized_response"
+        assert diagnostic["provider_identifiers"] == [
+            {
+                "kind": "response_id",
+                "value": "resp_normalized",
+                "source": "model_response.response_id",
+                "provider_name": "response_id",
+            }
+        ]
         assert diagnostic["response"] == {
             "output_text": "I cannot decide.",
             "reasoning_text": "No valid action was selected.",
@@ -1016,6 +1032,47 @@ class TestBenchmarkingAgentRetries:
             },
             "response_status": "completed",
             "response_id": "resp_normalized",
+        }
+
+    def test_raw_response_diagnostic_includes_provider_identifiers(self):
+        agent = _agent_for_request_kwargs({"model": "gpt-5.4"})
+        agent._continuous_conversation = True
+
+        agent._save_diagnostic(
+            {
+                "slices": [
+                    {
+                        "responseId": "gemini-response-123",
+                        "candidates": [],
+                    }
+                ],
+                "headers": {"x-request-id": "req_header_123"},
+            }
+        )
+
+        diagnostics = list(Path(agent.run_dir).glob("diagnostic_step_*.json"))
+        assert len(diagnostics) == 1
+        diagnostic = json.loads(diagnostics[0].read_text())
+        assert diagnostic["slices"] == [
+            {"responseId": "gemini-response-123", "candidates": []}
+        ]
+        assert diagnostic["diagnostic_metadata"] == {
+            "diagnostic_type": "raw_provider_response",
+            "step": 1,
+            "provider_identifiers": [
+                {
+                    "kind": "request_id",
+                    "value": "req_header_123",
+                    "source": "response.headers.x-request-id",
+                    "provider_name": "x-request-id",
+                },
+                {
+                    "kind": "response_id",
+                    "value": "gemini-response-123",
+                    "source": "response.slices[0].responseId",
+                    "provider_name": "responseId",
+                },
+            ],
         }
 
     def test_empty_response_usage_is_counted_before_retry(self):

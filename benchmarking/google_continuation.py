@@ -12,6 +12,10 @@ import httpx
 from google.genai import types
 
 from .exceptions import InvalidProviderResponseError
+from .provider_identifiers import (
+    extract_provider_identifiers,
+    merge_provider_identifiers,
+)
 from .runtime_models import (
     ModelResponse,
     NormalizedUsage,
@@ -62,6 +66,12 @@ def generate_with_continuation(
                 **{**call_kwargs, "config": config.model_copy(deep=True)}
             )
             raw = json.loads(response.sdk_http_response.body)
+            identifiers = extract_provider_identifiers(response)
+            if isinstance(raw, dict) and identifiers:
+                raw["diagnostic_metadata"] = {
+                    **raw.get("diagnostic_metadata", {}),
+                    "provider_identifiers": identifiers,
+                }
         except Exception as exc:
             if not slices:
                 raise
@@ -183,6 +193,7 @@ def stream_with_continuation(
         hop_usage = NormalizedUsage()
         hop_usage_metadata: dict[str, Any] = {}
         checkpoint_usage_metadata: dict[str, Any] = {}
+        hop_identifiers: list[dict[str, str]] = []
         reason: str | None = None
         token: bytes | None = None
         saw_chunk = False
@@ -192,6 +203,10 @@ def stream_with_continuation(
                 **{**call_kwargs, "config": config.model_copy(deep=True)}
             ):
                 saw_chunk = True
+                hop_identifiers = merge_provider_identifiers(
+                    hop_identifiers,
+                    extract_provider_identifiers(chunk),
+                )
                 if chunk.usage_metadata is not None:
                     counts = chunk.usage_metadata
                     hop_usage_metadata = counts.model_dump(
@@ -250,7 +265,10 @@ def stream_with_continuation(
                         "slices": slices
                         + [
                             _stream_slice(
-                                hop_parts + pending_parts, reason, hop_usage_metadata
+                                hop_parts + pending_parts,
+                                reason,
+                                hop_usage_metadata,
+                                hop_identifiers,
                             )
                         ]
                     },
@@ -287,7 +305,12 @@ def stream_with_continuation(
             usage += hop_usage
             if saw_chunk:
                 slices.append(
-                    _stream_slice(hop_parts, "CONTINUATION", hop_usage_metadata)
+                    _stream_slice(
+                        hop_parts,
+                        "CONTINUATION",
+                        hop_usage_metadata,
+                        hop_identifiers,
+                    )
                 )
             if token:
                 parts.extend(hop_parts)
@@ -318,9 +341,15 @@ def stream_with_continuation(
             completed_parts = hop_parts + pending_parts
         completed_usage = hop_usage
         completed_usage_metadata = hop_usage_metadata
+        completed_identifiers = hop_identifiers
         if saw_chunk:
             slices.append(
-                _stream_slice(completed_parts, reason, completed_usage_metadata)
+                _stream_slice(
+                    completed_parts,
+                    reason,
+                    completed_usage_metadata,
+                    completed_identifiers,
+                )
             )
         logger.info(
             "Gemini stream %s hop %d finished with %s; reported usage: %s",
@@ -371,9 +400,15 @@ def stream_with_continuation(
 
 
 def _stream_slice(
-    parts: list[dict[str, Any]], reason: str | None, usage: dict[str, Any]
+    parts: list[dict[str, Any]],
+    reason: str | None,
+    usage: dict[str, Any],
+    identifiers: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "candidates": [{"content": {"parts": parts}, "finishReason": reason}],
         "usageMetadata": usage,
     }
+    if identifiers:
+        payload["diagnostic_metadata"] = {"provider_identifiers": identifiers}
+    return payload

@@ -29,6 +29,10 @@ from .exceptions import (
     TransientProviderError,
 )
 from .model_config import get_model_config
+from .provider_identifiers import (
+    extract_provider_identifiers,
+    merge_provider_identifiers,
+)
 from .recording import (
     CompactionContinuationRecord,
     CompactionRecord,
@@ -613,6 +617,33 @@ class BenchmarkingAgent(Agent):
             }
             f.write(self.run_record.model_dump_json(indent=2, exclude=exclude))
 
+    def _diagnostic_metadata(
+        self, identifiers: list[dict[str, str]], diagnostic_type: str
+    ) -> dict[str, Any]:
+        return {
+            "diagnostic_type": diagnostic_type,
+            "step": self.step_counter + 1,
+            "provider_identifiers": identifiers,
+        }
+
+    @staticmethod
+    def _attach_diagnostic_metadata(
+        payload: Any, metadata: dict[str, Any]
+    ) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {"diagnostic_metadata": metadata, "response": payload}
+        existing = payload.get("diagnostic_metadata")
+        if isinstance(existing, dict):
+            metadata = {
+                **metadata,
+                **existing,
+                "provider_identifiers": merge_provider_identifiers(
+                    metadata.get("provider_identifiers", []),
+                    existing.get("provider_identifiers", []),
+                ),
+            }
+        return {**payload, "diagnostic_metadata": metadata}
+
     def _save_diagnostic(self, response: Any) -> None:
         """Dump a raw API response to a diagnostic file for post-mortem debugging."""
         filename = os.path.join(
@@ -620,6 +651,7 @@ class BenchmarkingAgent(Agent):
             f"diagnostic_step_{self.step_counter + 1}_{int(time.time())}_{uuid.uuid4().hex}.json",
         )
         try:
+            identifiers = extract_provider_identifiers(response)
             if self._continuous_conversation:
                 raw = (
                     response.model_dump()
@@ -635,6 +667,10 @@ class BenchmarkingAgent(Agent):
                     if hasattr(response, "model_dump")
                     else repr(response)
                 )
+            raw = self._attach_diagnostic_metadata(
+                raw,
+                self._diagnostic_metadata(identifiers, "raw_provider_response"),
+            )
             with open(filename, "w") as f:
                 json.dump(raw, f, indent=2, default=str)
         except Exception as exc:
@@ -685,6 +721,7 @@ class BenchmarkingAgent(Agent):
         )
         if model_response.raw_response is not None:
             response = self._safe_diagnostic_payload(model_response.raw_response)
+            identifiers = extract_provider_identifiers(model_response.raw_response)
         else:
             response = {
                 "output_text": model_response.output_text,
@@ -693,6 +730,19 @@ class BenchmarkingAgent(Agent):
                 "response_status": model_response.response_status,
                 "response_id": model_response.response_id,
             }
+            identifiers = []
+        if model_response.response_id is not None:
+            identifiers = merge_provider_identifiers(
+                identifiers,
+                [
+                    {
+                        "kind": "response_id",
+                        "value": model_response.response_id,
+                        "source": "model_response.response_id",
+                        "provider_name": "response_id",
+                    }
+                ],
+            )
         payload = {
             "diagnostic_type": "parse_failure",
             "step": self.step_counter + 1,
@@ -700,6 +750,7 @@ class BenchmarkingAgent(Agent):
             "max_attempts": max_attempts,
             "available_actions": [action.name for action in actions],
             "response_source": response_source,
+            "provider_identifiers": identifiers,
             "response": response,
         }
         try:
