@@ -112,6 +112,8 @@ unknown namespaces, and incomplete calls are rejected without falling back to
 action names in text. Existing text-only responses keep their current behavior.
 This handling applies to both streaming and non-streaming calls and both
 harnesses; it does not enable multiple actions per turn or arbitrary tool use.
+Both harnesses replay the action as text; the Standard harness does not retain
+native call state. No tool declarations or new config flags are required.
 
 This is response-format compatibility, not Google tool-calling support. In the
 Provider Adapter's conversation history, the call part is replaced with the

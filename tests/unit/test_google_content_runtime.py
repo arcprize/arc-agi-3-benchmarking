@@ -2,6 +2,11 @@ import json
 
 import pytest
 
+from benchmarking.compaction import (
+    SUMMARY_REQUEST_PROMPT,
+    SummaryCompactionPolicy,
+    SummaryCompactor,
+)
 from benchmarking.runtime_adapters import build_model_runtime_adapter
 from benchmarking.runtime_models import Message
 from benchmarking.runtime_registry import build_stateful_runtime_adapter
@@ -208,3 +213,71 @@ def test_multiple_native_calls_reject_without_accepting_state(make_adapter):  # 
     assert exc.value.usage.total_tokens == 9
     assert initial.payload == {"contents": []}
     assert initial.accepted_turns == []
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("buffer_frame", [False, True])
+def test_actual_summary_request_after_call_keeps_frames_and_prompt_as_text(
+    make_adapter,  # noqa: F811
+    make_stream_adapter,  # noqa: F811
+    stream,
+    buffer_frame,
+):
+    part = {"functionCall": {"name": "google:ACTION3", "args": {}, "id": "call-123"}}
+    replies = [
+        reply("STOP", [part], usage={"candidatesTokenCount": 2}),
+        reply(
+            "STOP",
+            [{"text": "Remember the previous action."}],
+            usage={"candidatesTokenCount": 2},
+        ),
+        reply("STOP", [{"text": "ACTION4"}], usage={"candidatesTokenCount": 2}),
+    ]
+    if stream:
+        model, calls = make_stream_adapter([stream_response(r) for r in replies])
+    else:
+        model, calls = make_adapter(replies)
+    adapter = runtime(model)
+    request = turn(adapter.initial_state())
+    request.request_config["stream"] = stream
+    first = adapter.invoke_turn(request)
+    state = first.state
+    if buffer_frame:
+        state = adapter.buffer_inputs(
+            state, [Message(role="user", content="result frame")]
+        )
+    before = state.model_dump_json()
+    result = SummaryCompactor(
+        SummaryCompactionPolicy(
+            strategy="harness_summary",
+            trigger_tokens=1000,
+        )
+    ).compact(
+        adapter=adapter,
+        state=state,
+        request_config=request.request_config,
+        trigger_tokens=1000,
+        max_context_length=1_048_576,
+        max_retries=0,
+    )
+    body = json.loads(calls[1].content)
+    expected = [
+        {"role": "user", "parts": [{"text": "frame"}]},
+        {"role": "model", "parts": [{"text": first.response.output_text}]},
+    ]
+    if buffer_frame:
+        expected.append({"role": "user", "parts": [{"text": "result frame"}]})
+    expected.append({"role": "user", "parts": [{"text": SUMMARY_REQUEST_PROMPT}]})
+    assert body["contents"] == expected
+    assert "functionCall" not in json.dumps(body)
+    assert "functionResponse" not in json.dumps(body)
+    assert "tools" not in body
+    assert result.summary == "Remember the previous action."
+    assert state.model_dump_json() == before
+    next_request = turn(result.state)
+    next_request.request_config["stream"] = stream
+    adapter.invoke_turn(next_request)
+    assert json.loads(calls[2].content)["contents"][-1] == {
+        "role": "user",
+        "parts": [{"text": "frame"}],
+    }
